@@ -7,6 +7,7 @@ import {
   Radar,
   Satellite,
   ShieldCheck,
+  TrendingUp,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { FetchResult } from '../services/vulnerabilityService';
@@ -103,7 +104,7 @@ function describeSource(
   if (source === 'cisa-kev') return 'CISA KEV';
   if (source === 'nvd') return 'NVD';
   if (source === 'epss') return 'FIRST EPSS';
-  if (source === 'merged') return 'merged';
+  if (source === 'merged') return 'CISA KEV + FIRST EPSS';
   return 'mock';
 }
 
@@ -113,6 +114,7 @@ export default function Header({ meta }: HeaderProps) {
   const isLive = meta?.mode === 'live';
   const isFallback = meta?.mode === 'fallback';
   const isMock = meta?.mode === 'mock';
+  const epssStatus = meta?.epssStatus;
 
   return (
     <header className="relative isolate overflow-hidden border-b border-radar-border bg-radar-bg/85 backdrop-blur-md">
@@ -194,6 +196,26 @@ export default function Header({ meta }: HeaderProps) {
                   : 'Current data source'
               }
             />
+            {epssStatus === 'first' && (
+              <StatusPill
+                icon={<TrendingUp className="h-3 w-3" />}
+                label="EPSS: FIRST"
+                tone="info"
+                title="Exploitation probability scores enriched from FIRST EPSS"
+              />
+            )}
+            {epssStatus === 'unavailable' && (
+              <StatusPill
+                icon={<TrendingUp className="h-3 w-3" />}
+                label="EPSS: unavailable"
+                tone="warn"
+                title={
+                  meta?.epssReason
+                    ? `FIRST EPSS enrichment failed: ${meta.epssReason}`
+                    : 'FIRST EPSS enrichment failed; scores default to 0'
+                }
+              />
+            )}
             <StatusPill
               icon={<Clock className="h-3 w-3" />}
               label={`Last refresh: ${fetchedAt}`}

@@ -4,7 +4,7 @@
 > **defensive** security teams. Track CVEs, KEV status, EPSS probability, and
 > severity across your stack in a single, focused command-center view.
 
-![status](https://img.shields.io/badge/status-v2.0-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v2.5-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -31,6 +31,13 @@ review access logs"_).
   the dashboard automatically falls back to the curated mock dataset so
   the user is never left with a blank screen. The current data source
   and mode are shown in the header.
+- **FIRST EPSS enrichment (v2.5)** — when CISA loads successfully, the
+  dashboard additionally fetches [FIRST EPSS](https://www.first.org/epss/)
+  exploitation-probability scores for every CVE in the catalog and
+  fills the `EPSS` column with real values. A CISA record whose CVE is
+  not yet scored by FIRST keeps `0.0` — no fabricated scores. If FIRST
+  is unreachable, the CISA data is still shown and a soft banner
+  explains that EPSS values default to 0.
 - **Dashboard overview** — at-a-glance cards for total, critical, high,
   KEV-listed, average EPSS, and new-this-week vulnerabilities.
 - **Vulnerability table** with columns for CVE ID, summary, severity,
@@ -71,11 +78,11 @@ review access logs"_).
 
 No backend. No login. No database. No payments. No exploit code.
 
-**Data sources:** the dashboard is frontend-only. CISA KEV is fetched
-directly from `https://www.cisa.gov/...` in the browser (CISA serves
-the feed with permissive CORS); if the fetch fails, the curated mock
-dataset is shown and a banner explains why. NVD and FIRST EPSS are
-not yet wired in — see the [Roadmap](#-roadmap).
+**Data sources:** the dashboard is frontend-only. CISA KEV and FIRST
+EPSS are both fetched directly from the browser (both APIs serve
+permissive CORS); if a fetch fails, the curated mock dataset is shown
+and a banner explains why. NVD is not yet wired in — see the
+[Roadmap](#-roadmap).
 
 ---
 
@@ -119,8 +126,9 @@ threatpulse-radar/
     ├── services/
     │   ├── vulnerabilityService.ts    # live/mock/fallback mode switcher
     │   └── providers/
-    │       ├── README.ts              # reserved for v2.5 providers
-    │       └── cisaKev.ts             # CISA KEV fetch + normalize
+    │       ├── README.ts              # reserved for v3 providers
+    │       ├── cisaKev.ts             # CISA KEV fetch + normalize
+    │       └── epss.ts                # FIRST EPSS batched fetch + enrich
     ├── types/
     │   └── vulnerability.ts           # shared domain types
     ├── hooks/
@@ -145,9 +153,9 @@ care which source is active.
 | Source                  | Status   | Provides                                          | Endpoint |
 | ----------------------- | -------- | ------------------------------------------------- | -------- |
 | **CISA KEV** (v2)       | ✅ Live  | Known-exploited boolean, due dates, ransomware-use | `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` |
+| **FIRST EPSS** (v2.5)   | ✅ Live enrichment | Exploitation probability (0–1) for each CISA CVE | `https://api.first.org/data/v1/epss?cve=…` |
 | **Mock dataset** (v1)   | ✅ Live  | 60 fictional CVEs spanning 16 vendors              | `src/data/mockVulnerabilities.ts` (in-bundle) |
-| **NVD CVE 2.0** (v2.5)  | 📋 Planned | CVSS, description, CPE (vendor/product), dates   | `https://services.nvd.nist.gov/rest/json/cves/2.0` |
-| **FIRST EPSS** (v2.5)   | 📋 Planned | Exploitation probability (0–1)                  | `https://api.first.org/data/v1/epss` |
+| **NVD CVE 2.0** (v3)    | 📋 Planned | CVSS, description, CPE (vendor/product), dates   | `https://services.nvd.nist.gov/rest/json/cves/2.0` |
 
 **How the CISA KEV integration works (v2):**
 
@@ -176,13 +184,14 @@ care which source is active.
 ## 🛣️ Roadmap
 
 - [x] v1 — Polished frontend, mock data, full filtering & visualization
-- [x] v2 — **CISA KEV live data with automatic mock fallback** (this release)
-- [ ] v2.5 — Wire up NVD (CVSS) and FIRST EPSS to backfill the fields
-      CISA KEV doesn't carry
-- [ ] v2.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
+- [x] v2 — **CISA KEV live data with automatic mock fallback**
+- [x] v2.1 — Severity sort comparator fix
+- [x] v2.5 — **FIRST EPSS enrichment** (this release)
+- [ ] v3 — Wire up NVD to backfill the CVSS column CISA doesn't carry
+- [ ] v3 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
 - [ ] v3 — Per-vendor watchlists and email/Slack digest
 - [ ] v3 — CSV / JSON export of filtered results
-- [ ] v3 — CPE-based asset matching: "which of _my_ products are exposed?"
+- [ ] v4 — CPE-based asset matching: "which of _my_ products are exposed?"
 - [ ] v4 — Local-only "My Inventory" mode with optional read-only API
 
 ---

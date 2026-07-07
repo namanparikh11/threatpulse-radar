@@ -120,6 +120,11 @@ export default function DashboardPage() {
               />
             )}
 
+            {state.meta.mode === 'live' &&
+              state.meta.epssStatus === 'unavailable' && (
+                <EpssUnavailableBanner reason={state.meta.epssReason} />
+              )}
+
             <StatsCards stats={charts.stats} />
 
             <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -231,6 +236,39 @@ function FallbackBanner({
         <RefreshCw className="h-3 w-3" />
         Retry live fetch
       </button>
+    </div>
+  );
+}
+
+/**
+ * Softer banner shown when the CISA KEV feed is live but the FIRST
+ * EPSS enrichment fetch failed. The CISA data is still being shown
+ * (and is current); only the EPSS probability column is unavailable.
+ * No retry button — the next page load will retry automatically.
+ */
+function EpssUnavailableBanner({
+  reason,
+}: {
+  reason: string | undefined;
+}) {
+  return (
+    <div
+      role="status"
+      className="panel flex items-start gap-2 border-radar-warn/30 bg-radar-warn/5 px-4 py-2.5 text-xs"
+    >
+      <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-radar-warn" />
+      <div>
+        <p className="font-medium text-radar-text">
+          EPSS enrichment unavailable — exploitation probabilities
+          default to 0.
+        </p>
+        <p className="mt-0.5 text-radar-muted">
+          CISA KEV data is current. FIRST EPSS could not be reached:
+          {reason ?? 'unknown error.'} The EPSS filter still works
+          (it will simply show no rows above the 0% threshold for
+          affected CVEs).
+        </p>
+      </div>
     </div>
   );
 }

@@ -1,8 +1,9 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v2.0.
-> Last verified: this session (severity sort fix + CISA KEV).
-> Build clean. Acceptance tests green (**15/15 v1 + 28/28 v2 CISA**).
+> End-of-session handover for **ThreatPulse Radar** v2.5.
+> Last verified: this session (FIRST EPSS enrichment pass).
+> Build clean. Acceptance tests green
+> (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS = 82/82**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -22,7 +23,8 @@ runtime and falls back to the curated mock dataset if the fetch fails.
   (the CISA feed is CORS-enabled) — no proxy, no server.
 - **Build:** `npm.cmd run build` passes clean (4.57 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
-  KEV tests** (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs`).
+  KEV tests** + **39/39 v2.5 EPSS tests**
+  (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
   session (Pass 7). An `origin` remote is configured at
   `https://github.com/namanparikh11/threatpulse-radar.git` (added in
@@ -39,7 +41,8 @@ runtime and falls back to the curated mock dataset if the fetch fails.
 The v1 dashboard was built across four implementation passes, then
 two follow-up passes refreshed the handoff and completed the
 Hostinger deployment prep, then v2 wired up CISA KEV live-data
-integration, then v2.1 fixed a pre-existing severity sort bug:
+integration, v2.1 fixed a pre-existing severity sort bug, and v2.5
+added FIRST EPSS enrichment:
 
 ### Pass 1 — initial build
 - Scaffolded Vite + React + TS project manually.
@@ -140,7 +143,7 @@ integration, then v2.1 fixed a pre-existing severity sort bug:
   changed (CISA code is now in the bundle).
 - Acceptance: **13/13 v1 + 27/27 v2 CISA = 40/40**.
 
-### Pass 8 — severity sort direction fix ← *current*
+### Pass 8 — severity sort direction fix
 - `src/utils/analytics.ts` — one-line change in `compareByField`'s
   `case 'severity':` branch. The comparator was `(rank_a - rank_b)`
   (natural "ascending": Low first) which then got flipped by the
@@ -164,9 +167,44 @@ integration, then v2.1 fixed a pre-existing severity sort bug:
   — confirms this was a true one-line change.
 - Acceptance: **15/15 v1 + 28/28 v2 CISA = 43/43**.
 
+### Pass 9 — FIRST EPSS enrichment ← *current*
+- New `src/services/providers/epss.ts` — fetches EPSS scores for
+  the CISA CVE IDs in batched requests of 100 each (parallel),
+  with an 8 s `AbortController` timeout per request. Exposes
+  `fetchEpssForCves(cveIds) → Map<cveId, { epss, percentile }>`
+  and a pure `enrichWithEpss(records, map)` that fills
+  `epssProbability` without mutating the input. CVEs absent from
+  the FIRST response keep `epssProbability: 0` (no fabrication).
+- `vulnerabilityService.ts` — orchestrates CISA → EPSS. On CISA
+  success, fetches EPSS and enriches. On EPSS failure, returns
+  the CISA data with `epssStatus: 'unavailable'` and a
+  `fallbackReason`. `FetchResult` gains two optional fields:
+  `epssStatus?: 'first' | 'unavailable'` and
+  `epssReason?: string`. On full success, `source: 'merged'`,
+  `mode: 'live'`, `epssStatus: 'first'`. On CISA failure,
+  unchanged v2 behavior: `mode: 'fallback'`, mock data.
+- `Header.tsx` — when `epssStatus === 'first'`, source pill
+  reads "Source: CISA KEV + FIRST EPSS" and a new cyan
+  `EPSS: FIRST` pill appears. When `epssStatus === 'unavailable'`,
+  source pill stays "Source: CISA KEV" and a warn-tone
+  `EPSS: unavailable` pill appears with the reason in its
+  tooltip. Header layout unchanged otherwise.
+- `DashboardPage.tsx` — new `<EpssUnavailableBanner />` shown
+  above the stats when `mode === 'live'` and
+  `epssStatus === 'unavailable'`. Smaller and softer than the
+  full CISA fallback banner; no retry button (next page load
+  retries automatically).
+- `scripts/acceptance-epss.mjs` — new 39-test acceptance suite
+  for the EPSS integration. The v1 15-test script and the v2
+  28-test CISA script are untouched and still pass.
+- `README.md`, `NEXT_AGENT_PROMPT.md` — updated to reflect v2.5.
+- Build re-run: 0 errors, 0 warnings, 4.23 s. App chunk grew
+  by ~3 kB raw / ~1 kB gzipped (EPSS provider + UI bits).
+- Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS = 82/82**.
+
 ---
 
-## 3. Files in the project (41 source files)
+## 3. Files in the project (43 source files)
 
 ```
 threatpulse-radar/
@@ -188,15 +226,16 @@ threatpulse-radar/
 │   ├── .htaccess                    (SPA fallback + headers, pass 6)
 │   └── radar.svg
 ├── scripts/
-│   ├── acceptance.mjs               (v1 13-test suite, unchanged)
-│   ├── acceptance-cisa.mjs          (v2 27-test CISA suite, new in pass 7)
+│   ├── acceptance.mjs               (v1 15-test suite, pass 8 added 2)
+│   ├── acceptance-cisa.mjs          (v2 28-test CISA suite)
+│   ├── acceptance-epss.mjs          (v2.5 39-test EPSS suite, new)
 │   └── zip-source.ps1               (one-off source-archiver)
 └── src/
     ├── main.tsx
     ├── App.tsx
     ├── index.css
     ├── components/
-    │   ├── Header.tsx               (dynamic source/mode, pass 7)
+    │   ├── Header.tsx               (EPSS pill + dynamic source, pass 9)
     │   ├── StatsCards.tsx
     │   ├── FiltersPanel.tsx
     │   ├── VulnerabilityTable.tsx
@@ -212,33 +251,35 @@ threatpulse-radar/
     ├── data/
     │   └── mockVulnerabilities.ts   (60 unique records, fallback dataset)
     ├── pages/
-    │   └── DashboardPage.tsx        (FallbackBanner added in pass 7)
+    │   └── DashboardPage.tsx        (EpssUnavailableBanner, pass 9)
     ├── services/
-    │   ├── vulnerabilityService.ts  (DATA_MODE / FetchMode, pass 7)
+    │   ├── vulnerabilityService.ts  (CISA + EPSS orchestration, pass 9)
     │   └── providers/
-    │       ├── README.ts            (placeholder for v2.5 providers)
-    │       └── cisaKev.ts           (new in pass 7)
+    │       ├── README.ts            (placeholder for v3 providers)
+    │       ├── cisaKev.ts           (new in pass 7)
+    │       └── epss.ts              (new in pass 9)
     ├── types/
     │   └── vulnerability.ts
     ├── hooks/
     │   ├── useDebouncedValue.ts
     │   └── useVulnerabilityFilter.ts
     └── utils/
-        ├── analytics.ts             (applyFilters + applySortBy)
+        ├── analytics.ts             (severity comparator fixed, pass 8)
         ├── format.ts
         └── severity.ts
 ```
 
 ---
 
-## 4. Current UI / header state (after pass 7)
+## 4. Current UI / header state (after pass 9)
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │                                                                    │
-│  [LOGO]  ThreatPulse Radar                       [● Defensive use] │
-│   ✦     Defensive vulnerability intelligence...    [● Source: CISA KEV]
-│          [Portfolio Project] [Live CISA KEV Mode] [● Last refresh]  │
+│  [LOGO]  ThreatPulse Radar              [● Defensive use]          │
+│   ✦     Defensive vulnerability...     [● Source: CISA KEV + EPSS] │
+│          [Portfolio] [Live CISA KEV]   [● EPSS: FIRST]            │
+│          Mode                          [● Last refresh]            │
 │                                                                    │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -256,25 +297,40 @@ threatpulse-radar/
   - `Fallback Mode` (amber/warn) — when `mode === 'fallback'`
     (CISA fetch failed, mock data shown).
   Plus the always-on `Portfolio Project` badge.
-- **Status column (right):** three pills, color-coded dots:
+- **Status column (right):** four pills, color-coded dots:
   - `Defensive use only` (green, pulsing).
-  - `Source: CISA KEV` (cyan) / `Source: mock (fallback)` (amber) /
-    `Source: mock` (cyan, when intentionally mocked).
+  - `Source: CISA KEV` / `Source: CISA KEV + FIRST EPSS` /
+    `Source: mock (fallback)` / `Source: mock` (tone varies).
+  - `EPSS: FIRST` (cyan) — when `epssStatus === 'first'`.
+  - `EPSS: unavailable` (amber) — when `epssStatus === 'unavailable'`,
+    with the reason in a tooltip.
   - `Last refresh: <relative>` (neutral).
 - **Fallback banner** appears *above the stats cards* when
   `mode === 'fallback'`: explains the failure reason and offers a
   "Retry live fetch" button.
+- **EPSS-unavailable banner** (softer) appears above the stats when
+  `mode === 'live'` but `epssStatus === 'unavailable'`: explains
+  EPSS values default to 0. No retry button — next page load retries
+  automatically.
 - **Responsive:** stacks on mobile, side-by-side on `lg+`.
 
 ---
 
 ## 5. Current working features
 
-### Data sources (v2)
+### Data sources (v2.5)
 - **Live mode** (default): fetches the public
   [CISA KEV catalog](https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json)
   in the browser with an 8 s `AbortController` timeout. The feed
   is CORS-enabled so no proxy is required.
+- **EPSS enrichment (v2.5)**: when CISA succeeds, additionally
+  fetches [FIRST EPSS](https://www.first.org/epss/) exploitation-
+  probability scores for every CVE in the CISA catalog. Batched
+  at 100 CVEs per request, parallel, 8 s timeout per chunk.
+  Records whose CVE isn't in the FIRST response keep
+  `epssProbability: 0` (no fabrication). On EPSS failure, the
+  CISA data is still shown with `epssStatus: 'unavailable'` and
+  a soft banner above the stats explains why.
 - **Mock mode**: opt-in via `DATA_MODE = 'mock'` in
   `vulnerabilityService.ts`. Returns the curated 60-record mock
   dataset (used for offline development and as a forced override).
@@ -286,9 +342,9 @@ threatpulse-radar/
 - Normalizer (`src/services/providers/cisaKev.ts`) maps CISA KEV
   records into the existing `Vulnerability` shape. Severity is
   derived from `knownRansomwareCampaignUse` (`Known` → Critical,
-  otherwise High). CVSS and EPSS default to `0` because CISA
-  doesn't provide them; the description carries a short note so
-  the user knows the data isn't fake.
+  otherwise High). CVSS defaults to `0` (CISA doesn't provide it).
+  The enricher (`src/services/providers/epss.ts`) fills
+  `epssProbability` when FIRST has a score.
 
 ### Dashboard
 - 6 stats cards: total, critical, high, KEV, avg EPSS, new-this-week.
@@ -319,8 +375,11 @@ threatpulse-radar/
   CVSS score is unknown (defaults to `0`).
 - **KEV-only toggle.**
 - **Minimum EPSS slider** (0–100 %), half-open `[min, 1.0]`.
-  CISA records default to EPSS `0`, so this filter excludes them
-  when set above 0% — accurate to the data we actually have.
+  With FIRST EPSS enrichment (v2.5), the EPSS column is now
+  populated with real scores for CISA CVEs that FIRST has
+  scored, so the slider actually filters on real values. CVEs
+  not in the FIRST dataset still default to `0` and will be
+  excluded above the 0% threshold — accurate to the data we have.
 - **Sort dropdown** — 12 explicit options including
   *Newest first*, *Oldest first*, *CVSS: high to low / low to high*,
   *EPSS: high to low / low to high*, *Severity: high to low / low to high*,
@@ -431,12 +490,11 @@ ALL TESTS PASSED  (15/15)
 
 ## 7. Known issues / limitations
 
-- **CISA KEV doesn't include CVSS or EPSS.** The normalizer defaults
-  both to `0` and adds a one-line note in `description`. This is
-  intentional — we don't fabricate scores. Once NVD and FIRST EPSS
-  are wired in (v2.5), these fields will be backfilled by joining on
-  `cveId`. The user can see at a glance which fields are real and
-  which are placeholders.
+- **CISA KEV doesn't include CVSS.** The normalizer still defaults
+  `cvssScore` to `0` and the description carries a short note. The
+  v2.5 EPSS enrichment fills in the EPSS column but does not touch
+  CVSS — that needs NVD. The user can see at a glance which fields
+  are real and which are placeholders.
 - **Recharts 2 is on the deprecation list** (recharts 3 is current).
   We're on `^2.13.3` and the npm install prints a `npm warn deprecated`
   line. Not a blocker; consider bumping to recharts 3 in a future
@@ -466,23 +524,24 @@ ALL TESTS PASSED  (15/15)
 
 ## 8. What should NOT be changed in the next session
 
-v2 (CISA KEV) and v2.1 (severity sort fix) are now part of the
-frozen scope. The next session's only job is whatever the user
-explicitly asks for next. Do **not** do any of the following
-without an explicit ask:
+v2 (CISA KEV), v2.1 (severity sort fix), and v2.5 (FIRST EPSS
+enrichment) are now part of the frozen scope. The next session's
+only job is whatever the user explicitly asks for next. Do **not**
+do any of the following without an explicit ask:
 
-- ❌ Add more real APIs (NVD / FIRST EPSS). CISA KEV is the only
-  live source for v2; the others are planned for v2.5 (the next
-  milestone). The merge + NVD + EPSS plumbing is in the type
-  system; do not implement it without an explicit ask.
+- ❌ Add more real APIs (NVD). FIRST EPSS is the only secondary
+  source for v2.5; NVD is the planned v3 milestone. The
+  `vulnerabilityService` type union still allows `'nvd' | 'epss'`
+  but those branches are unused — do not implement them without
+  an explicit ask.
 - ❌ Add new features (auth, persistence, watchlists, CSV export,
   per-vendor sidebar, deep-linking). Out of scope.
 - ❌ Redesign the header. The pass-4 layout is final; the v2 pass
   only changed labels, not structure.
 - ❌ Touch the filter / search / sort pipeline or the
   `useVulnerabilityFilter` / `useDebouncedValue` hooks. The
-  15 v1 acceptance tests + 28 CISA tests must keep passing. Do
-  not weaken them.
+  15 v1 acceptance tests + 28 CISA tests + 39 EPSS tests must
+  keep passing. Do not weaken them.
 - ❌ Touch `mockVulnerabilities.ts` (used as the fallback dataset).
 - ❌ Bump major versions of React / Vite / Recharts. Frozen at
   v1 majors.
@@ -507,36 +566,41 @@ without an explicit ask:
 | --- | --- |
 | v1 (mock data, full UI) | ✅ done, frozen |
 | Hostinger static deployment prep | ✅ done (pass 6) |
-| v2 — CISA KEV live data | ✅ done (pass 7) — *this session* |
-| v2.5 — NVD + FIRST EPSS providers | 📋 planned — see Roadmap in `README.md` |
-| v3 — watchlists, exports, CPE matching | 📋 planned |
+| v2 — CISA KEV live data | ✅ done (pass 7) |
+| v2.1 — Severity sort comparator fix | ✅ done (pass 8) |
+| v2.5 — FIRST EPSS enrichment | ✅ done (pass 9) — *this session* |
+| v3 — NVD provider (CVSS backfill) | 📋 planned — see Roadmap in `README.md` |
+| v3+ — watchlists, exports, CPE matching | 📋 planned |
 
-**v2 (this pass) is complete:**
-- Live CISA KEV feed is the default data source, fetched in the
-  browser with an 8 s timeout.
-- Mock dataset is preserved as the offline fallback (and as the
-  dataset returned when `mode === 'fallback'`).
-- The header, dashboard, and detail drawer all work on either
-  source — same `Vulnerability` shape, same filter / sort pipeline.
-- A fallback banner surfaces the failure reason and offers a
-  retry button.
-- 13/13 v1 + 27/27 v2 acceptance tests passing; build clean
-  (4.57 s, 0 errors, 0 warnings).
+**v2.5 (this pass) is complete:**
+- Live CISA KEV feed + live FIRST EPSS enrichment, fetched
+  in the browser (both APIs CORS-enabled, no proxy).
+- Mock dataset is preserved as the offline fallback (and as
+  the dataset returned when CISA fetch fails). When CISA
+  succeeds but EPSS fails, CISA data is still shown with EPSS
+  defaulting to 0 and a soft banner above the stats explaining
+  why.
+- The header, dashboard, and detail drawer all work on every
+  data path — same `Vulnerability` shape, same filter / sort
+  pipeline.
+- 15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS = **82/82**
+  acceptance tests passing; build clean (4.23 s, 0 errors,
+  0 warnings).
 
 **What's still on the user:**
 - Upload the contents of `dist/` to Hostinger (pass 6's prep is
-  still valid for v2 — nothing about the deployment changed).
+  still valid for v2.5 — nothing about the deployment changed).
 - (Optional) uncomment the CSP / HSTS lines in `.htaccess` once
   deployed over HTTPS.
 - (Optional) push `main` to GitHub — repo is private, nothing
   pushed yet, **do not push without an explicit ask**.
 
-**Recommended next milestone (v2.5):** wire up real NVD (CVSS
-backfill) and FIRST EPSS (probability backfill) providers
-through `src/services/providers/nvd.ts` and `epss.ts`. The
-service layer's `merge` source code-path is already plumbed
-in the `DataSource` union; the v2 CISA normalizer's `cvssScore: 0`
-and `epssProbability: 0` placeholders will be replaced by
-joined-from-NVD/EPSS values. No UI changes required.
+**Recommended next milestone (v3):** wire up the **NVD** provider
+through `src/services/providers/nvd.ts` to backfill the `cvssScore`
+column that CISA doesn't carry. FIRST EPSS already fills
+`epssProbability` (v2.5). The service layer's `merge` source code-path
+is already plumbed in the `DataSource` union; the v2.5 CISA
+normalizer's `cvssScore: 0` placeholder will be replaced by joined-
+from-NVD values. No UI changes required.
 
 The full deployment guide is in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
