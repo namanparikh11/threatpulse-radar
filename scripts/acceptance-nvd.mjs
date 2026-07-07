@@ -493,7 +493,17 @@ section('Service-layer wiring (source-code assertions)');
     'NVD-unavailable pill not found in header');
 
   assert('header source label mentions NVD when nvdStatus="nvd"',
-    /nvdStatus\s*===\s*['"]nvd['"][\s\S]*?CISA KEV \+ NVD \+ FIRST EPSS/.test(headerSrc),
+    // The label is now built dynamically (parts.push) — verify
+    // the NVD string is pushed in the conditional that checks
+    // nvdStatus.
+    (() => {
+      const fnStart = headerSrc.indexOf('function describeSource(');
+      if (fnStart < 0) return false;
+      const fnEnd = headerSrc.indexOf('\n}\n', fnStart);
+      if (fnEnd < 0) return false;
+      const fnBody = headerSrc.slice(fnStart, fnEnd + 2);
+      return /nvdStatus\s*===\s*['"]nvd['"][\s\S]*?parts\.push\(\s*['"]NVD['"]\s*\)/.test(fnBody);
+    })(),
     'NVD-aware source label not found in header');
 
   assert('dashboard shows NvdUnavailableBanner when live + nvdStatus=unavailable',
@@ -506,6 +516,30 @@ section('Service-layer wiring (source-code assertions)');
       readFileSync(join(root, 'src', 'services', 'providers', 'cisaKev.ts'), 'utf8')
     ),
     'stale description note still present in cisaKev.ts');
+
+  assert('Header source label reflects BOTH nvdStatus and epssStatus (v3.1 honesty fix)',
+    // The full describeSource matrix — each (nvdStatus, epssStatus)
+    // combination must produce a label that only mentions providers
+    // that actually contributed. The simplest check: when EPSS
+    // is unavailable but NVD loaded, the label must NOT contain
+    // "FIRST EPSS".
+    (() => {
+      const headerSrc = readFileSync(join(root, 'src', 'components', 'Header.tsx'), 'utf8');
+      // Find the describeSource function and read the next ~30 lines.
+      const fnStart = headerSrc.indexOf('function describeSource(');
+      if (fnStart < 0) return false;
+      const fnEnd = headerSrc.indexOf('\n}\n', fnStart);
+      if (fnEnd < 0) return false;
+      const fnBody = headerSrc.slice(fnStart, fnEnd + 2);
+      // The fix is in the function body: it must check epssStatus
+      // (not just nvdStatus) before adding 'FIRST EPSS' to the
+      // label. Pre-fix, the label always said "FIRST EPSS" when
+      // nvdStatus==='nvd', regardless of epssStatus.
+      return /epssStatus/.test(fnBody)
+        && /['"]FIRST EPSS['"]/.test(fnBody)
+        && /parts\.push/.test(fnBody);
+    })(),
+    'describeSource in Header.tsx does not reflect epssStatus');
 }
 
 /* ------------------------------------------------------------------ */

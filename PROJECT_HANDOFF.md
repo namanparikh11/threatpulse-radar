@@ -1,9 +1,9 @@
 # PROJECT_HANDOFF
 
 > End-of-session handover for **ThreatPulse Radar** v3.0.
-> Last verified: this session (NVD CVSS enrichment pass).
+> Last verified: this session (v3 QA / portfolio-demo hardening pass).
 > Build clean. Acceptance tests green
-> (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 52/52 v3 NVD = 134/134**).
+> (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD = 135/135**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -23,7 +23,7 @@ runtime and falls back to the curated mock dataset if the fetch fails.
   (the CISA feed is CORS-enabled) — no proxy, no server.
 - **Build:** `npm.cmd run build` passes clean (4.57 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
-  KEV tests** + **39/39 v2.5 EPSS tests** + **52/52 v3 NVD tests**
+  KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests**
   (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
   session (Pass 7). An `origin` remote is configured at
@@ -202,7 +202,7 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   by ~3 kB raw / ~1 kB gzipped (EPSS provider + UI bits).
 - Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS = 82/82**.
 
-### Pass 10 — NVD CVSS enrichment ← *current*
+### Pass 10 — NVD CVSS enrichment
 - New `src/services/providers/nvd.ts` — fetches the official
   [NVD CVE 2.0](https://services.nvd.nist.gov/rest/json/cves/2.0)
   feed for the CISA CVE IDs in batched requests of 100 each
@@ -242,9 +242,70 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   ~3.7 kB raw / ~0.7 kB gzipped (NVD provider + UI bits).
 - Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 52/52 v3 NVD = 134/134**.
 
+### Pass 11 — v3 QA / portfolio-demo hardening ← *current*
+- **QA review** — read every component, the service flow end-to-end,
+  the chart components, the filter hook, and the styling. Two
+  real issues found, both honesty-related.
+- **Fix #1: honest source label in `Header.tsx`.** The
+  `describeSource` function only checked `nvdStatus` and
+  always said "CISA KEV + NVD + FIRST EPSS" when NVD loaded —
+  even when EPSS didn't. The function now builds the label
+  from both `nvdStatus` and `epssStatus` (only mentions a
+  provider if its pill isn't amber). The amber "unavailable"
+  pills remain — the label is now consistent with them.
+- **Fix #2: honest `LoadingState` message.** The first-load
+  copy was "Loading threat intelligence…" which undersells
+  the multi-source fetch. NVD's 5-req/30s rate limit means the
+  first live load can take 30–60 s. The message now reads:
+  "Loading CISA KEV · NVD CVSS · FIRST EPSS — may take up to a
+  minute on first load…". First-time portfolio visitors now
+  know what's happening.
+- **Test for the honesty fix.** `scripts/acceptance-nvd.mjs`
+  grew by 1 test (now 53/53). It reads the `Header.tsx` source,
+  locates the `describeSource` function body, and asserts that
+  `epssStatus` is checked (so future regressions to the v2
+  behavior of always-claiming-EPSS-loaded are caught).
+- **`PORTFOLIO_WRITEUP.md`** — new file. ~3 pages, written
+  for a recruiter or technical interviewer who has 5–30
+  minutes. Covers: what the project is, why it exists, five
+  engineering decisions worth talking about in an
+  interview, and an honest list of trade-offs.
+- **No new features.** No new dependencies. No UI redesign.
+  No data architecture changes (the two fixes are
+  presentation-layer / copy fixes only).
+- **README review:** confirmed the README reflects v3.0
+  correctly. Did not modify — the README was already updated
+  in the v3 pass and is current.
+- Build re-run: 0 errors, 0 warnings, 6.34 s. App chunk hash
+  changed (presentation changes only); all other chunks
+  identical.
+- Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD = 135/135**.
+
+### Items reviewed and intentionally left alone
+
+- **Vulnerability table mobile UX.** The table uses
+  `min-w-[1100px]` and horizontal scroll on small screens.
+  This is a deliberate choice — a 10-column data table
+  doesn't compress to mobile without becoming unreadable.
+  The scroll is contained inside a `.panel` with the standard
+  `overflow-x-auto`. Out of scope for a "no UI redesign" pass.
+- **NVD first-load latency.** NVD's anonymous rate limit
+  (5 req / 30 s) means ~1000 CISA CVEs need 10 chunks, taking
+  up to a minute. An NVD API key (10× rate limit) would fix
+  this. Explicitly out of scope (the user said no NVD API key).
+  Documented in the portfolio writeup as a trade-off.
+- **KPI stat-card "Average EPSS" label.** The card's hint
+  says "Probability of exploitation" which is correct but
+  could be more specific (e.g. "30-day probability of
+  exploitation"). Current text matches what FIRST documents.
+  Left as-is to avoid editing copy that was already approved.
+- **Sticky table header on scroll.** Would help with a 1000-
+  record dataset but is a layout addition, not a fix. Out of
+  scope for "no UI redesign."
+
 ---
 
-## 3. Files in the project (45 source files)
+## 3. Files in the project (46 source files)
 
 ```
 threatpulse-radar/
@@ -261,6 +322,7 @@ threatpulse-radar/
 ├── README.md
 ├── PROJECT_HANDOFF.md               (this file)
 ├── NEXT_AGENT_PROMPT.md
+├── PORTFOLIO_WRITEUP.md            (new in pass 11 — recruiter-facing narrative)
 ├── DEPLOYMENT.md                    (Hostinger guide, pass 6)
 ├── public/
 │   ├── .htaccess                    (SPA fallback + headers, pass 6)
@@ -269,20 +331,20 @@ threatpulse-radar/
 │   ├── acceptance.mjs               (v1 15-test suite, pass 8 added 2)
 │   ├── acceptance-cisa.mjs          (v2 28-test CISA suite)
 │   ├── acceptance-epss.mjs          (v2.5 39-test EPSS suite)
-│   ├── acceptance-nvd.mjs           (v3 52-test NVD suite, new)
+│   ├── acceptance-nvd.mjs           (v3 53-test NVD suite, +1 in pass 11)
 │   └── zip-source.ps1               (one-off source-archiver)
 └── src/
     ├── main.tsx
     ├── App.tsx
     ├── index.css
     ├── components/
-    │   ├── Header.tsx               (NVD + EPSS pills, pass 10)
+    │   ├── Header.tsx               (NVD + EPSS pills; honest label, pass 11)
     │   ├── StatsCards.tsx
     │   ├── FiltersPanel.tsx
     │   ├── VulnerabilityTable.tsx
     │   ├── DetailDrawer.tsx
     │   ├── EmptyState.tsx
-    │   ├── LoadingState.tsx
+    │   ├── LoadingState.tsx          (multi-source copy, pass 11)
     │   ├── ErrorState.tsx
     │   ├── SearchStatus.tsx
     │   └── charts/
@@ -292,7 +354,7 @@ threatpulse-radar/
     ├── data/
     │   └── mockVulnerabilities.ts   (60 unique records, fallback dataset)
     ├── pages/
-    │   └── DashboardPage.tsx        (NvdUnavailableBanner, pass 10)
+    │   └── DashboardPage.tsx        (LoadingState message updated, pass 11)
     ├── services/
     │   ├── vulnerabilityService.ts  (CISA+NVD+EPSS orchestration, pass 10)
     │   └── providers/
@@ -647,14 +709,20 @@ do any of the following without an explicit ask:
 | v2 — CISA KEV live data | ✅ done (pass 7) |
 | v2.1 — Severity sort comparator fix | ✅ done (pass 8) |
 | v2.5 — FIRST EPSS enrichment | ✅ done (pass 9) |
-| v3 — NVD CVSS enrichment | ✅ done (pass 10) — *this session* |
+| v3 — NVD CVSS enrichment | ✅ done (pass 10) |
+| v3 QA / portfolio-demo hardening | ✅ done (pass 11) — *this session* |
 | v3.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
 | v4 — CPE-based asset matching, My Inventory mode | 📋 planned |
 
-**v3 (this pass) is complete:**
+**v3 + v3 QA (this pass) is complete:**
 - Live CISA KEV feed + live NVD CVSS enrichment + live FIRST
   EPSS enrichment, all three fetched in the browser (all APIs
   CORS-enabled, no proxy).
+- The source label in the header now reflects the *actual*
+  per-provider state — only mentions a provider if its pill
+  isn't amber. The loading state copy is honest about the
+  multi-source fetch (NVD rate limit can take up to a minute
+  on first load).
 - Mock dataset is preserved as the offline fallback (and as
   the dataset returned when CISA fetch fails). When CISA
   succeeds but NVD or EPSS fails, the CISA + the working
@@ -664,8 +732,11 @@ do any of the following without an explicit ask:
   data path — same `Vulnerability` shape, same filter / sort
   pipeline. The filter pipeline now actually exercises real
   CVSS / EPSS data.
-- 15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 52/52 v3 NVD =
-  **134/134** acceptance tests passing; build clean (6.12 s,
+- `PORTFOLIO_WRITEUP.md` is the recruiter-facing narrative;
+  it stands alone from `README.md` (which is the technical
+  reference).
+- 15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD =
+  **135/135** acceptance tests passing; build clean (6.34 s,
   0 errors, 0 warnings).
 
 **What's still on the user:**

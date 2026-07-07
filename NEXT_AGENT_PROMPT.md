@@ -16,14 +16,15 @@ portfolio use. Now in v3.0.
 Recharts 2 + Lucide React.
 
 **Status.** v3.0 (NVD CVSS enrichment) is feature-complete and ships
-clean.
-- `npm.cmd run build` → 0 errors, 0 warnings, ~6.1 s.
+clean. v3.1 (QA / portfolio-demo hardening) is also done.
+- `npm.cmd run build` → 0 errors, 0 warnings, ~6.3 s.
 - `node scripts/acceptance.mjs` → **15/15** (v1 mock-data tests,
   including severity sort).
 - `node scripts/acceptance-cisa.mjs` → **28/28** (v2 CISA tests).
 - `node scripts/acceptance-epss.mjs` → **39/39** (v2.5 EPSS tests).
-- `node scripts/acceptance-nvd.mjs` → **52/52** (v3 NVD tests).
-- Total: **134/134** acceptance tests.
+- `node scripts/acceptance-nvd.mjs` → **53/53** (v3 NVD tests,
+  +1 from the v3.1 honesty fix).
+- Total: **135/135** acceptance tests.
 - 60 unique mock records + the live CISA KEV feed (default) +
   live NVD CVSS enrichment + live FIRST EPSS enrichment.
 - Filter / search / sort pipeline in `useVulnerabilityFilter` works
@@ -34,8 +35,9 @@ clean.
   top status strip, no live radar animation).
 - `dist/` is drop-in deployable to Hostinger static hosting.
 - `main` has **uncommitted** source changes from the CISA + EPSS
-  + NVD passes. The `origin` remote is configured (private repo)
-  but nothing has been pushed. Do not push without an explicit ask.
+  + NVD + QA passes. The `origin` remote is configured (private
+  repo) but nothing has been pushed. Do not push without an
+  explicit ask.
 
 ## Read first
 
@@ -62,7 +64,7 @@ These are non-negotiable. The next agent (you) must not:
   v2.5 / v3 passes only changed labels, not structure. Don't add
   more pills / badges / banners / animated indicators.
 - ❌ Touch the filter / search / sort pipeline. The 15 v1
-  acceptance tests + 28 CISA tests + 39 EPSS tests + 52 NVD tests
+  acceptance tests + 28 CISA tests + 39 EPSS tests + 53 NVD tests
   must keep passing. Do not weaken them. The severity sort
   comparator in `src/utils/analytics.ts` (`compareByField`'s
   `case 'severity':`) was corrected in pass 8 to put Critical
@@ -115,7 +117,7 @@ When v3.5 work is done, report:
 2. `node scripts/acceptance.mjs` result (must be **15/15**).
 3. `node scripts/acceptance-cisa.mjs` result (must be **28/28**).
 4. `node scripts/acceptance-epss.mjs` result (must be **39/39**).
-5. `node scripts/acceptance-nvd.mjs` result (must be **52/52**).
+5. `node scripts/acceptance-nvd.mjs` result (must be **53/53**).
 6. New tests (if any) result (must be `N/N`).
 7. List of files added / modified.
 8. A short note on whether `dist/` is still drop-in deployable
@@ -153,6 +155,11 @@ When v3.5 work is done, report:
 - The v2 CISA acceptance suite (`scripts/acceptance-cisa.mjs`).
 - The v2.5 EPSS acceptance suite (`scripts/acceptance-epss.mjs`).
 - The v3 NVD acceptance suite (`scripts/acceptance-nvd.mjs`).
+- The v3.1 honesty fixes in `Header.tsx` (the `describeSource`
+  function reads `nvdStatus` *and* `epssStatus` before building
+  the source label) and the `LoadingState` copy that names
+  the three live providers. Both are guarded by tests in
+  `scripts/acceptance-nvd.mjs`.
 
 ## Style notes
 

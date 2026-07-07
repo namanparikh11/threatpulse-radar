@@ -104,7 +104,7 @@ export default function DashboardPage() {
 
       <main className="mx-auto max-w-[1400px] space-y-5 px-4 py-5 lg:px-8 lg:py-7">
         {state.kind === 'loading' && (
-          <LoadingState message="Loading threat intelligence…" />
+          <LoadingState message="Loading CISA KEV · NVD CVSS · FIRST EPSS — may take up to a minute on first load…" />
         )}
 
         {state.kind === 'error' && (

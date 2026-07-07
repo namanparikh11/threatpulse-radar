@@ -90,14 +90,19 @@ function MetaBadge({
 }
 
 /**
- * Map the service's (source, mode) pair to a human-readable label
- * for the source pill. Kept in one place so the header is the only
- * place the wording lives.
+ * Map the service's (source, mode, nvdStatus, epssStatus) tuple to a
+ * human-readable label for the source pill. The label only lists a
+ * provider if it actually contributed data — the amber "unavailable"
+ * pills make failures obvious, but the source label must not
+ * overstate the composition.
+ *
+ * Kept in one place so the header is the only place the wording lives.
  */
 function describeSource(
   source: FetchResult<Vulnerability[]>['source'] | undefined,
   mode: FetchResult<Vulnerability[]>['mode'] | undefined,
-  nvdStatus: FetchResult<Vulnerability[]>['nvdStatus'] | undefined
+  nvdStatus: FetchResult<Vulnerability[]>['nvdStatus'] | undefined,
+  epssStatus: FetchResult<Vulnerability[]>['epssStatus'] | undefined
 ): string {
   if (!source) return 'loading';
   // Fallback always means the user is seeing mock data despite
@@ -107,23 +112,30 @@ function describeSource(
   if (source === 'nvd') return 'NVD';
   if (source === 'epss') return 'FIRST EPSS';
   if (source === 'merged') {
-    // Mention NVD only when we actually got it — otherwise the
-    // pill would overstate the source composition.
-    return nvdStatus === 'nvd'
-      ? 'CISA KEV + NVD + FIRST EPSS'
-      : 'CISA KEV + FIRST EPSS';
+    // Build the label from the actual status of each provider.
+    // Don't mention a provider in the source label if its pill
+    // is showing the amber "unavailable" state.
+    const parts: string[] = ['CISA KEV'];
+    if (nvdStatus === 'nvd') parts.push('NVD');
+    if (epssStatus === 'first') parts.push('FIRST EPSS');
+    return parts.join(' + ');
   }
   return 'mock';
 }
 
 export default function Header({ meta }: HeaderProps) {
   const fetchedAt = meta?.fetchedAt ? formatRelative(meta.fetchedAt) : '—';
-  const sourceLabel = describeSource(meta?.source, meta?.mode, meta?.nvdStatus);
+  const epssStatus = meta?.epssStatus;
+  const nvdStatus = meta?.nvdStatus;
+  const sourceLabel = describeSource(
+    meta?.source,
+    meta?.mode,
+    nvdStatus,
+    epssStatus
+  );
   const isLive = meta?.mode === 'live';
   const isFallback = meta?.mode === 'fallback';
   const isMock = meta?.mode === 'mock';
-  const epssStatus = meta?.epssStatus;
-  const nvdStatus = meta?.nvdStatus;
 
   return (
     <header className="relative isolate overflow-hidden border-b border-radar-border bg-radar-bg/85 backdrop-blur-md">
