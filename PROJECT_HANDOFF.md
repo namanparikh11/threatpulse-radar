@@ -180,7 +180,7 @@ npm.cmd run preview    # serve the production bundle
 - `src/utils/analytics.ts`
 - `src/components/FiltersPanel.tsx`
 - `src/components/VulnerabilityTable.tsx`
-- `src/components/Header.tsx` *(see "Hero / header redesign" below)*
+- `src/components/Header.tsx` *(see "Hero / header redesign" + "Final header refinement" below)*
 - `src/pages/DashboardPage.tsx`
 
 **Removed**
@@ -221,7 +221,8 @@ product, not a small app label.
 ```
 
 - **Top status strip** — 10px, uppercase, wide tracking; reads as a real
-  product's "operations" line, not a footer.
+  product's "operations" line, not a footer. *(Removed in the 4th pass —
+  see "Final header refinement".)*
 - **Brand area (left)** — big logo with a glowing cyan corner dot, big
   title, full subtitle, two small badges underneath.
 - **Status column (right)** — three pills with a colored status dot
@@ -231,12 +232,10 @@ product, not a small app label.
 
 - **Mobile / small (`< sm`)** — brand stacks above status pills, both
   full-width. Title scales down to `1.65rem`. Subtitle stays readable.
-- **Tablet (`sm → lg`)** — same stacked layout, but the top status
-  strip reveals its center label ("Defensive Security Operations ·
-  Threat Intelligence"). Title scales to `text-3xl`.
+- **Tablet (`sm → lg`)** — same stacked layout, title scales to `text-3xl`.
 - **Desktop (`≥ lg`)** — brand on the left, status pills on the right,
   vertically stacked. Title scales to `2.4rem`. The hero takes up the
-  full `max-w-[1400px]` width with generous `py-10`.
+  full `max-w-[1400px]` width with generous `py-9`.
 
 ### Filter / sort behavior: untouched
 
@@ -251,6 +250,64 @@ ALL TESTS PASSED
 
 ---
 
+## Final header refinement (fourth pass — public-portfolio cut)
+
+After the previous redesign, a thinner / quieter version was requested
+for public portfolio deployment. The full "command-center" feel from
+the third pass is gone; the visual budget now goes only to:
+
+- the brand area (title + subtitle + 2 badges), and
+- the three status pills on the right.
+
+### What changed in `src/components/Header.tsx`
+
+| Before (3rd pass)                                       | After (4th pass)                                          |
+| ------------------------------------------------------- | --------------------------------------------------------- |
+| Top status strip: `● Operational · Defensive Sec Ops · Threat Intel · Build v1.0 · local` | **Top status strip removed entirely.** The 3 status pills already convey everything. |
+| Version `v1.0` and `local` shown to every visitor       | **No version number anywhere in the visible hero.** The dashboard ships as a stable, anonymous portfolio piece. |
+| "Operational" / "Defensive Security Operations" labels  | Dropped — those were status-strip content; with the strip gone, they're not repeated elsewhere. |
+| Hero padding `py-7 lg:py-10`                            | Slightly tightened to `py-7 lg:py-9` since the strip is gone. |
+| Background: dot grid + 2 glow blobs                      | **Kept** — the only "polish" still in play, and it's subtle. |
+| Corner pulse dot on the logo                             | **Kept** — single small `animate-pulseDot`, not cinematic. |
+| Three status pills (`Defensive use only`, `Source: …`, `Last refresh: …`) | **Kept exactly as-is** — these are the requested permanent pieces. |
+| Two badges (`Portfolio Project`, `Mock Data Mode`)       | **Kept exactly as-is** under the subtitle. |
+
+### What still lives in the public hero
+
+After this pass, the visible hero is exactly:
+
+1. **Logo** (Radar icon in a soft-glow tile, small corner pulse).
+2. **`ThreatPulse Radar`** — the title only, no version.
+3. **Subtitle** — *"Defensive vulnerability intelligence dashboard for tracking risk, exploitation signals, and remediation priorities."*
+4. **`Portfolio Project`** + **`Mock Data Mode`** badges.
+5. Three **status pills** on the right: `Defensive use only` · `Source: mock` · `Last refresh: Today`.
+
+No version number, no "Build" line, no operations strip, no live
+radar animation. The vibe is "polished product card", not
+"telemetry wall".
+
+### Why this works for a public portfolio
+
+- The two badges (`Portfolio Project`, `Mock Data Mode`) make the
+  provenance honest at a glance — no visitor will think the data is
+  live.
+- The three status pills double as a one-line "what is this?" summary.
+- The "v1.0" / "local" build line was a developer's tell — removing
+  it makes the dashboard read as a shipped product, not a
+  half-finished artifact.
+
+### Acceptance still green
+
+```
+ALL TESTS PASSED  (13/13)
+```
+
+The header is still a pure presentational component; nothing in
+`useVulnerabilityFilter`, `FiltersPanel`, `VulnerabilityTable`, or
+`DashboardPage` was touched.
+
+---
+
 ## Known follow-ups (for v2)
 
 - The `vendor` sort is a string sort. For a vendor-heavy dataset, a
@@ -262,5 +319,9 @@ ALL TESTS PASSED
 - The search haystack could pre-compute a lowercase blob per record
   if the dataset grows beyond a few hundred rows. For ≤200 records
   the per-keystroke cost is negligible.
-- The "Build v1.0" indicator in the top strip could become a real
-  `import.meta.env.VITE_BUILD_SHA` once a CI pipeline exists.
+- The corner pulse dot on the logo is the only motion left in the
+  header. If you want a fully-static "museum card" feel for an even
+  quieter version, remove `animate-pulseDot` from the corner `<span>`
+  in `Header.tsx`.
+- A future v2 may add a discreet "v1.0 · ${git sha}" footer badge
+  (not the hero) once a CI pipeline exists. The hero stays clean.

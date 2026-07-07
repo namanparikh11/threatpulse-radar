@@ -99,29 +99,8 @@ export default function Header({ meta }: HeaderProps) {
         <div className="absolute -bottom-24 left-[5%] h-48 w-[24rem] rounded-full bg-radar-accent2/10 blur-3xl" />
       </div>
 
-      {/* Top status strip — a thin "operations" line, very subtle. */}
-      <div className="border-b border-radar-border/60">
-        <div className="mx-auto flex max-w-[1400px] items-center justify-between gap-3 px-4 py-1.5 text-[10px] uppercase tracking-[0.18em] text-radar-dim lg:px-8">
-          <div className="flex items-center gap-2">
-            <span className="h-1.5 w-1.5 animate-pulseDot rounded-full bg-radar-accent2" />
-            <span>Operational</span>
-          </div>
-          <div className="hidden items-center gap-3 sm:flex">
-            <span>Defensive Security Operations</span>
-            <span className="text-radar-border">·</span>
-            <span>Threat Intelligence</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="hidden sm:inline">Build</span>
-            <span className="font-mono text-radar-muted">v1.0</span>
-            <span className="text-radar-border">·</span>
-            <span className="font-mono text-radar-muted">local</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Main hero area */}
-      <div className="mx-auto max-w-[1400px] px-4 py-7 lg:px-8 lg:py-10">
+      {/* Main hero area — single, clean, no top status strip. */}
+      <div className="mx-auto max-w-[1400px] px-4 py-7 lg:px-8 lg:py-9">
         <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between lg:gap-12">
           {/* Brand */}
           <div className="flex min-w-0 items-start gap-4">
