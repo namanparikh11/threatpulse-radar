@@ -1,7 +1,8 @@
 # PROJECT_HANDOFF
 
-> Handoff note for the second pass of work on **ThreatPulse Radar**.
-> Covers the filter / search / sort overhaul and the data-cleanup pass.
+> Handoff note for **ThreatPulse Radar**.
+> Covers the filter / search / sort overhaul, the data-cleanup pass, and
+> the hero/header redesign.
 
 ---
 
@@ -169,6 +170,8 @@ npm.cmd run preview    # serve the production bundle
 - `src/hooks/useDebouncedValue.ts`
 - `src/hooks/useVulnerabilityFilter.ts`
 - `src/components/SearchStatus.tsx`
+- `scripts/acceptance.mjs` — runnable acceptance test for filter / sort / data
+- `PROJECT_HANDOFF.md` — this file
 
 **Modified**
 
@@ -177,11 +180,74 @@ npm.cmd run preview    # serve the production bundle
 - `src/utils/analytics.ts`
 - `src/components/FiltersPanel.tsx`
 - `src/components/VulnerabilityTable.tsx`
+- `src/components/Header.tsx` *(see "Hero / header redesign" below)*
 - `src/pages/DashboardPage.tsx`
 
 **Removed**
 
 - (none — the old `applySort` helper was replaced, but no files were deleted)
+
+---
+
+## Hero / header redesign (third pass)
+
+The top of the page was rebuilt to feel like a polished cyber-intelligence
+product, not a small app label.
+
+### What changed in `src/components/Header.tsx`
+
+| Before | After |
+| --- | --- |
+| Title `text-base`, with `v1.0` glued beside it | Title `text-[1.65rem] sm:text-3xl lg:text-[2.4rem]`, bold, tracking-tight, **no v1.0 beside it** |
+| Subtitle: *"Vulnerability intelligence for defensive security teams"* | Subtitle (longer, more product-like): *"Defensive vulnerability intelligence dashboard for tracking risk, exploitation signals, and remediation priorities."* |
+| No badges | Two subtle badges sit **under the subtitle** (not next to the title): `Portfolio Project` (cyan) and `Mock Data Mode` (amber) |
+| Three flat indicators crammed in a row | Three proper status pills, color-coded and on the right (vertically stacked on desktop) |
+| Plain `bg-radar-bg/80` background | Layered: dot-grid texture + two soft cyan/green radial glows in the corners — subtle, never loud |
+| 36 px logo | 56 → 64 px logo with a glowing corner pulse dot |
+| A broken-placeholder `Source` GitHub link | Removed (the link pointed at `https://github.com` root) |
+
+### New visual structure
+
+```
+┌─ top status strip (10px uppercase, very subtle) ───────────────────┐
+│ ● Operational · Defensive Security Operations · Build v1.0 · local │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│  [LOGO]  ThreatPulse Radar                       [● Defensive use] │
+│   ✦     Defensive vulnerability intelligence...    [● Source: mock]│
+│          [Portfolio Project] [Mock Data Mode]      [● Last refresh] │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+- **Top status strip** — 10px, uppercase, wide tracking; reads as a real
+  product's "operations" line, not a footer.
+- **Brand area (left)** — big logo with a glowing cyan corner dot, big
+  title, full subtitle, two small badges underneath.
+- **Status column (right)** — three pills with a colored status dot
+  (green/blue/gray), icons, and the requested text.
+
+### Responsive behavior
+
+- **Mobile / small (`< sm`)** — brand stacks above status pills, both
+  full-width. Title scales down to `1.65rem`. Subtitle stays readable.
+- **Tablet (`sm → lg`)** — same stacked layout, but the top status
+  strip reveals its center label ("Defensive Security Operations ·
+  Threat Intelligence"). Title scales to `text-3xl`.
+- **Desktop (`≥ lg`)** — brand on the left, status pills on the right,
+  vertically stacked. Title scales to `2.4rem`. The hero takes up the
+  full `max-w-[1400px]` width with generous `py-10`.
+
+### Filter / sort behavior: untouched
+
+The hero rewrite is **purely visual** — the `Header` component still
+takes the same `{ meta: FetchResult<Vulnerability[]> | null }` prop and
+exports the same default function. The acceptance test suite still
+passes 13/13:
+
+```
+ALL TESTS PASSED
+```
 
 ---
 
@@ -196,3 +262,5 @@ npm.cmd run preview    # serve the production bundle
 - The search haystack could pre-compute a lowercase blob per record
   if the dataset grows beyond a few hundred rows. For ≤200 records
   the per-keystroke cost is negligible.
+- The "Build v1.0" indicator in the top strip could become a real
+  `import.meta.env.VITE_BUILD_SHA` once a CI pipeline exists.
