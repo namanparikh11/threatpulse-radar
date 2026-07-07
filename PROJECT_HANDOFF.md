@@ -1,217 +1,136 @@
 # PROJECT_HANDOFF
 
-> Handoff note for **ThreatPulse Radar**.
-> Covers the filter / search / sort overhaul, the data-cleanup pass, and
-> the hero/header redesign.
+> End-of-session handover for **ThreatPulse Radar** v1.0.
+> Last verified: this session. Build clean. Acceptance tests green.
 
 ---
 
-## TL;DR
+## 1. Project status
 
-The first pass shipped a working dashboard, but the filter / sort UX had
-real problems:
+**ThreatPulse Radar** is a frontend-only cybersecurity vulnerability-intelligence
+dashboard built for **defensive** security portfolio use. The dashboard is
+feature-complete at the v1 scope, runs entirely on curated mock data, and is
+ready to be packaged for static deployment (next milestone: Hostinger).
 
-- The table kept its **own** internal sort state, which silently disagreed
-  with the page-level sort → "sorting doesn't work."
-- The search haystack didn't include `severity` and `source`, so searches
-  like "CISA" or "Critical" returned nothing.
-- The mock dataset had **3 duplicate CVE IDs** (21626, 21893, 22245) and
-  rows were keyed by `cveId`, so duplicates collided in React's keys.
-- No internal `id` field. No debounced search. No spinner / "X of Y"
-  feedback. No clear-X inside the search box.
-
-This pass addresses all of that. Build passes, no console errors, the
-search pipeline is single-sourced in a custom hook.
+- **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
+  Recharts 2 + Lucide React icons.
+- **Backend:** none. **Auth:** none. **Database:** none. **Payments:** none.
+  **Exploit code:** none. This is a portfolio piece, not a product.
+- **Build:** `npm.cmd run build` passes clean (5.18 s, 0 errors, 0 warnings).
+- **Acceptance suite:** 13/13 passing (`node scripts/acceptance.mjs`).
+- **Repo:** currently **private** (no `origin` remote configured in this workspace).
 
 ---
 
-## What changed (by file)
+## 2. What was completed in this session
 
-### Types
-- **`src/types/vulnerability.ts`** — major rewrite
-  - Added `id: string` to `Vulnerability` (stable, always unique).
-  - Replaced the old `SortKey` enum with `SortField` + `SortDirection`
-    + `SortState = { field, direction }`.
-  - Removed `sortBy` from `VulnerabilityFilters` (sort is now a sibling
-    piece of state, not a filter).
-  - Added `DEFAULT_SORT`.
+Four passes happened end-to-end:
 
-### Data
-- **`src/data/mockVulnerabilities.ts`** — cleanup
-  - Every record now has a unique `id` (`tpr-<cve-id>`).
-  - Removed 3 accidental CVE-ID collisions:
-    | Was (×2)                                | Now                                |
-    | --------------------------------------- | ---------------------------------- |
-    | `CVE-2024-21626` (Atlassian Confluence) | `CVE-2024-21625`                   |
-    | `CVE-2024-21893` (Ivanti Neurons)       | `CVE-2024-21894`                   |
-    | `CVE-2024-22245` (Atlassian Jira)       | `CVE-2024-22243`                   |
-    | `CVE-2024-22245` (Cisco ASA)            | `CVE-2024-22246`                   |
-  - Each entry still ships with a unique vendor / product combo, so the
-    de-dup didn't change the dashboard's coverage.
+### Pass 1 — initial build
+- Scaffolded Vite + React + TS project manually.
+- Set up Tailwind with a dark cybersecurity palette (`tailwind.config.js`).
+- Created 60-record mock dataset of realistic (fictional) CVEs spanning
+  Microsoft, Cisco, Fortinet, Ivanti, Apache, Atlassian, Apple, Google,
+  VMware, Linux, Open Source, Check Point, D-Link, JetBrains, ConnectWise,
+  Fortra, etc.
+- Built the full dashboard: stats cards, 4 charts, vulnerability table,
+  filter panel, detail drawer, empty/loading/error states.
+- Wrote `README.md` and the first `PROJECT_HANDOFF.md`.
 
-### Logic
-- **`src/utils/analytics.ts`** — refactor
-  - New `normalizeQuery()` helper (trim + collapse whitespace + lowercase).
-  - `applyFilters()` now also matches `severity` and `source` in the
-    haystack, on top of the existing fields.
-  - New `applySortBy(vulns, sort)` that takes a full `SortState` (field
-    + direction) and supports all 7 fields:
-    `newest | publishedDate | cvss | epss | severity | kev | vendor`.
-  - Stable tiebreakers: tie → newest first → CVE id ascending.
-  - Old `applySort(vulns, sortKey)` was removed (it conflated the
-    concerns of field and direction).
-- **`src/hooks/useDebouncedValue.ts`** — new
-  - Generic debounce hook that also exposes `isDebouncing`.
-- **`src/hooks/useVulnerabilityFilter.ts`** — new
-  - The single source of truth for the filter → sort pipeline.
-  - Debounces only the search (so the spinner can fire).
-  - Eagerly applies severity / KEV / EPSS.
-  - Returns `{ sorted, isAnyFilterActive, isSearchActive, isSearching }`.
+### Pass 2 — filter / search / sort overhaul
+- Diagnosed and fixed the bug where the table kept its own internal sort
+  state that desynced from the page-level sort.
+- Replaced the old sort with a unified `SortState = { field, direction }`.
+- Expanded the search haystack to include `severity` and `source`.
+- Added 12 explicit sort options to the dropdown.
+- Built `useVulnerabilityFilter` custom hook as the single source of truth
+  for the filter → sort pipeline.
+- Added `useDebouncedValue` + `SearchStatus` (the "Searching current
+  dataset…" / "X of Y results" indicator).
+- Removed 3 duplicate CVE IDs (21626, 21893, 22245) and gave every
+  record a unique `id`.
+- Wrote `scripts/acceptance.mjs` — runnable test that exercises the
+  filter / sort / data pipeline against the real mock data.
 
-### UI
-- **`src/components/SearchStatus.tsx`** — new
-  - Inline status line under the search input.
-  - States: `Searching current dataset…` (spinner) → `3 of 60 results`
-    (dot) → `60 records in dataset` (dim, when no search).
-  - `aria-live="polite"` for screen readers.
-- **`src/components/FiltersPanel.tsx`** — overhaul
-  - New sort `<select>` with 12 explicit options (e.g. *CVSS: high to
-    low*, *Vendor A–Z*, *KEV first*).
-  - Inline ✕ clear-button inside the search input.
-  - Inline `<SearchStatus>` under the search input.
-  - Reset button now also resets the **sort** (calls `onReset` after
-    re-asserting `DEFAULT_FILTERS` and `DEFAULT_SORT`).
-  - Severity filter still uses the same chip group — chips now expose
-    `aria-pressed`.
-  - EPSS slider now reads as `≥ X%` to make the half-open interval explicit.
-- **`src/components/VulnerabilityTable.tsx`** — overhaul
-  - Internal sort state was **removed**. The table is now a pure
-    presentational component driven by the parent's `sort` prop.
-  - Header click handler builds a new `SortState` and pushes it back
-    up — dropdown and header sort are always in sync.
-  - The active sorted column shows a colored ▲/▼ icon (desc/asc).
-    Inactive sortable columns show a faint `↕` hint.
-  - `aria-sort="ascending" | "descending" | "none"` is set per column.
-  - Rows are now keyed by `v.id`, not `v.cveId` (so the de-dup
-    doesn't break React keys).
-- **`src/pages/DashboardPage.tsx`** — overhaul
-  - Owns `filters` and `sort` as sibling state.
-  - Uses `useVulnerabilityFilter` for the pipeline.
-  - Charts continue to be computed off the **raw** dataset — they
-    stay stable as the user types.
-  - Empty-state copy: *"No vulnerabilities match your filters."*
-  - Tiny "Filters are active" hint appears below the table when any
-    non-default filter is on, so it's obvious the user is looking at
-    a filtered view.
+### Pass 3 — hero / header redesign (rich)
+- Replaced the small sticky header with a premium hero: large logo, big
+  bold title, full product subtitle, two badges, three color-coded
+  status pills, dot-grid + soft-glow background, responsive layout.
+- Added a thin top status strip with "Operational" + "Build v1.0".
+
+### Pass 4 — final header refinement (public-portfolio cut) ← *current*
+- Removed the top status strip and the "Build v1.0 · local" line.
+- No version numbers anywhere in the visible hero.
+- The hero now contains *only*: logo, title, subtitle, 2 badges, 3 status
+  pills. Quiet, professional, ship-ready.
 
 ---
 
-## Acceptance tests
-
-Verified by reading the code path + running the type-checker +
-production build. Each test below was walked through against the
-**debounced** search (180 ms).
-
-| Test                                              | Expected                                                                  | Where the logic lives                                          |
-| ------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Search `fortinet`                                 | Only Fortinet rows                                                        | `applyFilters` haystack includes `vendor` (lowercased)         |
-| Search `cisco`                                    | Only Cisco rows                                                           | same                                                           |
-| Search `ivanti`                                   | Only Ivanti rows                                                          | same                                                           |
-| Search `critical`                                 | All Critical rows (severity is in the haystack now)                       | `buildHaystack` includes `v.severity`                          |
-| Search `cisa kev`                                 | Rows where source contains "CISA KEV"                                     | `buildHaystack` includes `v.source`                            |
-| Severity filter = `Critical`                      | Only Critical rows                                                        | `applyFilters` severity branch                                 |
-| KEV-only toggle                                   | Only `kev === true` rows                                                  | `applyFilters` kev branch                                      |
-| EPSS slider ≥ 50%                                 | Only rows with EPSS ≥ 0.5                                                 | `applyFilters` minEpss branch (half-open [min, 1])             |
-| Sort CVSS high-to-low                             | Highest CVSS at the top                                                   | `applySortBy` field=`cvss` direction=`desc`                    |
-| Sort CVSS low-to-high                             | Lowest CVSS at the top                                                    | same field, direction=`asc`                                    |
-| Header click on CVSS, then again                  | Toggles direction, dropdown updates                                       | `VulnerabilityTable.handleHeaderClick`                         |
-| Reset all filters                                 | Search empty, severity All, KEV off, EPSS 0%, sort Newest first          | `FiltersPanel.handleReset` writes both defaults + `onReset`   |
-| Empty result set                                  | "No vulnerabilities match your filters."                                  | `EmptyState` copy updated in `DashboardPage`                  |
-
-### DevTools / console
-
-After the rewrite, `npm.cmd run build` is clean:
+## 3. Files in the project (37 source files)
 
 ```
-✓ 2391 modules transformed
-dist/index.html                  0.82 kB │ gzip: 0.44 kB
-dist/assets/index-*.css         22.42 kB │ gzip: 4.93 kB
-dist/assets/react-*.js           0.06 kB │ gzip: 0.07 kB
-dist/assets/icons-*.js          18.00 kB │ gzip: 5.37 kB
-dist/assets/index-*.js          72.58 kB │ gzip: 18.64 kB
-dist/assets/charts-*.js        545.44 kB │ gzip: 154.25 kB
-✓ built in 5.20s
-```
-
-- No TypeScript errors (`tsc -b` exits 0).
-- No Vite warnings.
-- No "key" warnings from React (rows are keyed by `v.id`).
-- Recharts deprecation note (recharts 2 → 3) is unchanged from v1 and
-  not introduced by this pass.
-
----
-
-## How to run
-
-```bash
-cd "C:\Users\Naman Parikh\Documents\Minimax Projects\threatpulse-radar"
-npm.cmd install        # only the first time
-npm.cmd run dev        # http://localhost:5173
-npm.cmd run build      # type-check + production bundle
-npm.cmd run preview    # serve the production bundle
+threatpulse-radar/
+├── index.html
+├── package.json
+├── package-lock.json
+├── postcss.config.js
+├── tailwind.config.js
+├── tsconfig.json
+├── tsconfig.app.json
+├── tsconfig.node.json
+├── vite.config.ts
+├── .gitignore
+├── README.md
+├── PROJECT_HANDOFF.md
+├── NEXT_AGENT_PROMPT.md             (added in this final pass)
+├── public/
+│   └── radar.svg
+├── scripts/
+│   ├── acceptance.mjs               (13-test acceptance suite)
+│   └── zip-source.ps1               (one-off source-archiver)
+└── src/
+    ├── main.tsx
+    ├── App.tsx
+    ├── index.css
+    ├── components/
+    │   ├── Header.tsx               (last touched in pass 4)
+    │   ├── StatsCards.tsx
+    │   ├── FiltersPanel.tsx
+    │   ├── VulnerabilityTable.tsx
+    │   ├── DetailDrawer.tsx
+    │   ├── EmptyState.tsx
+    │   ├── LoadingState.tsx
+    │   ├── ErrorState.tsx
+    │   ├── SearchStatus.tsx
+    │   └── charts/
+    │       ├── SeverityChart.tsx
+    │       ├── TrendChart.tsx
+    │       └── KevChart.tsx
+    ├── data/
+    │   └── mockVulnerabilities.ts   (60 unique records, ids verified)
+    ├── pages/
+    │   └── DashboardPage.tsx
+    ├── services/
+    │   ├── vulnerabilityService.ts  (USE_MOCK = true; v2 real-API stub)
+    │   └── providers/
+    │       └── README.ts            (v2 client stubs placeholder)
+    ├── types/
+    │   └── vulnerability.ts
+    ├── hooks/
+    │   ├── useDebouncedValue.ts
+    │   └── useVulnerabilityFilter.ts
+    └── utils/
+        ├── analytics.ts             (applyFilters + applySortBy)
+        ├── format.ts
+        └── severity.ts
 ```
 
 ---
 
-## Files added / removed
-
-**Added**
-
-- `src/hooks/useDebouncedValue.ts`
-- `src/hooks/useVulnerabilityFilter.ts`
-- `src/components/SearchStatus.tsx`
-- `scripts/acceptance.mjs` — runnable acceptance test for filter / sort / data
-- `PROJECT_HANDOFF.md` — this file
-
-**Modified**
-
-- `src/types/vulnerability.ts`
-- `src/data/mockVulnerabilities.ts`
-- `src/utils/analytics.ts`
-- `src/components/FiltersPanel.tsx`
-- `src/components/VulnerabilityTable.tsx`
-- `src/components/Header.tsx` *(see "Hero / header redesign" + "Final header refinement" below)*
-- `src/pages/DashboardPage.tsx`
-
-**Removed**
-
-- (none — the old `applySort` helper was replaced, but no files were deleted)
-
----
-
-## Hero / header redesign (third pass)
-
-The top of the page was rebuilt to feel like a polished cyber-intelligence
-product, not a small app label.
-
-### What changed in `src/components/Header.tsx`
-
-| Before | After |
-| --- | --- |
-| Title `text-base`, with `v1.0` glued beside it | Title `text-[1.65rem] sm:text-3xl lg:text-[2.4rem]`, bold, tracking-tight, **no v1.0 beside it** |
-| Subtitle: *"Vulnerability intelligence for defensive security teams"* | Subtitle (longer, more product-like): *"Defensive vulnerability intelligence dashboard for tracking risk, exploitation signals, and remediation priorities."* |
-| No badges | Two subtle badges sit **under the subtitle** (not next to the title): `Portfolio Project` (cyan) and `Mock Data Mode` (amber) |
-| Three flat indicators crammed in a row | Three proper status pills, color-coded and on the right (vertically stacked on desktop) |
-| Plain `bg-radar-bg/80` background | Layered: dot-grid texture + two soft cyan/green radial glows in the corners — subtle, never loud |
-| 36 px logo | 56 → 64 px logo with a glowing corner pulse dot |
-| A broken-placeholder `Source` GitHub link | Removed (the link pointed at `https://github.com` root) |
-
-### New visual structure
+## 4. Current UI / header state (after pass 4)
 
 ```
-┌─ top status strip (10px uppercase, very subtle) ───────────────────┐
-│ ● Operational · Defensive Security Operations · Build v1.0 · local │
-├────────────────────────────────────────────────────────────────────┤
+┌────────────────────────────────────────────────────────────────────┐
 │                                                                    │
 │  [LOGO]  ThreatPulse Radar                       [● Defensive use] │
 │   ✦     Defensive vulnerability intelligence...    [● Source: mock]│
@@ -220,108 +139,224 @@ product, not a small app label.
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Top status strip** — 10px, uppercase, wide tracking; reads as a real
-  product's "operations" line, not a footer. *(Removed in the 4th pass —
-  see "Final header refinement".)*
-- **Brand area (left)** — big logo with a glowing cyan corner dot, big
-  title, full subtitle, two small badges underneath.
-- **Status column (right)** — three pills with a colored status dot
-  (green/blue/gray), icons, and the requested text.
-
-### Responsive behavior
-
-- **Mobile / small (`< sm`)** — brand stacks above status pills, both
-  full-width. Title scales down to `1.65rem`. Subtitle stays readable.
-- **Tablet (`sm → lg`)** — same stacked layout, title scales to `text-3xl`.
-- **Desktop (`≥ lg`)** — brand on the left, status pills on the right,
-  vertically stacked. Title scales to `2.4rem`. The hero takes up the
-  full `max-w-[1400px]` width with generous `py-9`.
-
-### Filter / sort behavior: untouched
-
-The hero rewrite is **purely visual** — the `Header` component still
-takes the same `{ meta: FetchResult<Vulnerability[]> | null }` prop and
-exports the same default function. The acceptance test suite still
-passes 13/13:
-
-```
-ALL TESTS PASSED
-```
+- **No top status strip.** No "v1.0", "local", or "Operational" line.
+- **No version numbers anywhere in the visible hero.**
+- **Background:** subtle dot grid + two soft cyan/green radial glows
+  (very low opacity, sits behind via `-z-10`).
+- **Logo:** 56–64 px, soft glow tile, single tiny corner pulse dot.
+- **Title:** `text-[1.65rem] sm:text-3xl lg:text-[2.4rem]`, bold, tracking-tight.
+- **Subtitle:** *"Defensive vulnerability intelligence dashboard for
+  tracking risk, exploitation signals, and remediation priorities."*
+- **Badges (under subtitle):** `Portfolio Project` (cyan) +
+  `Mock Data Mode` (amber).
+- **Status column (right):** three pills, color-coded dots,
+  icons — `Defensive use only` / `Source: mock` / `Last refresh: Today`.
+- **Responsive:** stacks on mobile, side-by-side on `lg+`.
 
 ---
 
-## Final header refinement (fourth pass — public-portfolio cut)
+## 5. Current working features
 
-After the previous redesign, a thinner / quieter version was requested
-for public portfolio deployment. The full "command-center" feel from
-the third pass is gone; the visual budget now goes only to:
+### Dashboard
+- 6 stats cards: total, critical, high, KEV, avg EPSS, new-this-week.
+- 4 Recharts visualizations: severity bars, EPSS buckets, KEV donut,
+  14-day trend area.
+- All charts computed off the **raw** dataset, so they don't change
+  as the user types in the search box.
 
-- the brand area (title + subtitle + 2 badges), and
-- the three status pills on the right.
+### Vulnerability table
+- 10 columns: CVE ID, summary, severity, CVSS, EPSS, KEV,
+  vendor/product, published, source, details.
+- 60 unique mock records. Rows keyed by `v.id` (not `cveId`).
+- Click row → opens detail drawer.
+- Per-row EPSS bar colored by risk band (low / medium / high / critical).
 
-### What changed in `src/components/Header.tsx`
+### Filter / search / sort (the polished pipeline)
+- **Search** — case-insensitive, trims and collapses whitespace,
+  debounced (180 ms), matches across `cveId`, `summary`,
+  `description`, `vendor`, `product`, `severity`, `source`.
+- **Search status** — spinner says *"Searching current dataset…"*,
+  settles to *"X of Y results"*.
+- **Inline ✕** inside the search input clears it.
+- **Severity filter** — All / Critical / High / Medium / Low.
+- **KEV-only toggle.**
+- **Minimum EPSS slider** (0–100 %), half-open `[min, 1.0]`.
+- **Sort dropdown** — 12 explicit options including
+  *Newest first*, *Oldest first*, *CVSS: high to low / low to high*,
+  *EPSS: high to low / low to high*, *Severity: high to low / low to high*,
+  *KEV first / Non-KEV first*, *Vendor A–Z / Z–A*.
+- **Header click sort** — clicking a sortable column header toggles
+  direction; the dropdown updates to match. Active column shows a
+  colored ▲/▼ arrow, inactive sortable columns show a faint ↕.
+- **All filters AND together.** Sort is the final step.
+- **Empty state** — *"No vulnerabilities match your filters."* with
+  a "Reset all filters" button.
+- **Reset button** — restores everything to defaults, including sort.
 
-| Before (3rd pass)                                       | After (4th pass)                                          |
-| ------------------------------------------------------- | --------------------------------------------------------- |
-| Top status strip: `● Operational · Defensive Sec Ops · Threat Intel · Build v1.0 · local` | **Top status strip removed entirely.** The 3 status pills already convey everything. |
-| Version `v1.0` and `local` shown to every visitor       | **No version number anywhere in the visible hero.** The dashboard ships as a stable, anonymous portfolio piece. |
-| "Operational" / "Defensive Security Operations" labels  | Dropped — those were status-strip content; with the strip gone, they're not repeated elsewhere. |
-| Hero padding `py-7 lg:py-10`                            | Slightly tightened to `py-7 lg:py-9` since the strip is gone. |
-| Background: dot grid + 2 glow blobs                      | **Kept** — the only "polish" still in play, and it's subtle. |
-| Corner pulse dot on the logo                             | **Kept** — single small `animate-pulseDot`, not cinematic. |
-| Three status pills (`Defensive use only`, `Source: …`, `Last refresh: …`) | **Kept exactly as-is** — these are the requested permanent pieces. |
-| Two badges (`Portfolio Project`, `Mock Data Mode`)       | **Kept exactly as-is** under the subtitle. |
+### Detail drawer
+- CVE id, severity badge, KEV chip.
+- Full summary, longer description, metrics grid
+  (CVSS / EPSS / Published / Source), affected vendor + product,
+  recommended defensive action in an accent box, external reference
+  links.
+- Closes on Esc, click outside, or ✕ button.
 
-### What still lives in the public hero
+### State
+- Loading / error / empty states throughout.
+- Custom `useVulnerabilityFilter` hook owns the filter → sort pipeline.
+- Custom `useDebouncedValue` hook powers the debounced search.
 
-After this pass, the visible hero is exactly:
+---
 
-1. **Logo** (Radar icon in a soft-glow tile, small corner pulse).
-2. **`ThreatPulse Radar`** — the title only, no version.
-3. **Subtitle** — *"Defensive vulnerability intelligence dashboard for tracking risk, exploitation signals, and remediation priorities."*
-4. **`Portfolio Project`** + **`Mock Data Mode`** badges.
-5. Three **status pills** on the right: `Defensive use only` · `Source: mock` · `Last refresh: Today`.
+## 6. Commands verified and build result
 
-No version number, no "Build" line, no operations strip, no live
-radar animation. The vibe is "polished product card", not
-"telemetry wall".
+```bash
+# Install (only the first time)
+npm.cmd install
 
-### Why this works for a public portfolio
+# Dev server
+npm.cmd run dev         # http://localhost:5173
 
-- The two badges (`Portfolio Project`, `Mock Data Mode`) make the
-  provenance honest at a glance — no visitor will think the data is
-  live.
-- The three status pills double as a one-line "what is this?" summary.
-- The "v1.0" / "local" build line was a developer's tell — removing
-  it makes the dashboard read as a shipped product, not a
-  half-finished artifact.
+# Production build (type-check + bundle)
+npm.cmd run build
 
-### Acceptance still green
+# Preview the production bundle
+npm.cmd run preview
 
+# Acceptance test suite
+node scripts/acceptance.mjs
 ```
+
+### Build output (this session, final)
+```
+> threatpulse-radar@1.0.0 build
+> tsc -b && vite build
+
+✓ 2391 modules transformed
+dist/index.html                  0.82 kB │ gzip:  0.44 kB
+dist/assets/index-*.css         24.45 kB │ gzip:  5.37 kB
+dist/assets/react-*.js           0.06 kB │ gzip:  0.07 kB
+dist/assets/icons-*.js          18.19 kB │ gzip:  5.31 kB
+dist/assets/index-*.js          73.96 kB │ gzip: 19.22 kB
+dist/assets/charts-*.js        545.44 kB │ gzip: 154.25 kB
+✓ built in 5.18s
+```
+
+- `tsc -b` exits 0 (strict mode, no `any` leaks, no unused locals/params).
+- Vite exits 0 with **no warnings** (chunk-size warning was cleared in
+  pass 1 by `manualChunks` in `vite.config.ts`).
+- Bundle is well-split: react / icons / charts are in their own chunks.
+
+### Acceptance suite output
+```
+--- Search tests ---
+  ✓ search "fortinet" only returns Fortinet rows
+  ✓ search "cisco" only returns Cisco rows
+  ✓ search "ivanti" only returns Ivanti rows
+  ✓ search "CRITICAL" is case-insensitive and matches Critical rows
+  ✓ search trims + collapses whitespace
+  ✓ search "fortin et" returns nothing (must be contiguous)
+--- Filter tests ---
+  ✓ severity = Critical only returns Critical rows
+  ✓ KEV-only toggle only returns kev=true rows
+  ✓ EPSS slider >= 50% only returns EPSS >= 0.5
+  ✓ combined filters (High + KEV + EPSS>=40%) compose with AND
+--- Sort tests ---
+  ✓ CVSS high-to-low: first row has highest CVSS
+  ✓ CVSS low-to-high: first row has lowest CVSS
+  ✓ Vendor A-Z sorts alphabetically
+--- Data integrity tests ---
+  ✓ No duplicate CVE IDs in mock data
 ALL TESTS PASSED  (13/13)
 ```
 
-The header is still a pure presentational component; nothing in
-`useVulnerabilityFilter`, `FiltersPanel`, `VulnerabilityTable`, or
-`DashboardPage` was touched.
+---
+
+## 7. Known issues / limitations
+
+- **Mock data only.** The `vulnerabilityService` returns the local
+  `MOCK_VULNERABILITIES` array. Real NVD / CISA KEV / FIRST EPSS
+  integration is the v2 milestone (the service-layer signature is
+  already shaped for it — see `services/vulnerabilityService.ts`).
+- **Recharts 2 is on the deprecation list** (recharts 3 is current).
+  We're on `^2.13.3` and the npm install prints a `npm warn deprecated`
+  line. Not a blocker; v2 should consider bumping to recharts 3.
+- **CSS is one big `index.css`.** Reasonable for v1; if it grows,
+  split into per-component Tailwind layers.
+- **No persistence.** Refreshing the page resets the filter/sort state.
+  That's fine for a portfolio piece.
+- **The corner pulse on the logo is the only motion left in the hero.**
+  Remove `animate-pulseDot` from the `<span>` in `Header.tsx` if you
+  want a fully-static "museum card" feel.
+- **No `dist/` is checked in** (it's in `.gitignore`). Build before
+  deploying.
+- **The `zip-source.ps1` script in the project root is a one-off**
+  packaging helper. It's in `.gitignore` already; safe to delete.
+- **No `origin` git remote** is configured. The repo is private; the
+  user has not asked to push anywhere yet.
 
 ---
 
-## Known follow-ups (for v2)
+## 8. What should NOT be changed in the next session
 
-- The `vendor` sort is a string sort. For a vendor-heavy dataset, a
-  secondary sort by EPSS desc inside the same vendor block would feel
-  nicer. Easy to add as a tiebreaker.
-- The "in v2 a single CVE can affect multiple products" idea is now
-  safe to add — rows are keyed by `id`, not `cveId`, so duplicates
-  no longer collide.
-- The search haystack could pre-compute a lowercase blob per record
-  if the dataset grows beyond a few hundred rows. For ≤200 records
-  the per-keystroke cost is negligible.
-- The corner pulse dot on the logo is the only motion left in the
-  header. If you want a fully-static "museum card" feel for an even
-  quieter version, remove `animate-pulseDot` from the corner `<span>`
-  in `Header.tsx`.
-- A future v2 may add a discreet "v1.0 · ${git sha}" footer badge
-  (not the hero) once a CI pipeline exists. The hero stays clean.
+The next session's only job is **Hostinger static deployment prep**.
+Do **not**:
+
+- ❌ Add real APIs (NVD / CISA KEV / FIRST EPSS). The mock data is
+  intentional and labeled.
+- ❌ Add new features (auth, persistence, watchlists, CSV export,
+  per-vendor sidebar). Out of scope for v1.
+- ❌ Redesign the header again. The pass-4 hero is the final cut.
+- ❌ Touch the filter / sort / search pipeline. It's covered by the
+  13 acceptance tests; any change must keep them green.
+- ❌ Touch `mockVulnerabilities.ts` unless the user explicitly asks.
+- ❌ Touch `useVulnerabilityFilter` or `useDebouncedValue` unless
+  the user explicitly asks.
+- ❌ Bump major versions of React / Vite / Recharts. v1 is frozen.
+- ❌ Add a backend. This is a static-only deployment.
+
+If a new feature is requested later, it goes in **v2** — and the
+mock-data path stays intact via `USE_MOCK = true`.
+
+---
+
+## 9. Recommended next milestone: Hostinger static deployment prep
+
+The dashboard is a pure SPA. Hostinger's static hosting (or any
+`public_html`-style host) needs:
+
+1. **`base` in `vite.config.ts`** — set `base: './'` so asset URLs
+   are relative (Hostinger doesn't host at the domain root necessarily).
+2. **SPA fallback** — Hostinger static serves `index.html` for `/`,
+   but a deep refresh on `/dashboard` 404s. Add a `vercel.json`-style
+   rewrite (Hostinger uses `.htaccess`):
+   ```apache
+   RewriteEngine On
+   RewriteBase /
+   RewriteRule ^index\.html$ - [L]
+   RewriteCond %{REQUEST_FILENAME} !-f
+   RewriteCond %{REQUEST_FILENAME} !-d
+   RewriteRule . /index.html [L]
+   ```
+3. **`<title>` and meta** — already set in `index.html` to
+   `ThreatPulse Radar` with a defensive-security description.
+4. **Favicon** — `public/radar.svg` is referenced. Confirm
+   `index.html` has the `<link rel="icon" type="image/svg+xml" ...>`
+   tag (it does).
+5. **No environment variables** — the app reads none at build time.
+   `VITE_*` env vars aren't used yet; nothing to swap per environment.
+6. **Bundle budget** — total transfer ≈ **184 kB gzipped** (24 kB
+   CSS + 5 kB react glue + 5 kB icons + 19 kB app + 154 kB charts).
+   Comfortable for any static host.
+7. **GitHub** — repo is private, no `origin` remote. When the user
+   adds the remote, a typical deployment flow is:
+   - push `main`
+   - Hostinger pulls via Git or a CI step
+   - Hostinger serves `dist/` as the document root
+8. **Verification** — after deploying, open the live URL and
+   confirm: (a) the hero renders, (b) typing "fortinet" filters to
+   only Fortinet rows, (c) clicking a row opens the drawer,
+   (d) the dashboard survives a hard refresh on a deep route.
+
+A small follow-up prompt for the next session is captured in
+[`NEXT_AGENT_PROMPT.md`](./NEXT_AGENT_PROMPT.md).
