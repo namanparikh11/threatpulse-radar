@@ -1,9 +1,11 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v3.0.
-> Last verified: this session (v3 QA / portfolio-demo hardening pass).
+> End-of-session handover for **ThreatPulse Radar** v4.0.
+> Last verified: this session (Pass 12 — transparent cache layer for
+> portfolio demo reliability).
 > Build clean. Acceptance tests green
-> (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD = 135/135**).
+> (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
+> 60/60 v4 cache = 195/195**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -12,21 +14,25 @@
 
 **ThreatPulse Radar** is a frontend-only cybersecurity
 vulnerability-intelligence dashboard built for **defensive** security
-portfolio use. v2 is feature-complete at this milestone: the dashboard
-now fetches the public **CISA Known Exploited Vulnerabilities** feed at
-runtime and falls back to the curated mock dataset if the fetch fails.
+portfolio use. v3 is feature-complete at this milestone: the dashboard
+fetches the public **CISA Known Exploited Vulnerabilities** feed at
+runtime, enriches with NVD CVSS + FIRST EPSS, and falls back to the
+curated mock dataset if the upstream fetch fails. v4 layers a
+transparent 1-hour localStorage cache on top so a returning visitor
+doesn't pay the 30–60 s NVD first-load on every page visit.
 
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
   Recharts 2 + Lucide React icons.
 - **Backend:** none. **Auth:** none. **Database:** none. **Payments:** none.
   **Exploit code:** none. CISA KEV is fetched directly from the browser
   (the CISA feed is CORS-enabled) — no proxy, no server.
-- **Build:** `npm.cmd run build` passes clean (4.57 s this pass, 0 errors, 0 warnings).
+- **Build:** `npm.cmd run build` passes clean (≈7.5 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
-  KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests**
-  (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs`).
+  KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests** +
+  **60/60 v4 cache tests**
+  (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
-  session (Pass 7). An `origin` remote is configured at
+  session (Pass 12). An `origin` remote is configured at
   `https://github.com/namanparikh11/threatpulse-radar.git` (added in
   pass 5); nothing has been pushed since. Do not push without an
   explicit ask.
@@ -242,7 +248,7 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   ~3.7 kB raw / ~0.7 kB gzipped (NVD provider + UI bits).
 - Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 52/52 v3 NVD = 134/134**.
 
-### Pass 11 — v3 QA / portfolio-demo hardening ← *current*
+### Pass 11 — v3 QA / portfolio-demo hardening
 - **QA review** — read every component, the service flow end-to-end,
   the chart components, the filter hook, and the styling. Two
   real issues found, both honesty-related.
@@ -280,6 +286,86 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   changed (presentation changes only); all other chunks
   identical.
 - Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD = 135/135**.
+
+### Pass 12 — v4 transparent cache layer ← *current*
+- **Motivation.** A portfolio visitor who comes back to the page
+  within an hour currently pays the full 30–60 s NVD first-load
+  again. That's a real friction point on a public demo. The
+  user-visible gap was also a "Last refreshed" pill in the
+  header that showed only a relative time, and no clear answer
+  to "is what I'm looking at live data, partial enrichment,
+  fallback mock, or cached?"
+- **`src/services/datasetCache.ts`** — new module. Versioned
+  localStorage key (`tpr:dataset:v1`), 1-hour TTL
+  (`CACHE_TTL_MS = 60 * 60 * 1000`), defensive try/catch around
+  all `localStorage` access (private mode / quota / disabled
+  storage can never crash the dashboard). Helpers:
+  `readCache()`, `writeCache()`, `clearCache()`,
+  `isCacheFresh(cachedAt)`, `getCacheAgeMs(cachedAt)`,
+  `formatAgeShort(ms)`. Cache envelope = full `FetchResult`
+  so provider-status fields survive the round-trip.
+- **`vulnerabilityService.ts`** refactor + cache wiring.
+  - New `CacheStatus = 'miss' | 'fresh' | 'stale'` type, new
+    optional `cacheStatus?: CacheStatus` on `FetchResult`, new
+    `forceRefresh?: boolean` on `VulnerabilityQuery`.
+  - Extracted the live fetch into a helper `tryLiveFetch()` that
+    returns `null` on CISA failure (the only gating upstream).
+    The cached fall-through and the cache-miss path both call
+    it, eliminating the duplicated fallback-handling code that
+    existed in v3.
+  - Three cache states, three observable behaviors:
+    - `fresh` — cache hit, in TTL. Returns immediately, no
+      live fetch.
+    - `stale` — cache hit, past TTL, live fetch failed. Returns
+      the cached FetchResult with `cacheStatus: 'stale'`. The
+      header pill turns amber and the dashboard banner explains
+      "live fetch failed; showing last-known real data".
+    - `miss` — cache miss (or `forceRefresh: true`). Runs the
+      live path; on success writes through to the cache.
+  - Mock-mode path is unchanged (no cache, no upstream).
+- **`Header.tsx`** — new "Cache: fresh" (cyan) and "Cache: stale"
+  (amber) pills parallel to the existing NVD / EPSS pills. The
+  "Last refresh" tooltip now shows the absolute timestamp via a
+  new `formatAbsolute()` helper in `src/utils/format.ts`, so a
+  hover on "Last refresh: 5m ago" reveals the full ISO date.
+- **`DashboardPage.tsx`** — new `CachedDataBanner` rendered
+  above the provider-failure banners whenever
+  `cacheStatus === 'fresh'` or `'stale'`. It shows both the
+  relative and absolute time of the original upstream fetch and
+  exposes a "Refresh live data" button wired to a new
+  `handleRefresh()` that calls
+  `fetchVulnerabilities({ forceRefresh: true })`. The banner
+  copy distinguishes fresh vs stale, and the cached
+  `FetchResult`'s `nvdStatus`/`epssStatus`/`fallbackReason`
+  fields are preserved so the existing provider-failure banners
+  keep rendering on cached data — the cache never hides
+  failures.
+- **`scripts/acceptance-cache.mjs`** — new 60-test acceptance
+  suite covering: pure-helper edge cases (TTL boundary, clock-
+  skew tolerance, `formatAgeShort` boundaries), envelope
+  round-trip + JSON serialization + provider-failure
+  preservation, and source-level wiring for every public surface
+  (cache module, service imports, `CacheStatus` type, cache-
+  before-fetch ordering, fresh/stale code paths, `forceRefresh`
+  bypass, header pill rendering, dashboard banner + Refresh
+  button, absolute-time tooltip, provider-failure-banner
+  preservation on cached data).
+- **Test fix.** `scripts/acceptance-cisa.mjs`'s source-level
+  regex for the fallback path was looking for an inline
+  `catch → mode:'fallback'` pattern, which the
+  `tryLiveFetch()` refactor moved into a helper. Updated the
+  regex to accept either pattern (inline catch OR
+  helper-returns-null + caller constructs `mode: 'fallback'`).
+  Behavior unchanged; assertion now refactor-tolerant.
+- **Docs.** README "Features" / "Data sources" / "Project
+  structure" / "Roadmap" all updated to reflect v4. Version
+  badge bumped to `v4.0-22d3ee`. This handoff is updated.
+- **No new dependencies.** Bundle delta: app chunk +0.4 kB
+  raw (negligible). No CSS change.
+- Build re-run: 0 errors, 0 warnings, 7.51 s. All chunks
+  rebuild cleanly.
+- Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+  53/53 v3 NVD + 60/60 v4 cache = 195/195**.
 
 ### Items reviewed and intentionally left alone
 
@@ -629,8 +715,13 @@ ALL TESTS PASSED  (15/15)
   the first load of the live dashboard can take ~30–60 s when
   the CISA catalog has ~1000 records. The page renders the
   CISA data as soon as that fetch returns, then fills CVSS in
-  the background. A future pass could add an NVD API key for
-  a 10× rate-limit bump — `VITE_NVD_API_KEY` env var pattern.
+  the background. The v4 cache layer reduces this from a
+  per-visit cost to a per-hour cost: returning visitors get an
+  instant render from `localStorage` and a fresh live fetch
+  happens in the background only on cache miss or via the
+  manual "Refresh live data" button. A future pass could add
+  an NVD API key for a 10× rate-limit bump — `VITE_NVD_API_KEY`
+  env var pattern.
 - **Recharts 2 is on the deprecation list** (recharts 3 is current).
   We're on `^2.13.3` and the npm install prints a `npm warn deprecated`
   line. Not a blocker; consider bumping to recharts 3 in a future
@@ -710,9 +801,10 @@ do any of the following without an explicit ask:
 | v2.1 — Severity sort comparator fix | ✅ done (pass 8) |
 | v2.5 — FIRST EPSS enrichment | ✅ done (pass 9) |
 | v3 — NVD CVSS enrichment | ✅ done (pass 10) |
-| v3 QA / portfolio-demo hardening | ✅ done (pass 11) — *this session* |
-| v3.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
-| v4 — CPE-based asset matching, My Inventory mode | 📋 planned |
+| v3 QA / portfolio-demo hardening | ✅ done (pass 11) |
+| v4 — Transparent 1-hour localStorage cache | ✅ done (pass 12) — *this session* |
+| v4.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
+| v5 — CPE-based asset matching, My Inventory mode | 📋 planned |
 
 **v3 + v3 QA (this pass) is complete:**
 - Live CISA KEV feed + live NVD CVSS enrichment + live FIRST
@@ -735,9 +827,27 @@ do any of the following without an explicit ask:
 - `PORTFOLIO_WRITEUP.md` is the recruiter-facing narrative;
   it stands alone from `README.md` (which is the technical
   reference).
-- 15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD =
-  **135/135** acceptance tests passing; build clean (6.34 s,
+- 15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD + 60/60 v4 cache =
+  **195/195** acceptance tests passing; build clean (7.51 s,
   0 errors, 0 warnings).
+
+**What's new in v4 (this pass):**
+- Transparent 1-hour localStorage cache. Returning visitors get
+  an instant render from `localStorage` instead of paying the
+  30–60 s NVD first-load. The cache is fully visible: a
+  "Cache: fresh" / "Cache: stale" pill in the header, a "Cached
+  data" banner above the stats with both relative and absolute
+  time of the last upstream fetch, and a manual "Refresh live
+  data" button.
+- Provider-status fields (`nvdStatus`, `epssStatus`,
+  `fallbackReason`) are preserved through the cache envelope.
+  Cached data still shows its NVD-unavailable / EPSS-unavailable
+  / Fallback banners exactly as a live load would — the cache
+  never hides provider failures.
+- New `CacheStatus = 'miss' | 'fresh' | 'stale'` type on
+  `FetchResult`, new `forceRefresh?: boolean` on
+  `VulnerabilityQuery`. New `formatAbsolute()` helper for the
+  Last-refresh tooltip.
 
 **What's still on the user:**
 - Upload the contents of `dist/` to Hostinger (pass 6's prep

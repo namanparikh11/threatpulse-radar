@@ -344,7 +344,19 @@ section('Service-layer mode wiring (source-code assertions)');
     'FetchMode missing one of live/mock/fallback');
 
   assert('service catches fetch errors and falls back to mock with mode="fallback"',
-    /catch\s*\([^)]*\)\s*\{[\s\S]*?mode:\s*['"]fallback['"]/.test(serviceSrc),
+    // Either the v3 inline pattern (catch ... mode: 'fallback') or
+    // the v4 refactor (tryLiveFetch returns null on CISA fail, the
+    // caller in fetchVulnerabilities then constructs a
+    // mode: 'fallback' result). Both produce the same observable
+    // behavior: CISA failure -> fallback banner with reason.
+    (
+      /catch\s*\([^)]*\)\s*\{[\s\S]*?mode:\s*['"]fallback['"]/.test(serviceSrc) ||
+      (
+        /tryLiveFetch/.test(serviceSrc) &&
+        /mode:\s*['"]fallback['"]/.test(serviceSrc) &&
+        /catch\s*\{[\s\S]{0,200}return\s+null/.test(serviceSrc)
+      )
+    ),
     'fallback path not found in service');
 
   assert('cisaKev provider has an AbortController-based timeout',

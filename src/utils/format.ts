@@ -36,3 +36,25 @@ export function formatEpss(prob: number): string {
 export function formatNumber(n: number): string {
   return n.toLocaleString('en-US');
 }
+
+/**
+ * Human-readable absolute timestamp, used for tooltips and the
+ * "Cached data" banner. Returns the original input on parse
+ * failure so a malformed timestamp never throws in the UI.
+ *
+ *   formatAbsolute("2026-07-08T00:21:34.567Z")
+ *   -> "Jul 08, 2026, 12:21:34 AM"
+ */
+export function formatAbsolute(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CircleAlert, RefreshCw } from 'lucide-react';
+import { CircleAlert, HardDrive, RefreshCw } from 'lucide-react';
 import Header from '../components/Header';
 import StatsCards from '../components/StatsCards';
 import FiltersPanel from '../components/FiltersPanel';
@@ -25,6 +25,7 @@ import {
   countByEpssBucket,
   countBySeverity,
 } from '../utils/analytics';
+import { formatAbsolute, formatRelative } from '../utils/format';
 
 type LoadState =
   | { kind: 'loading' }
@@ -98,6 +99,30 @@ export default function DashboardPage() {
     }
   }
 
+  /**
+   * v4: Force a fresh upstream fetch, bypassing the localStorage
+   * cache. Wired to the "Refresh live data" button in the cached-
+   * data banner. Goes through the same error path as handleRetry
+   * so a forced refresh that fails is treated like any other
+   * fetch failure (falls back to mock, never silently hides
+   * failures).
+   */
+  async function handleRefresh() {
+    setState({ kind: 'loading' });
+    try {
+      const meta = await fetchVulnerabilities({ forceRefresh: true });
+      setState({ kind: 'ready', meta });
+    } catch (err) {
+      setState({
+        kind: 'error',
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Failed to refresh vulnerability data.',
+      });
+    }
+  }
+
   return (
     <div className="min-h-screen text-radar-text">
       <Header meta={state.kind === 'ready' ? state.meta : null} />
@@ -113,6 +138,19 @@ export default function DashboardPage() {
 
         {state.kind === 'ready' && charts && (
           <>
+            {/* v4: cache banner sits above all provider banners. It
+                is the most fundamental "where did this data come
+                from on this load" question; the provider banners
+                are layered on top of that. */}
+            {(state.meta.cacheStatus === 'fresh' ||
+              state.meta.cacheStatus === 'stale') && (
+              <CachedDataBanner
+                cacheStatus={state.meta.cacheStatus}
+                fetchedAt={state.meta.fetchedAt}
+                onRefresh={handleRefresh}
+              />
+            )}
+
             {state.meta.mode === 'fallback' && (
               <FallbackBanner
                 reason={state.meta.fallbackReason}
@@ -306,6 +344,91 @@ function NvdUnavailableBanner({
           default to "High"; ransomware-known records to "Critical").
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * v4: Banner shown when the dashboard is rendering data served
+ * from the localStorage cache instead of a fresh live fetch.
+ *
+ * Two visual treatments:
+ *   - 'fresh': in-TTL cache hit (data is < 1 h old). Cyan info
+ *     tone. The user knows the data is real and recent.
+ *   - 'stale': expired cache hit, used because the live fetch
+ *     just failed. Amber warn tone. The data is real and the
+ *     user can still use it, but it's older than the TTL.
+ *
+ * The banner always carries the original upstream `fetchedAt`
+ * so the user can see the age of the data they're looking at,
+ * and exposes a manual "Refresh live data" button that forces
+ * a bypass-cache re-fetch.
+ *
+ * Critically, the cached FetchResult's provider-status fields
+ * (nvdStatus / epssStatus / fallbackReason) are preserved, so
+ * if the original live fetch had NVD or EPSS unavailable, those
+ * banners are still rendered alongside this one. The cache
+ * never hides provider failures.
+ */
+function CachedDataBanner({
+  cacheStatus,
+  fetchedAt,
+  onRefresh,
+}: {
+  cacheStatus: 'fresh' | 'stale';
+  fetchedAt: string;
+  onRefresh: () => void;
+}) {
+  const isStale = cacheStatus === 'stale';
+  const relative = formatRelative(fetchedAt);
+  const absolute = formatAbsolute(fetchedAt);
+  return (
+    <div
+      role="status"
+      className={[
+        'panel flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between',
+        isStale
+          ? 'border-radar-warn/40 bg-radar-warn/5'
+          : 'border-radar-accent/30 bg-radar-accent/5',
+      ].join(' ')}
+    >
+      <div className="flex items-start gap-2">
+        <HardDrive
+          className={[
+            'mt-0.5 h-4 w-4 shrink-0',
+            isStale ? 'text-radar-warn' : 'text-radar-accent',
+          ].join(' ')}
+        />
+        <div>
+          <p className="font-medium text-radar-text">
+            {isStale
+              ? 'Cached data (stale) — live fetch failed'
+              : 'Cached data — refreshed ' + relative}
+          </p>
+          <p className="mt-0.5 text-xs text-radar-muted">
+            {isStale
+              ? 'The 1-hour cache TTL has expired and the live fetch just failed. Showing last-known real data from '
+              : 'Showing data from local cache (within the 1-hour TTL). Data was last fetched at '}
+            <span className="text-radar-text">{absolute}</span>.
+            {isStale
+              ? ' Provider-status banners above reflect the original fetch.'
+              : ' Click refresh to fetch the latest upstream data.'}
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRefresh}
+        className={[
+          'focus-ring inline-flex items-center gap-1.5 self-start rounded-md border px-2.5 py-1.5 text-xs text-radar-text transition',
+          isStale
+            ? 'border-radar-warn/40 bg-radar-panel2 hover:border-radar-warn'
+            : 'border-radar-accent/40 bg-radar-panel2 hover:border-radar-accent',
+        ].join(' ')}
+      >
+        <RefreshCw className="h-3 w-3" />
+        Refresh live data
+      </button>
     </div>
   );
 }

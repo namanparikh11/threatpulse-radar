@@ -137,28 +137,57 @@ This means a recruiter can ask "what happens when a CVE isn't
 in the EPSS response?" and the answer is in three lines of code
 at the top of the enricher.
 
-### 5. The dashboard ships with **134 acceptance tests** that don't
+### 5. The dashboard ships with **195 acceptance tests** that don't
 need a browser
 
 A hand-rolled `scripts/acceptance*.mjs` test runner exercises
-the filter / sort / enrichment / orchestration pipeline against
-synthetic data, with no test framework, no DOM, no build step.
-It runs in ~2 seconds on Node 18+:
+the filter / sort / enrichment / orchestration / cache pipeline
+against synthetic data, with no test framework, no DOM, no build
+step. It runs in ~2 seconds on Node 18+:
 
 ```bash
 node scripts/acceptance.mjs          # 15 v1 mock tests
 node scripts/acceptance-cisa.mjs     # 28 v2 CISA tests
 node scripts/acceptance-epss.mjs     # 39 v2.5 EPSS tests
-node scripts/acceptance-nvd.mjs      # 52 v3 NVD tests
+node scripts/acceptance-nvd.mjs      # 53 v3 NVD tests
+node scripts/acceptance-cache.mjs    # 60 v4 cache tests
 ```
 
 The tests assert source-code wiring (e.g. "the service file
-imports the EPSS provider") as well as runtime behavior. This
+imports the EPSS provider", "the cache envelope preserves
+`nvdStatus` on the round-trip") as well as runtime behavior. This
 catches regressions like "someone reverted the severity sort
-comparator" or "someone reintroduced the CISA description note
-that claims EPSS is unwired" — both real bugs that happened
-during development and would have been silent failures without
-these tests.
+comparator", "someone reintroduced the CISA description note
+that claims EPSS is unwired", or "someone optimized the cache
+by stripping the unavailable flags" — all real or near-real
+bugs that would have been silent failures without these tests.
+
+### 6. The cache layer is transparent and never hides failures
+
+The v4 layer adds a 1-hour `localStorage` cache so a returning
+visitor doesn't pay the 30–60 s NVD first-load again. The cache
+is intentionally *visible*:
+
+- A "Cache: fresh" pill in the header when data came from the
+  cache within the TTL; "Cache: stale" when the cache expired
+  and the live fetch just failed (last-resort fallback).
+- A "Cached data" banner above the stats with both the relative
+  ("refreshed 5 minutes ago") and absolute ("Jul 08, 2026,
+  12:21:34 AM") timestamp of the original upstream fetch.
+- A "Refresh live data" button that bypasses the cache and
+  triggers a fresh upstream fetch.
+- The original `nvdStatus` / `epssStatus` / `fallbackReason`
+  fields are preserved through the cache envelope. A cached
+  dataset that originally had "NVD: unavailable" still shows
+  the amber NVD pill — the cache never hides a failure.
+
+I could have optimized by storing a pre-normalized, smaller
+payload and dropping the unavailable flags. I chose not to,
+because the entire point of the dashboard is being honest about
+where the data came from. The cache envelope round-trips the
+full `FetchResult` so the user can't tell (visually) that
+they're looking at cached data except for the explicit pill +
+banner telling them.
 
 ---
 
@@ -167,22 +196,22 @@ these tests.
 A short list of honest trade-offs:
 
 - **The NVD rate limit (5 requests / 30 s without an API key)
-  makes the first load feel slow.** I considered a "loading NVD…
-  50 % complete" progress indicator, but the user asked for
-  no UI redesign. The current state uses one spinner and a
-  copy line that says "Loading CISA KEV · NVD CVSS · FIRST EPSS —
-  may take up to a minute on first load…". A future pass could
-  plumb an NVD API key for a 10× rate-limit bump.
-- **No client-side caching.** Every page load re-fetches CISA,
-  NVD, and EPSS. A `localStorage` cache with a 1-hour TTL would
-  make the second visit instant. Out of scope for the v1-v3
-  build (the data does change — KEV gets new entries, EPSS scores
-  shift — and the user wanted honest, fresh data on every load).
+  still makes the *first* load feel slow.** The v4 cache makes
+  the second-and-onwards load instant, but the very first visit
+  on a fresh browser pays the full 30–60 s NVD first-load. I
+  considered a "loading NVD… 50 % complete" progress indicator,
+  but the user asked for no UI redesign. The current state uses
+  one spinner and a copy line that says "Loading CISA KEV · NVD
+  CVSS · FIRST EPSS — may take up to a minute on first load…".
+  A future pass could plumb an NVD API key for a 10× rate-limit
+  bump.
 - **No "save filter preset" or "watchlist" features.** Listed
-  in the v3.5 milestone in `PROJECT_HANDOFF.md`. Would be the
-  next pass if I had more time.
+  in the v4.5 milestone in `PROJECT_HANDOFF.md`. Would be the
+  next pass if I had more time. (Note: any new `localStorage`
+  key should follow the v4 cache module's pattern — versioned
+  suffix, schema-validated reads, defensive try/catch.)
 - **Recharts 2 is deprecated.** The deprecation warning is
-  benign for v3 but I'd pin `recharts@3` in the next pass.
+  benign for v4 but I'd pin `recharts@3` in the next pass.
 
 ---
 
@@ -192,11 +221,15 @@ A short list of honest trade-offs:
   filters. The header pills tell you which feeds are live. If
   one is amber ("NVD: unavailable"), click into a record — the
   CVSS column will read `0.0` and the description will explain
-  why.
-- **15 minutes**: read `src/services/vulnerabilityService.ts` and
-  the three providers under `src/services/providers/`. That's
-  the entire data layer. Then read the three acceptance scripts
-  and follow the test flow backward into the production code.
+  why. On your second visit, the "Cache: fresh" pill in the
+  header tells you data is being served from `localStorage`,
+  and the "Cached data" banner above the stats shows the
+  exact time of the last upstream fetch.
+- **15 minutes**: read `src/services/vulnerabilityService.ts`,
+  `src/services/datasetCache.ts`, and the three providers
+  under `src/services/providers/`. That's the entire data
+  + cache layer. Then read the five acceptance scripts and
+  follow the test flow backward into the production code.
 - **30 minutes**: read `PROJECT_HANDOFF.md` end-to-end. It walks
   through every pass, every fix, and every decision in
   chronological order — it's the "story" of the project, not

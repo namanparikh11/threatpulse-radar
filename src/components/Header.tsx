@@ -5,6 +5,7 @@ import {
   Database,
   FlaskConical,
   Gauge,
+  HardDrive,
   Radar,
   Satellite,
   ShieldCheck,
@@ -13,7 +14,7 @@ import {
 import type { ReactNode } from 'react';
 import type { FetchResult } from '../services/vulnerabilityService';
 import type { Vulnerability } from '../types/vulnerability';
-import { formatRelative } from '../utils/format';
+import { formatAbsolute, formatRelative } from '../utils/format';
 
 interface HeaderProps {
   meta: FetchResult<Vulnerability[]> | null;
@@ -136,6 +137,11 @@ export default function Header({ meta }: HeaderProps) {
   const isLive = meta?.mode === 'live';
   const isFallback = meta?.mode === 'fallback';
   const isMock = meta?.mode === 'mock';
+  // v4: cache provenance drives the new "Cache:" pill. The pill
+  // is intentionally distinct from the mode pills (which answer
+  // "what data is this?") — cacheStatus answers "where did this
+  // particular result come from on this load?".
+  const cacheStatus = meta?.cacheStatus;
 
   return (
     <header className="relative isolate overflow-hidden border-b border-radar-border bg-radar-bg/85 backdrop-blur-md">
@@ -257,11 +263,31 @@ export default function Header({ meta }: HeaderProps) {
                 }
               />
             )}
+            {cacheStatus === 'fresh' && (
+              <StatusPill
+                icon={<HardDrive className="h-3 w-3" />}
+                label="Cache: fresh"
+                tone="info"
+                title="Served from local cache (within 1-hour TTL). Provider failures shown above are from the original fetch."
+              />
+            )}
+            {cacheStatus === 'stale' && (
+              <StatusPill
+                icon={<HardDrive className="h-3 w-3" />}
+                label="Cache: stale"
+                tone="warn"
+                title="Served from expired local cache because the live fetch failed. Use the Refresh live data button to retry."
+              />
+            )}
             <StatusPill
               icon={<Clock className="h-3 w-3" />}
               label={`Last refresh: ${fetchedAt}`}
               tone="neutral"
-              title="When the dataset was last fetched"
+              title={
+                meta?.fetchedAt
+                  ? `Last successful upstream fetch: ${formatAbsolute(meta.fetchedAt)}`
+                  : 'When the dataset was last fetched'
+              }
             />
           </div>
         </div>

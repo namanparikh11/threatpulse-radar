@@ -5,7 +5,7 @@
 > probability, and severity across your stack in a single, focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v3.0-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v4.0-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -70,6 +70,17 @@ review access logs"_).
   readable, professional, desktop-first responsive.
 - **Empty / loading / error states** throughout (including a banner
   that surfaces the live-fetch failure reason when fallback kicks in).
+- **Transparent 1-hour localStorage cache (v4.0)** — a returning
+  visitor sees their previously-fetched dataset instantly instead of
+  waiting through the 30–60 s NVD first-load on every visit. The
+  cache is fully visible: a "Cache: fresh" / "Cache: stale" pill in
+  the header, a "Cached data" banner above the stats that shows both
+  the relative and absolute time of the last upstream fetch, and a
+  one-click "Refresh live data" button that forces a bypass-cache
+  re-fetch. Provider-status banners (NVD / EPSS unavailable,
+  Fallback Mode) are still rendered on cached data — the cache
+  preserves the original FetchResult fields, so it never hides
+  failures.
 - **Service layer** designed to plug in additional real APIs (NVD,
   FIRST EPSS) without touching UI code.
 
@@ -135,6 +146,7 @@ threatpulse-radar/
     │   └── DashboardPage.tsx          # single-screen dashboard
     ├── services/
     │   ├── vulnerabilityService.ts    # live/mock/fallback mode switcher
+    │   ├── datasetCache.ts            # v4 localStorage cache layer
     │   └── providers/
     │       ├── README.ts              # reserved for v4 providers
     │       ├── cisaKev.ts             # CISA KEV fetch + normalize
@@ -190,6 +202,33 @@ care which source is active.
   `src/services/vulnerabilityService.ts` can be flipped to `'mock'`
   to force the local dataset (useful for offline development).
 
+**How the v4 transparent cache works:**
+
+- The full `FetchResult` (including `nvdStatus`, `epssStatus`, and
+  `fallbackReason`) is written to `localStorage` under the
+  versioned key `tpr:dataset:v1` after every successful live
+  fetch. The 1-hour TTL is encoded as `60 * 60 * 1000 ms`.
+- On subsequent loads, the service checks the cache first. A
+  fresh hit (< 1 h) returns the cached result with
+  `cacheStatus: 'fresh'` — no live fetch needed, instant render.
+- A stale hit (> 1 h) is returned only as a last-resort fallback
+  when the live fetch just failed, with `cacheStatus: 'stale'`.
+  The header pill turns amber and the dashboard banner tells the
+  user the data is older than the TTL.
+- All `localStorage` access is wrapped in try/catch, so private
+  mode / disabled storage / quota exceeded never crashes the
+  dashboard. The cache is an optimization, not a requirement.
+- The "Refresh live data" button in the cached-data banner calls
+  `fetchVulnerabilities({ forceRefresh: true })`, which clears the
+  cache and runs the full live path again. Failures during a
+  forced refresh are surfaced through the same fallback banner
+  path as on first load — never silently masked.
+- Critically: provider-status fields (`nvdStatus`,
+  `epssStatus`, `fallbackReason`) are preserved through the
+  cache. If the original live fetch had NVD or EPSS unavailable,
+  those banners still render on cached data. **The cache never
+  hides provider failures.**
+
 ---
 
 ## 🛣️ Roadmap
@@ -198,12 +237,16 @@ care which source is active.
 - [x] v2 — **CISA KEV live data with automatic mock fallback**
 - [x] v2.1 — Severity sort comparator fix
 - [x] v2.5 — **FIRST EPSS enrichment**
-- [x] v3 — **NVD CVE 2.0 CVSS enrichment** (this release)
-- [ ] v3.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
-- [ ] v3.5 — Per-vendor watchlists and email/Slack digest
-- [ ] v3.5 — CSV / JSON export of filtered results
-- [ ] v4 — CPE-based asset matching: "which of _my_ products are exposed?"
-- [ ] v4 — Local-only "My Inventory" mode with optional read-only API
+- [x] v3 — **NVD CVE 2.0 CVSS enrichment**
+- [x] v4 — **Transparent 1-hour localStorage cache** (this release)
+  — a "Cache: fresh" / "Cache: stale" pill in the header, a
+  "Cached data" banner above the stats, and a manual
+  "Refresh live data" button. Provider failures are never hidden.
+- [ ] v4.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
+- [ ] v4.5 — Per-vendor watchlists and email/Slack digest
+- [ ] v4.5 — CSV / JSON export of filtered results
+- [ ] v5 — CPE-based asset matching: "which of _my_ products are exposed?"
+- [ ] v5 — Local-only "My Inventory" mode with optional read-only API
 
 ---
 
