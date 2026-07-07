@@ -16,12 +16,16 @@ portfolio use. Curated mock data only.
 Recharts 2 + Lucide React.
 
 **Status.** v1.0 is feature-complete and ships clean.
-- `npm.cmd run build` → 0 errors, 0 warnings, ~5 s.
+- `npm.cmd run build` → 0 errors, 0 warnings, ~5.7 s. Re-verified at
+  the end of the last session (identical output, no source drift).
 - `node scripts/acceptance.mjs` → 13/13 passing.
 - 60 unique mock vulnerability records.
 - Full filter / search / sort pipeline in `useVulnerabilityFilter`.
 - Hero is the final public-portfolio cut (no version numbers, no
   top status strip, no live radar animation).
+- `main` is clean and **up to date with `origin/main`**, but
+  `origin` is a **private** GitHub repo and no deploy has happened
+  yet. Do not push without an explicit ask.
 
 ## Read first
 
@@ -97,9 +101,11 @@ hosting (or any `public_html`-style host). Specifically:
    equivalent section in `README.md`) explaining how to drop
    `dist/` into Hostinger's `public_html`. Keep it under ~30 lines.
 
-7. **Git remote.** The repo is currently private with no `origin`
-   configured. Do not add a remote or push unless the user explicitly
-   asks. If they do, confirm the target first.
+7. **Git remote.** `origin` is **already** configured at
+   `https://github.com/namanparikh11/threatpulse-radar.git` (private
+   repo, no `dist/` ever pushed, no deploy yet). Do **not** push
+   unless the user explicitly asks. If they do, confirm the target
+   branch and the deploy flow first.
 
 ## Things that are already correct (don't redo them)
 

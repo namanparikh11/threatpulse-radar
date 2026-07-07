@@ -1,7 +1,8 @@
 # PROJECT_HANDOFF
 
 > End-of-session handover for **ThreatPulse Radar** v1.0.
-> Last verified: this session. Build clean. Acceptance tests green.
+> Last verified: this session (handoff refresh pass). Build clean.
+> Acceptance tests green. Tree clean on `main`.
 
 ---
 
@@ -16,15 +17,20 @@ ready to be packaged for static deployment (next milestone: Hostinger).
   Recharts 2 + Lucide React icons.
 - **Backend:** none. **Auth:** none. **Database:** none. **Payments:** none.
   **Exploit code:** none. This is a portfolio piece, not a product.
-- **Build:** `npm.cmd run build` passes clean (5.18 s, 0 errors, 0 warnings).
+- **Build:** `npm.cmd run build` passes clean (5.72 s this pass, 0 errors, 0 warnings).
 - **Acceptance suite:** 13/13 passing (`node scripts/acceptance.mjs`).
-- **Repo:** currently **private** (no `origin` remote configured in this workspace).
+- **Repo:** `main` branch, working tree clean, **private** on GitHub. An
+  `origin` remote is now configured at
+  `https://github.com/namanparikh11/threatpulse-radar.git` (added this
+  session); nothing has been pushed since. Do not push without an
+  explicit ask.
 
 ---
 
 ## 2. What was completed in this session
 
-Four passes happened end-to-end:
+The v1 dashboard was built across four implementation passes, then a
+final handoff-refresh pass verified everything is still green:
 
 ### Pass 1 — initial build
 - Scaffolded Vite + React + TS project manually.
@@ -58,11 +64,21 @@ Four passes happened end-to-end:
   status pills, dot-grid + soft-glow background, responsive layout.
 - Added a thin top status strip with "Operational" + "Build v1.0".
 
-### Pass 4 — final header refinement (public-portfolio cut) ← *current*
+### Pass 4 — final header refinement (public-portfolio cut)
 - Removed the top status strip and the "Build v1.0 · local" line.
 - No version numbers anywhere in the visible hero.
 - The hero now contains *only*: logo, title, subtitle, 2 badges, 3 status
   pills. Quiet, professional, ship-ready.
+
+### Pass 5 — handoff refresh (this session) ← *current*
+- Re-ran `npm.cmd run build`: 0 errors, 0 warnings, 5.72 s, identical
+  output hashes to pass 4 (no source drift).
+- Confirmed working tree is clean on `main` (commit `0097ee7` +
+  earlier), `up to date with origin/main`.
+- Added the GitHub `origin` remote (private repo, nothing pushed).
+- Refreshed `PROJECT_HANDOFF.md` (this file) and `NEXT_AGENT_PROMPT.md`
+  to capture the verified state and the still-pending deployment-prep
+  task. No source code, hooks, or config were changed.
 
 ---
 
@@ -227,25 +243,28 @@ npm.cmd run preview
 node scripts/acceptance.mjs
 ```
 
-### Build output (this session, final)
+### Build output (this pass, fresh run)
 ```
 > threatpulse-radar@1.0.0 build
 > tsc -b && vite build
 
-✓ 2391 modules transformed
+✓ 2391 modules transformed.
 dist/index.html                  0.82 kB │ gzip:  0.44 kB
 dist/assets/index-*.css         24.45 kB │ gzip:  5.37 kB
 dist/assets/react-*.js           0.06 kB │ gzip:  0.07 kB
 dist/assets/icons-*.js          18.19 kB │ gzip:  5.31 kB
 dist/assets/index-*.js          73.96 kB │ gzip: 19.22 kB
 dist/assets/charts-*.js        545.44 kB │ gzip: 154.25 kB
-✓ built in 5.18s
+✓ built in 5.72s
 ```
 
 - `tsc -b` exits 0 (strict mode, no `any` leaks, no unused locals/params).
 - Vite exits 0 with **no warnings** (chunk-size warning was cleared in
   pass 1 by `manualChunks` in `vite.config.ts`).
 - Bundle is well-split: react / icons / charts are in their own chunks.
+- The current `dist/index.html` still references assets with **absolute**
+  paths (`/assets/...`, `/radar.svg`) — this is expected at the v1 mark
+  and is the first thing the next session fixes via `base: './'`.
 
 ### Acceptance suite output
 ```
@@ -292,8 +311,10 @@ ALL TESTS PASSED  (13/13)
   deploying.
 - **The `zip-source.ps1` script in the project root is a one-off**
   packaging helper. It's in `.gitignore` already; safe to delete.
-- **No `origin` git remote** is configured. The repo is private; the
-  user has not asked to push anywhere yet.
+- **No `origin` git remote** is configured in the *v1 release* — it was
+  added in the handoff-refresh pass (`https://github.com/namanparikh11/
+  threatpulse-radar.git`). The repo is **private**; nothing has been
+  pushed yet. Do not push without an explicit ask.
 
 ---
 
@@ -348,15 +369,18 @@ The dashboard is a pure SPA. Hostinger's static hosting (or any
 6. **Bundle budget** — total transfer ≈ **184 kB gzipped** (24 kB
    CSS + 5 kB react glue + 5 kB icons + 19 kB app + 154 kB charts).
    Comfortable for any static host.
-7. **GitHub** — repo is private, no `origin` remote. When the user
-   adds the remote, a typical deployment flow is:
+7. **GitHub** — repo is private, `origin` is configured at
+   `https://github.com/namanparikh11/threatpulse-radar.git` but
+   **nothing has been pushed yet**. Typical deployment flow once the
+   user gives the go-ahead:
    - push `main`
    - Hostinger pulls via Git or a CI step
    - Hostinger serves `dist/` as the document root
 8. **Verification** — after deploying, open the live URL and
    confirm: (a) the hero renders, (b) typing "fortinet" filters to
    only Fortinet rows, (c) clicking a row opens the drawer,
-   (d) the dashboard survives a hard refresh on a deep route.
+   (d) the dashboard survives a hard refresh on a deep route,
+   (e) the favicon (`radar.svg`) loads.
 
 A small follow-up prompt for the next session is captured in
 [`NEXT_AGENT_PROMPT.md`](./NEXT_AGENT_PROMPT.md).
