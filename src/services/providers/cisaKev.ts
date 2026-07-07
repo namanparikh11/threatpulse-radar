@@ -139,14 +139,16 @@ export function normalizeCisaKevRecord(rec: CisaKevRecord): Vulnerability {
     cveId,
     // Prefer the named vulnerability; fall back to the description.
     summary: name || short || cveId,
-    // Be transparent in the description that CVSS / EPSS are not
-    // provided by the CISA feed — the user can see why the cells
-    // are 0.0 in the table.
+    // Be transparent in the description that the CISA KEV feed
+    // only carries the actively-exploited metadata; the dashboard
+    // enriches CVSS from NVD and EPSS from FIRST separately, and
+    // may not always be able to reach them.
     description:
       short +
       (short ? ' ' : '') +
-      '(CVSS and EPSS scores are not provided by the CISA KEV feed; ' +
-      'they are populated when NVD / FIRST EPSS are wired in.)',
+      '(CVSS and EPSS are not part of the CISA KEV feed; ' +
+      'the dashboard may enrich them from NVD and FIRST EPSS ' +
+      'when those services are reachable.)',
     severity: severityForCisaKev(rec),
     cvssScore: 0,
     epssProbability: 0,

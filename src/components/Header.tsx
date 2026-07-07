@@ -4,6 +4,7 @@ import {
   Clock,
   Database,
   FlaskConical,
+  Gauge,
   Radar,
   Satellite,
   ShieldCheck,
@@ -95,7 +96,8 @@ function MetaBadge({
  */
 function describeSource(
   source: FetchResult<Vulnerability[]>['source'] | undefined,
-  mode: FetchResult<Vulnerability[]>['mode'] | undefined
+  mode: FetchResult<Vulnerability[]>['mode'] | undefined,
+  nvdStatus: FetchResult<Vulnerability[]>['nvdStatus'] | undefined
 ): string {
   if (!source) return 'loading';
   // Fallback always means the user is seeing mock data despite
@@ -104,17 +106,24 @@ function describeSource(
   if (source === 'cisa-kev') return 'CISA KEV';
   if (source === 'nvd') return 'NVD';
   if (source === 'epss') return 'FIRST EPSS';
-  if (source === 'merged') return 'CISA KEV + FIRST EPSS';
+  if (source === 'merged') {
+    // Mention NVD only when we actually got it — otherwise the
+    // pill would overstate the source composition.
+    return nvdStatus === 'nvd'
+      ? 'CISA KEV + NVD + FIRST EPSS'
+      : 'CISA KEV + FIRST EPSS';
+  }
   return 'mock';
 }
 
 export default function Header({ meta }: HeaderProps) {
   const fetchedAt = meta?.fetchedAt ? formatRelative(meta.fetchedAt) : '—';
-  const sourceLabel = describeSource(meta?.source, meta?.mode);
+  const sourceLabel = describeSource(meta?.source, meta?.mode, meta?.nvdStatus);
   const isLive = meta?.mode === 'live';
   const isFallback = meta?.mode === 'fallback';
   const isMock = meta?.mode === 'mock';
   const epssStatus = meta?.epssStatus;
+  const nvdStatus = meta?.nvdStatus;
 
   return (
     <header className="relative isolate overflow-hidden border-b border-radar-border bg-radar-bg/85 backdrop-blur-md">
@@ -196,6 +205,26 @@ export default function Header({ meta }: HeaderProps) {
                   : 'Current data source'
               }
             />
+            {nvdStatus === 'nvd' && (
+              <StatusPill
+                icon={<Gauge className="h-3 w-3" />}
+                label="NVD: enriched"
+                tone="info"
+                title="CVSS scores enriched from the NVD CVE 2.0 feed"
+              />
+            )}
+            {nvdStatus === 'unavailable' && (
+              <StatusPill
+                icon={<Gauge className="h-3 w-3" />}
+                label="NVD: unavailable"
+                tone="warn"
+                title={
+                  meta?.nvdReason
+                    ? `NVD CVSS enrichment failed: ${meta.nvdReason}`
+                    : 'NVD CVSS enrichment failed; scores default to 0'
+                }
+              />
+            )}
             {epssStatus === 'first' && (
               <StatusPill
                 icon={<TrendingUp className="h-3 w-3" />}

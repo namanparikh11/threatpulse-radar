@@ -121,6 +121,11 @@ export default function DashboardPage() {
             )}
 
             {state.meta.mode === 'live' &&
+              state.meta.nvdStatus === 'unavailable' && (
+                <NvdUnavailableBanner reason={state.meta.nvdReason} />
+              )}
+
+            {state.meta.mode === 'live' &&
               state.meta.epssStatus === 'unavailable' && (
                 <EpssUnavailableBanner reason={state.meta.epssReason} />
               )}
@@ -191,8 +196,8 @@ function Footer() {
   return (
     <footer className="pt-2 text-center text-[11px] text-radar-dim">
       <p>
-        ThreatPulse Radar · defensive vulnerability intelligence · CISA KEV
-        live data with mock-data fallback. NVD / FIRST EPSS coming in v2.5.
+        ThreatPulse Radar · defensive vulnerability intelligence · CISA KEV +
+        NVD + FIRST EPSS live data with mock-data fallback.
       </p>
     </footer>
   );
@@ -267,6 +272,38 @@ function EpssUnavailableBanner({
           {reason ?? 'unknown error.'} The EPSS filter still works
           (it will simply show no rows above the 0% threshold for
           affected CVEs).
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Banner shown when the CISA KEV feed is live but the NVD CVSS
+ * enrichment fetch failed. The CISA data is still being shown (and
+ * is current); only the CVSS column is unavailable. No retry
+ * button — the next page load will retry automatically.
+ */
+function NvdUnavailableBanner({
+  reason,
+}: {
+  reason: string | undefined;
+}) {
+  return (
+    <div
+      role="status"
+      className="panel flex items-start gap-2 border-radar-warn/30 bg-radar-warn/5 px-4 py-2.5 text-xs"
+    >
+      <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-radar-warn" />
+      <div>
+        <p className="font-medium text-radar-text">
+          NVD CVSS enrichment unavailable — scores default to 0.
+        </p>
+        <p className="mt-0.5 text-radar-muted">
+          CISA KEV data is current. NVD could not be reached:
+          {reason ?? 'unknown error.'} Severity and CVSS sorting
+          will fall back to the CISA-derived values (KEV records
+          default to "High"; ransomware-known records to "Critical").
         </p>
       </div>
     </div>

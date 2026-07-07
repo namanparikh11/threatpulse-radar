@@ -320,9 +320,12 @@ section('Service-layer wiring (source-code assertions)');
     /fetchEpssForCves[\s\S]{0,800}catch[\s\S]{0,400}unavailable/.test(serviceSrc),
     'EPSS catch + unavailable path not found');
 
-  assert('happy path returns source="merged" with epssStatus="first"',
+  assert('happy path sets source="merged" + epssStatus="first"',
+    // The service structure (post-v3 NVD enrichment) builds the
+    // FetchResult dynamically. The happy path is signalled by
+    // the local variable assignments in the try blocks.
     /source:\s*['"]merged['"]/.test(serviceSrc) &&
-      /epssStatus:\s*['"]first['"]/.test(serviceSrc),
+      /epssStatus\s*=\s*['"]first['"]/.test(serviceSrc),
     'merged-source + first-status path not found');
 
   assert('epss provider chunks CVEs (CHUNK_SIZE constant exists)',
