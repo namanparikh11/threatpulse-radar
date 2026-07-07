@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background:
+      radial-gradient(1100px 600px at 90% -10%, rgba(34, 211, 238, 0.07), transparent 60%),
+      radial-gradient(900px 500px at -10% 110%, rgba(56, 189, 248, 0.06), transparent 60%),
+      #070b14;
+  }
+  ::selection {
+    background: rgba(34, 211, 238, 0.25);
+  }
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-radar-border bg-radar-panel/80 backdrop-blur-sm shadow-panel;
+  }
+  .panel-strong {
+    @apply rounded-xl border border-radar-borderStrong bg-radar-panel2/80 backdrop-blur-sm shadow-panel;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium;
+  }
+  .stat-num {
+    @apply text-2xl font-semibold tracking-tight text-radar-text;
+  }
+  .stat-label {
+    @apply text-xs uppercase tracking-wider text-radar-muted;
+  }
+  .focus-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-radar-accent/60;
+  }
+}
+
+/* Recharts polish: hide default focus rings on charts */
+.recharts-wrapper text {
+  fill: rgb(148 163 184);
+}
+.recharts-cartesian-grid line {
+  stroke: rgba(148, 163, 184, 0.12);
+}
+.recharts-tooltip-wrapper {
+  outline: none;
+}
+
+/* Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #1c2740 transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #1c2740;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #243352;
+}
