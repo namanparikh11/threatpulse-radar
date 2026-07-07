@@ -155,7 +155,7 @@ function applySortBy(vulns, { field, direction }) {
     if (field === 'newest' || field === 'publishedDate') primary = a.publishedDate?.localeCompare?.(b.publishedDate) ?? 0;
     else if (field === 'cvss') primary = a.cvssScore - b.cvssScore;
     else if (field === 'epss') primary = a.epssProbability - b.epssProbability;
-    else if (field === 'severity') primary = (SEVERITY_RANK[a.severity] ?? 99) - (SEVERITY_RANK[b.severity] ?? 99);
+    else if (field === 'severity') primary = (SEVERITY_RANK[b.severity] ?? 99) - (SEVERITY_RANK[a.severity] ?? 99);
     else if (field === 'kev') primary = (a.kev ? 1 : 0) - (b.kev ? 1 : 0);
     else if (field === 'vendor') primary = a.vendor.localeCompare(b.vendor);
     return primary * factor;
@@ -186,6 +186,25 @@ function applySortBy(vulns, { field, direction }) {
   assert('Vendor A-Z sorts alphabetically',
     JSON.stringify(vendors) === JSON.stringify(sorted),
     vendors.slice(0, 5).join(','));
+}
+{
+  // Severity high-to-low must put Critical first, then High, then Medium, then Low.
+  // (Regression coverage for the pre-pass-8 direction bug.)
+  const s = applySortBy(ALL, { field: 'severity', direction: 'desc' });
+  const RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+  const monotonic = s.every((x, i) => i === 0 || RANK[s[i - 1].severity] <= RANK[x.severity]);
+  assert('Severity high-to-low: Critical, High, Medium, Low',
+    monotonic && s[0].severity === 'Critical',
+    `first=${s[0].severity}`);
+}
+{
+  // Severity low-to-high must put Low first, then Medium, then High, then Critical.
+  const s = applySortBy(ALL, { field: 'severity', direction: 'asc' });
+  const RANK = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+  const monotonic = s.every((x, i) => i === 0 || RANK[s[i - 1].severity] >= RANK[x.severity]);
+  assert('Severity low-to-high: Low, Medium, High, Critical',
+    monotonic && s[0].severity === 'Low',
+    `first=${s[0].severity}`);
 }
 
 console.log('\n--- Data integrity tests ---');

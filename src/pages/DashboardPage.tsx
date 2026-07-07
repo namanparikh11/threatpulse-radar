@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { CircleAlert, RefreshCw } from 'lucide-react';
 import Header from '../components/Header';
 import StatsCards from '../components/StatsCards';
 import FiltersPanel from '../components/FiltersPanel';
@@ -112,6 +113,13 @@ export default function DashboardPage() {
 
         {state.kind === 'ready' && charts && (
           <>
+            {state.meta.mode === 'fallback' && (
+              <FallbackBanner
+                reason={state.meta.fallbackReason}
+                onRetry={handleRetry}
+              />
+            )}
+
             <StatsCards stats={charts.stats} />
 
             <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -178,9 +186,51 @@ function Footer() {
   return (
     <footer className="pt-2 text-center text-[11px] text-radar-dim">
       <p>
-        ThreatPulse Radar · defensive vulnerability intelligence · v1 uses curated mock
-        data. Real NVD / CISA KEV / FIRST EPSS integrations coming in v2.
+        ThreatPulse Radar · defensive vulnerability intelligence · CISA KEV
+        live data with mock-data fallback. NVD / FIRST EPSS coming in v2.5.
       </p>
     </footer>
+  );
+}
+
+/**
+ * Small banner shown above the stats when the live CISA KEV feed
+ * was unreachable and the dashboard is showing the mock dataset.
+ * Non-dismissible: refreshes on next page load or via the button.
+ */
+function FallbackBanner({
+  reason,
+  onRetry,
+}: {
+  reason: string | undefined;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      className="panel flex flex-col gap-2 border-radar-warn/40 bg-radar-warn/5 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div className="flex items-start gap-2">
+        <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-radar-warn" />
+        <div>
+          <p className="font-medium text-radar-text">
+            Live CISA KEV feed unavailable — showing mock data.
+          </p>
+          <p className="mt-0.5 text-xs text-radar-muted">
+            Reason: {reason ?? 'Unknown error.'} The dashboard still works
+            against the curated mock dataset; filters and search behave
+            identically.
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="focus-ring inline-flex items-center gap-1.5 self-start rounded-md border border-radar-warn/40 bg-radar-panel2 px-2.5 py-1.5 text-xs text-radar-text transition hover:border-radar-warn"
+      >
+        <RefreshCw className="h-3 w-3" />
+        Retry live fetch
+      </button>
+    </div>
   );
 }

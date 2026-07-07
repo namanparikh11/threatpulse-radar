@@ -1,9 +1,11 @@
 import {
   Briefcase,
+  CircleAlert,
   Clock,
   Database,
   FlaskConical,
   Radar,
+  Satellite,
   ShieldCheck,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
@@ -15,18 +17,20 @@ interface HeaderProps {
   meta: FetchResult<Vulnerability[]> | null;
 }
 
-type Tone = 'good' | 'info' | 'neutral';
+type Tone = 'good' | 'info' | 'neutral' | 'warn';
 
 const TONE_DOT: Record<Tone, string> = {
   good: 'bg-radar-accent2',
   info: 'bg-radar-accent',
   neutral: 'bg-radar-dim',
+  warn: 'bg-radar-warn',
 };
 
 const TONE_CHIP: Record<Tone, string> = {
   good: 'border-radar-accent2/30 bg-radar-accent2/5 text-radar-accent2',
   info: 'border-radar-accent/30 bg-radar-accent/5 text-radar-accent',
   neutral: 'border-radar-border bg-radar-panel2/60 text-radar-muted',
+  warn: 'border-radar-warn/30 bg-radar-warn/5 text-radar-warn',
 };
 
 function StatusPill({
@@ -83,9 +87,32 @@ function MetaBadge({
   );
 }
 
+/**
+ * Map the service's (source, mode) pair to a human-readable label
+ * for the source pill. Kept in one place so the header is the only
+ * place the wording lives.
+ */
+function describeSource(
+  source: FetchResult<Vulnerability[]>['source'] | undefined,
+  mode: FetchResult<Vulnerability[]>['mode'] | undefined
+): string {
+  if (!source) return 'loading';
+  // Fallback always means the user is seeing mock data despite
+  // the app being in 'live' mode — say so explicitly.
+  if (mode === 'fallback') return 'mock (fallback)';
+  if (source === 'cisa-kev') return 'CISA KEV';
+  if (source === 'nvd') return 'NVD';
+  if (source === 'epss') return 'FIRST EPSS';
+  if (source === 'merged') return 'merged';
+  return 'mock';
+}
+
 export default function Header({ meta }: HeaderProps) {
   const fetchedAt = meta?.fetchedAt ? formatRelative(meta.fetchedAt) : '—';
-  const sourceLabel = meta?.source ?? 'loading';
+  const sourceLabel = describeSource(meta?.source, meta?.mode);
+  const isLive = meta?.mode === 'live';
+  const isFallback = meta?.mode === 'fallback';
+  const isMock = meta?.mode === 'mock';
 
   return (
     <header className="relative isolate overflow-hidden border-b border-radar-border bg-radar-bg/85 backdrop-blur-md">
@@ -123,11 +150,27 @@ export default function Header({ meta }: HeaderProps) {
                   label="Portfolio Project"
                   tone="accent"
                 />
-                <MetaBadge
-                  icon={<FlaskConical className="h-3 w-3" />}
-                  label="Mock Data Mode"
-                  tone="warn"
-                />
+                {isLive && (
+                  <MetaBadge
+                    icon={<Satellite className="h-3 w-3" />}
+                    label="Live CISA KEV Mode"
+                    tone="accent"
+                  />
+                )}
+                {isFallback && (
+                  <MetaBadge
+                    icon={<CircleAlert className="h-3 w-3" />}
+                    label="Fallback Mode"
+                    tone="warn"
+                  />
+                )}
+                {isMock && (
+                  <MetaBadge
+                    icon={<FlaskConical className="h-3 w-3" />}
+                    label="Mock Data Mode"
+                    tone="warn"
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -144,8 +187,12 @@ export default function Header({ meta }: HeaderProps) {
             <StatusPill
               icon={<Database className="h-3 w-3" />}
               label={`Source: ${sourceLabel}`}
-              tone="info"
-              title="Current data source"
+              tone={isFallback ? 'warn' : 'info'}
+              title={
+                meta?.fallbackReason
+                  ? `Current data source — live fetch failed: ${meta.fallbackReason}`
+                  : 'Current data source'
+              }
             />
             <StatusPill
               icon={<Clock className="h-3 w-3" />}

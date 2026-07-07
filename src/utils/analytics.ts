@@ -106,8 +106,9 @@ function compareByField(a: Vulnerability, b: Vulnerability, field: SortField): n
     case 'epss':
       return a.epssProbability - b.epssProbability;
     case 'severity':
-      // Critical first when descending.
-      return (SEVERITY_RANK[a.severity] ?? 99) - (SEVERITY_RANK[b.severity] ?? 99);
+      // Natural order is "most severe first" (Critical, High, Medium, Low);
+      // the `direction` factor in `applySortBy` flips it for ascending.
+      return (SEVERITY_RANK[b.severity] ?? 99) - (SEVERITY_RANK[a.severity] ?? 99);
     case 'kev':
       return (a.kev ? 1 : 0) - (b.kev ? 1 : 0);
     case 'vendor':

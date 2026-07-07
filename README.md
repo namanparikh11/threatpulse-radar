@@ -4,7 +4,7 @@
 > **defensive** security teams. Track CVEs, KEV status, EPSS probability, and
 > severity across your stack in a single, focused command-center view.
 
-![status](https://img.shields.io/badge/status-v1.0-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v2.0-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -25,11 +25,18 @@ review access logs"_).
 
 ## ✨ Features
 
+- **Live CISA KEV data, with mock fallback** — by default the dashboard
+  fetches the public [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+  feed at runtime. If the fetch fails (offline, CORS, slow network),
+  the dashboard automatically falls back to the curated mock dataset so
+  the user is never left with a blank screen. The current data source
+  and mode are shown in the header.
 - **Dashboard overview** — at-a-glance cards for total, critical, high,
   KEV-listed, average EPSS, and new-this-week vulnerabilities.
 - **Vulnerability table** with columns for CVE ID, summary, severity,
   CVSS, EPSS, KEV status, vendor, product, published date, and source.
-- **Filtering & search**
+- **Filtering & search** (works identically on live CISA KEV data and
+  on the mock dataset — same code path, same UI):
   - Full-text search across CVE ID, vendor, product, and summary
   - Severity filter (Critical / High / Medium / Low / All)
   - KEV-only toggle
@@ -44,8 +51,10 @@ review access logs"_).
   - KEV vs non-KEV comparison
 - **Dark cybersecurity command-center theme** — neon cyan / amber accents,
   readable, professional, desktop-first responsive.
-- **Empty / loading / error states** throughout.
-- **Service layer** designed to plug in real APIs without touching UI code.
+- **Empty / loading / error states** throughout (including a banner
+  that surfaces the live-fetch failure reason when fallback kicks in).
+- **Service layer** designed to plug in additional real APIs (NVD,
+  FIRST EPSS) without touching UI code.
 
 ---
 
@@ -62,6 +71,12 @@ review access logs"_).
 
 No backend. No login. No database. No payments. No exploit code.
 
+**Data sources:** the dashboard is frontend-only. CISA KEV is fetched
+directly from `https://www.cisa.gov/...` in the browser (CISA serves
+the feed with permissive CORS); if the fetch fails, the curated mock
+dataset is shown and a banner explains why. NVD and FIRST EPSS are
+not yet wired in — see the [Roadmap](#-roadmap).
+
 ---
 
 ## 📁 Project structure
@@ -77,6 +92,7 @@ threatpulse-radar/
 ├── tsconfig.node.json
 ├── vite.config.ts
 ├── public/
+│   ├── .htaccess                     # SPA fallback, cache, security headers
 │   └── radar.svg
 └── src/
     ├── main.tsx                       # entry
@@ -91,20 +107,25 @@ threatpulse-radar/
     │   ├── EmptyState.tsx
     │   ├── LoadingState.tsx
     │   ├── ErrorState.tsx
+    │   ├── SearchStatus.tsx
     │   └── charts/
     │       ├── SeverityChart.tsx
     │       ├── TrendChart.tsx
     │       └── KevChart.tsx
     ├── data/
-    │   └── mockVulnerabilities.ts     # 50+ realistic CVEs
+    │   └── mockVulnerabilities.ts     # 60 fictional CVEs (v1 mock + fallback)
     ├── pages/
     │   └── DashboardPage.tsx          # single-screen dashboard
     ├── services/
-    │   ├── vulnerabilityService.ts    # async, pluggable data source
+    │   ├── vulnerabilityService.ts    # live/mock/fallback mode switcher
     │   └── providers/
-    │       └── README.ts              # v2 client stubs live here
+    │       ├── README.ts              # reserved for v2.5 providers
+    │       └── cisaKev.ts             # CISA KEV fetch + normalize
     ├── types/
     │   └── vulnerability.ts           # shared domain types
+    ├── hooks/
+    │   ├── useDebouncedValue.ts
+    │   └── useVulnerabilityFilter.ts
     └── utils/
         ├── analytics.ts               # filter, sort, aggregate
         ├── format.ts                  # date / score formatters
@@ -113,33 +134,56 @@ threatpulse-radar/
 
 ---
 
-## 🚧 Planned data sources (v2)
+## 🔌 Data sources
 
-The service layer (`src/services/vulnerabilityService.ts`) already returns
-`Promise<FetchResult<Vulnerability[]>>` so adding real APIs is a
-one-file change. Planned providers:
+The service layer (`src/services/vulnerabilityService.ts`) returns
+`Promise<FetchResult<Vulnerability[]>>` with a `(source, mode)` pair
+that describes where the data came from. The same `Vulnerability` shape
+is used everywhere, so the filter / sort / chart pipeline doesn't
+care which source is active.
 
-| Source                 | Provides                                        | Endpoint                                   |
-| ---------------------- | ----------------------------------------------- | ------------------------------------------ |
-| **CISA KEV**           | Known-exploited boolean, due dates              | `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` |
-| **NVD CVE 2.0**        | CVSS, description, CPE (vendor/product), dates  | `https://services.nvd.nist.gov/rest/json/cves/2.0` |
-| **FIRST EPSS**         | Exploitation probability (0–1)                  | `https://api.first.org/data/v1/epss`       |
+| Source                  | Status   | Provides                                          | Endpoint |
+| ----------------------- | -------- | ------------------------------------------------- | -------- |
+| **CISA KEV** (v2)       | ✅ Live  | Known-exploited boolean, due dates, ransomware-use | `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json` |
+| **Mock dataset** (v1)   | ✅ Live  | 60 fictional CVEs spanning 16 vendors              | `src/data/mockVulnerabilities.ts` (in-bundle) |
+| **NVD CVE 2.0** (v2.5)  | 📋 Planned | CVSS, description, CPE (vendor/product), dates   | `https://services.nvd.nist.gov/rest/json/cves/2.0` |
+| **FIRST EPSS** (v2.5)   | 📋 Planned | Exploitation probability (0–1)                  | `https://api.first.org/data/v1/epss` |
 
-The mock dataset (`src/data/mockVulnerabilities.ts`) intentionally mirrors
-the merged shape these providers will produce.
+**How the CISA KEV integration works (v2):**
+
+- The browser fetches CISA KEV directly (CISA serves the feed with
+  permissive CORS).
+- The fetch has an 8 s `AbortController` timeout — a slow CISA
+  response can't hang the dashboard.
+- Records are normalized into the same `Vulnerability` shape used
+  for the mock data. CISA KEV doesn't carry CVSS or EPSS scores,
+  so those default to `0` and the description carries a short note
+  explaining why. Severity is derived from
+  `knownRansomwareCampaignUse`: `Known` → `Critical`, otherwise
+  `High` (KEV by construction is at least High).
+- On any failure (network, abort, non-2xx, shape mismatch) the
+  service returns the mock dataset with `mode: 'fallback'` and a
+  `fallbackReason` string. The header shows a "Fallback Mode"
+  badge, the source pill turns amber, and a banner above the
+  stats explains what happened and offers a "Retry live fetch"
+  button.
+- The service constant `DATA_MODE` in
+  `src/services/vulnerabilityService.ts` can be flipped to `'mock'`
+  to force the local dataset (useful for offline development).
 
 ---
 
 ## 🛣️ Roadmap
 
 - [x] v1 — Polished frontend, mock data, full filtering & visualization
-- [ ] v2 — Wire up NVD + CISA KEV + FIRST EPSS (with caching + rate-limit
-      handling)
-- [ ] v2 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
-- [ ] v2 — Per-vendor watchlists and email/Slack digest
-- [ ] v2 — CSV / JSON export of filtered results
+- [x] v2 — **CISA KEV live data with automatic mock fallback** (this release)
+- [ ] v2.5 — Wire up NVD (CVSS) and FIRST EPSS to backfill the fields
+      CISA KEV doesn't carry
+- [ ] v2.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
+- [ ] v3 — Per-vendor watchlists and email/Slack digest
+- [ ] v3 — CSV / JSON export of filtered results
 - [ ] v3 — CPE-based asset matching: "which of _my_ products are exposed?"
-- [ ] v3 — Local-only "My Inventory" mode with optional read-only API
+- [ ] v4 — Local-only "My Inventory" mode with optional read-only API
 
 ---
 
