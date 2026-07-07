@@ -1,0 +1,65 @@
+# ThreatPulse Radar — Apache config for Hostinger static hosting.
+#
+# Vite copies every file under `public/` to the build output root
+# (`dist/`), so this file ships as `dist/.htaccess` automatically.
+#
+# What this does:
+#   1. Sends every request that doesn't match a real file or directory
+#      back to `index.html` (SPA fallback). ThreatPulse Radar is a
+#      single-page app with no client-side routes today, so this is
+#      defensive — it also future-proofs any deep-link state we add
+#      later and makes the bundle deployable on any Apache-based
+#      static host.
+#   2. Caches static assets for one year (fingerprinted filenames are
+#      safe to cache forever; the entry `index.html` stays uncached).
+#   3. Adds standard security headers suitable for a public portfolio
+#      page (no scripts, no iframes, sniffed MIME, no referrer leak).
+#
+# If your Hostinger plan serves the site from a subdirectory, change
+# `RewriteBase /` to `RewriteBase /your-subdir/` (e.g. `/public_html/`).
+# For a subdomain at the document root, the default `/` is correct.
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # The HTML entry itself is served normally.
+  RewriteRule ^index\.html$ - [L]
+
+  # If the request matches a real file or directory, serve it as-is.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Otherwise hand back `index.html` so the SPA router can take over.
+  RewriteRule . /index.html [L]
+</IfModule>
+
+# Cache fingerprinted assets for one year; they are content-hashed
+# and safe to cache aggressively.
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType application/javascript "access plus 1 year"
+  ExpiresByType text/css               "access plus 1 year"
+  ExpiresByType image/svg+xml          "access plus 1 year"
+  ExpiresByType image/png              "access plus 1 year"
+  ExpiresByType image/jpeg             "access plus 1 year"
+  ExpiresByType image/webp             "access plus 1 year"
+  ExpiresByType font/woff2             "access plus 1 year"
+
+  # Keep the entry HTML fresh so deploys are picked up immediately.
+  ExpiresByType text/html              "access plus 0 seconds"
+</IfModule>
+
+# Security headers. The bundle has no third-party scripts, no iframes,
+# and no assets that need a non-standard referrer policy.
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+  Header set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+  # NOTE: if you serve this same origin over plain HTTP (Hostinger's
+  # free tier), drop the next two lines or browsers will refuse to
+  # load the stylesheet. Keep them on for HTTPS.
+  # Header set Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+  # Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+</IfModule>

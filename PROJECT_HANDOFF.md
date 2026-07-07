@@ -1,8 +1,9 @@
 # PROJECT_HANDOFF
 
 > End-of-session handover for **ThreatPulse Radar** v1.0.
-> Last verified: this session (handoff refresh pass). Build clean.
-> Acceptance tests green. Tree clean on `main`.
+> Last verified: this session (Hostinger deployment prep pass).
+> Build clean. Acceptance tests green. Tree clean on `main`.
+> `dist/` is drop-in deployable to Hostinger static hosting.
 
 ---
 
@@ -11,26 +12,31 @@
 **ThreatPulse Radar** is a frontend-only cybersecurity vulnerability-intelligence
 dashboard built for **defensive** security portfolio use. The dashboard is
 feature-complete at the v1 scope, runs entirely on curated mock data, and is
-ready to be packaged for static deployment (next milestone: Hostinger).
+**drop-in deployable** to Hostinger static hosting (or any Apache-based
+`public_html` host). See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the guide.
 
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
   Recharts 2 + Lucide React icons.
 - **Backend:** none. **Auth:** none. **Database:** none. **Payments:** none.
   **Exploit code:** none. This is a portfolio piece, not a product.
-- **Build:** `npm.cmd run build` passes clean (5.72 s this pass, 0 errors, 0 warnings).
+- **Build:** `npm.cmd run build` passes clean (5.59 s this pass, 0 errors, 0 warnings).
 - **Acceptance suite:** 13/13 passing (`node scripts/acceptance.mjs`).
 - **Repo:** `main` branch, working tree clean, **private** on GitHub. An
   `origin` remote is now configured at
-  `https://github.com/namanparikh11/threatpulse-radar.git` (added this
-  session); nothing has been pushed since. Do not push without an
+  `https://github.com/namanparikh11/threatpulse-radar.git` (added in
+  pass 5); nothing has been pushed since. Do not push without an
   explicit ask.
+- **Deployment:** `dist/` is now **drop-in deployable** to Hostinger
+  static hosting (or any Apache-based `public_html` host). See
+  [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the full guide.
 
 ---
 
 ## 2. What was completed in this session
 
-The v1 dashboard was built across four implementation passes, then a
-final handoff-refresh pass verified everything is still green:
+The v1 dashboard was built across four implementation passes, then
+two follow-up passes refreshed the handoff and completed the
+Hostinger deployment prep:
 
 ### Pass 1 — initial build
 - Scaffolded Vite + React + TS project manually.
@@ -70,7 +76,7 @@ final handoff-refresh pass verified everything is still green:
 - The hero now contains *only*: logo, title, subtitle, 2 badges, 3 status
   pills. Quiet, professional, ship-ready.
 
-### Pass 5 — handoff refresh (this session) ← *current*
+### Pass 5 — handoff refresh
 - Re-ran `npm.cmd run build`: 0 errors, 0 warnings, 5.72 s, identical
   output hashes to pass 4 (no source drift).
 - Confirmed working tree is clean on `main` (commit `0097ee7` +
@@ -80,9 +86,29 @@ final handoff-refresh pass verified everything is still green:
   to capture the verified state and the still-pending deployment-prep
   task. No source code, hooks, or config were changed.
 
+### Pass 6 — Hostinger deployment prep ← *current*
+- `vite.config.ts` — added `base: './'` so the built `index.html`
+  references assets with **relative** URLs. Works for both subdomain
+  and subpath deployment on Hostinger.
+- `public/.htaccess` — new file, copied into `dist/` at build time.
+  Provides: (1) SPA fallback rewrite, (2) 1-year cache for hashed
+  assets + 0-second cache for the entry `index.html`,
+  (3) standard security headers. CSP and HSTS are present but
+  commented out (uncomment on HTTPS only).
+- `DEPLOYMENT.md` — new file. The drop-in guide for Hostinger
+  static hosting: which files to upload, where, how to handle
+  subdomain vs subpath vs custom domain, the rationale for
+  `base: './'`, and full troubleshooting (blank page, assets not
+  loading, wrong folder, browser cache, mixed content, perms).
+- Acceptance suite re-run: **13/13 still passing**.
+- Build re-run: 0 errors, 0 warnings, 5.59 s. New `dist/index.html`
+  now references assets as `./assets/...` and `./radar.svg`
+  (relative).
+- `dist/` is now drop-in deployable to Hostinger static hosting.
+
 ---
 
-## 3. Files in the project (37 source files)
+## 3. Files in the project (39 source files)
 
 ```
 threatpulse-radar/
@@ -94,12 +120,14 @@ threatpulse-radar/
 ├── tsconfig.json
 ├── tsconfig.app.json
 ├── tsconfig.node.json
-├── vite.config.ts
+├── vite.config.ts                   (base: './' added in pass 6)
 ├── .gitignore
 ├── README.md
-├── PROJECT_HANDOFF.md
-├── NEXT_AGENT_PROMPT.md             (added in this final pass)
+├── PROJECT_HANDOFF.md               (this file)
+├── NEXT_AGENT_PROMPT.md
+├── DEPLOYMENT.md                    (new in pass 6 — Hostinger guide)
 ├── public/
+│   ├── .htaccess                    (new in pass 6 — SPA fallback + headers)
 │   └── radar.svg
 ├── scripts/
 │   ├── acceptance.mjs               (13-test acceptance suite)
@@ -249,22 +277,23 @@ node scripts/acceptance.mjs
 > tsc -b && vite build
 
 ✓ 2391 modules transformed.
-dist/index.html                  0.82 kB │ gzip:  0.44 kB
+dist/index.html                  0.83 kB │ gzip:  0.44 kB
 dist/assets/index-*.css         24.45 kB │ gzip:  5.37 kB
 dist/assets/react-*.js           0.06 kB │ gzip:  0.07 kB
 dist/assets/icons-*.js          18.19 kB │ gzip:  5.31 kB
 dist/assets/index-*.js          73.96 kB │ gzip: 19.22 kB
 dist/assets/charts-*.js        545.44 kB │ gzip: 154.25 kB
-✓ built in 5.72s
+✓ built in 5.59s
 ```
 
 - `tsc -b` exits 0 (strict mode, no `any` leaks, no unused locals/params).
 - Vite exits 0 with **no warnings** (chunk-size warning was cleared in
   pass 1 by `manualChunks` in `vite.config.ts`).
 - Bundle is well-split: react / icons / charts are in their own chunks.
-- The current `dist/index.html` still references assets with **absolute**
-  paths (`/assets/...`, `/radar.svg`) — this is expected at the v1 mark
-  and is the first thing the next session fixes via `base: './'`.
+- `dist/index.html` now references assets with **relative** paths
+  (`./assets/...`, `./radar.svg`) — set in pass 6 via `base: './'`.
+- `dist/.htaccess` is present (copied from `public/.htaccess` at
+  build time).
 
 ### Acceptance suite output
 ```
@@ -312,21 +341,27 @@ ALL TESTS PASSED  (13/13)
 - **The `zip-source.ps1` script in the project root is a one-off**
   packaging helper. It's in `.gitignore` already; safe to delete.
 - **No `origin` git remote** is configured in the *v1 release* — it was
-  added in the handoff-refresh pass (`https://github.com/namanparikh11/
-  threatpulse-radar.git`). The repo is **private**; nothing has been
-  pushed yet. Do not push without an explicit ask.
+  added in pass 5 (`https://github.com/namanparikh11/threatpulse-radar.git`).
+  The repo is **private**; nothing has been pushed yet. Do not push
+  without an explicit ask.
+- **Deployment is not yet "live".** Pass 6 made the `dist/` bundle
+  drop-in deployable to Hostinger static hosting, but the user still
+  has to actually upload it. Nothing has been pushed to a public
+  URL yet.
 
 ---
 
 ## 8. What should NOT be changed in the next session
 
-The next session's only job is **Hostinger static deployment prep**.
-Do **not**:
+The Hostinger deployment prep is **done** (pass 6). v1 is frozen.
+The next session's only job is whatever the user asks for next —
+most likely a v2 feature. Do **not** do any of the following
+without an explicit ask:
 
 - ❌ Add real APIs (NVD / CISA KEV / FIRST EPSS). The mock data is
   intentional and labeled.
 - ❌ Add new features (auth, persistence, watchlists, CSV export,
-  per-vendor sidebar). Out of scope for v1.
+  per-vendor sidebar, deep-linking). Out of scope for v1.
 - ❌ Redesign the header again. The pass-4 hero is the final cut.
 - ❌ Touch the filter / sort / search pipeline. It's covered by the
   13 acceptance tests; any change must keep them green.
@@ -335,52 +370,46 @@ Do **not**:
   the user explicitly asks.
 - ❌ Bump major versions of React / Vite / Recharts. v1 is frozen.
 - ❌ Add a backend. This is a static-only deployment.
+- ❌ Remove `base: './'` from `vite.config.ts` or the
+  `public/.htaccess` file — both are required for the deployed
+  Hostinger bundle to keep working.
+- ❌ Push to `origin` without an explicit ask. The repo is
+  private and no deploy has happened yet.
 
 If a new feature is requested later, it goes in **v2** — and the
 mock-data path stays intact via `USE_MOCK = true`.
 
 ---
 
-## 9. Recommended next milestone: Hostinger static deployment prep
+## 9. Deployment status (hosted-static ready) — *closed*
 
-The dashboard is a pure SPA. Hostinger's static hosting (or any
-`public_html`-style host) needs:
+Pass 6 completed the Hostinger static deployment prep. The bundle
+is now drop-in deployable.
 
-1. **`base` in `vite.config.ts`** — set `base: './'` so asset URLs
-   are relative (Hostinger doesn't host at the domain root necessarily).
-2. **SPA fallback** — Hostinger static serves `index.html` for `/`,
-   but a deep refresh on `/dashboard` 404s. Add a `vercel.json`-style
-   rewrite (Hostinger uses `.htaccess`):
-   ```apache
-   RewriteEngine On
-   RewriteBase /
-   RewriteRule ^index\.html$ - [L]
-   RewriteCond %{REQUEST_FILENAME} !-f
-   RewriteCond %{REQUEST_FILENAME} !-d
-   RewriteRule . /index.html [L]
-   ```
-3. **`<title>` and meta** — already set in `index.html` to
-   `ThreatPulse Radar` with a defensive-security description.
-4. **Favicon** — `public/radar.svg` is referenced. Confirm
-   `index.html` has the `<link rel="icon" type="image/svg+xml" ...>`
-   tag (it does).
-5. **No environment variables** — the app reads none at build time.
-   `VITE_*` env vars aren't used yet; nothing to swap per environment.
-6. **Bundle budget** — total transfer ≈ **184 kB gzipped** (24 kB
-   CSS + 5 kB react glue + 5 kB icons + 19 kB app + 154 kB charts).
-   Comfortable for any static host.
-7. **GitHub** — repo is private, `origin` is configured at
-   `https://github.com/namanparikh11/threatpulse-radar.git` but
-   **nothing has been pushed yet**. Typical deployment flow once the
-   user gives the go-ahead:
-   - push `main`
-   - Hostinger pulls via Git or a CI step
-   - Hostinger serves `dist/` as the document root
-8. **Verification** — after deploying, open the live URL and
-   confirm: (a) the hero renders, (b) typing "fortinet" filters to
-   only Fortinet rows, (c) clicking a row opens the drawer,
-   (d) the dashboard survives a hard refresh on a deep route,
-   (e) the favicon (`radar.svg`) loads.
+**What's done:**
+- `vite.config.ts` — `base: './'` (relative asset URLs in `dist/`).
+- `public/.htaccess` — SPA fallback, 1-year cache for hashed assets,
+  0-second cache for `index.html`, security headers (CSP/HSTS
+  commented out — uncomment on HTTPS).
+- `dist/.htaccess` ships in every build (Vite copies `public/`).
+- `DEPLOYMENT.md` — the full Hostinger guide (which files,
+  where, subdomain vs subpath, why `base: './'`, troubleshooting
+  for blank page / 404s / wrong folder / browser cache / mixed
+  content / permissions).
+- `dist/index.html` now references `./assets/...` and
+  `./radar.svg` (relative), not `/assets/...`.
 
-A small follow-up prompt for the next session is captured in
-[`NEXT_AGENT_PROMPT.md`](./NEXT_AGENT_PROMPT.md).
+**What's still on the user:**
+- Upload the contents of `dist/` to Hostinger.
+- (Optional) uncomment the CSP / HSTS lines in `.htaccess` once
+  deployed over HTTPS.
+- (Optional) push `main` to GitHub — repo is private, nothing
+  pushed yet, **do not push without an explicit ask**.
+
+**Recommended next milestone (post-deploy):** v2 — wire up real
+NVD / CISA KEV / FIRST EPSS providers through
+`src/services/vulnerabilityService.ts` (the service layer is
+already shaped for it; no UI changes needed). Until then, the
+mock-data path stays intact via `USE_MOCK = true`.
+
+The full deployment guide is in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
