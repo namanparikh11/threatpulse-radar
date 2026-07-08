@@ -234,8 +234,8 @@ function Footer() {
   return (
     <footer className="pt-2 text-center text-[11px] text-radar-dim">
       <p>
-        ThreatPulse Radar · defensive vulnerability intelligence · CISA KEV +
-        NVD + FIRST EPSS live data with mock-data fallback.
+        Built by Naman Parikh · Defensive cybersecurity portfolio project ·
+        Data sources: CISA KEV, NVD, FIRST EPSS where available
       </p>
     </footer>
   );
