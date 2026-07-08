@@ -58,6 +58,21 @@ function section(name) {
   console.log(`\n--- ${name} ---`);
 }
 
+/**
+ * v5.0.3: Strip JS-style comments from a source string so the
+ * tests below can check the code, not the comments. Used by
+ * the response-body and URL-query-string tests to avoid
+ * false positives from documentation that mentions the
+ * pattern (e.g. "`?apiKey=...` in the URL; v5.0.3 moves it to
+ * a header" — the test must not flag this as actual code).
+ */
+function stripComments(s) {
+  return s
+    .replace(/\/\*[\s\S]*?\*\//g, '')   // /* ... */ block comments
+    .replace(/^\s*\/\/.*$/gm, '')       // // line comments (line start)
+    .replace(/\s+\/\/.*$/gm, '');      // // trailing-line comments
+}
+
 /* ------------------------------------------------------------------ */
 /* 1. The Netlify Function file exists and is a Node ESM module       */
 /* ------------------------------------------------------------------ */
@@ -419,26 +434,64 @@ assert('v5.0.2: function never puts NVD_API_KEY in the response body',
   // The jsonResponse helper's body parameter is the FetchResult
   // shape (data, source, mode, nvdStatus, etc.). It must never
   // receive a NVD_API_KEY, and the function body must not
-  // assign the key to a response field.
+  // assign the key to a response field. Comments stripped
+  // first to avoid matching doc text that mentions the
+  // pattern (v5.0.3 fix).
   (() => {
-    // Find the jsonResponse helper definition.
-    const i = functionSrc.indexOf('function jsonResponse(');
-    if (i < 0) return true; // if no helper to inspect, pass
-    const tail = functionSrc.slice(i, i + 800);
-    return !/NVD_API_KEY/.test(tail);
-  })() &&
-    // Also: the function must not return a field named anything
-    // like 'apiKey' on the success path.
-    !/nvdApiKey|apiKey\s*:\s*[^,}\s]+/.test(functionSrc),
+    const code = stripComments(functionSrc);
+    const i = code.indexOf('function jsonResponse(');
+    if (i < 0) return true;
+    const tail = code.slice(i, i + 800);
+    return !/NVD_API_KEY/.test(tail) &&
+      !/nvdApiKey|apiKey\s*:\s*[^,}\s]+/.test(code);
+  })(),
   'expected NVD_API_KEY to never appear in the function response');
 
-assert('v5.0.2: function passes apiKey as ?apiKey=... query param to NVD when set',
-  // Look for a URL construction that appends `&apiKey=...` or
-  // a conditional that uses apiKey in the URL.
-  /apiKey\s*=\s*\$\{[^}]*encodeURIComponent[^}]*apiKey\}/.test(functionSrc) ||
-    /apiKey=.{0,30}apiKey/.test(functionSrc) ||
-    /\?apiKey=/.test(functionSrc),
-  'expected ?apiKey=<key> on the NVD URL when NVD_API_KEY is set');
+assert('v5.0.3: NVD_API_KEY is NOT appended to the NVD URL query string',
+  // v5.0.2 incorrectly used a URL query parameter
+  // (`?apiKey=...` / `&apiKey=...`). v5.0.3 moves the key
+  // to a request header per NVD's official CVE 2.0 spec.
+  // Comments stripped first so the doc text describing
+  // the v5.0.2 → v5.0.3 transition doesn't trip the test.
+  !/\?apiKey=/.test(stripComments(functionSrc)) &&
+    !/&apiKey=/.test(stripComments(functionSrc)),
+  'expected NVD_API_KEY to NOT appear in any NVD URL query string');
+
+assert('v5.0.3: NVD_API_KEY IS passed as a request header (apiKey: <key>)',
+  // v5.0.3: the apiKey must be assigned to the request
+  // headers object, not the URL. Acceptable forms:
+  //   - mutable headers:   headers.apiKey = apiKey
+  //   - object literal:     { ..., apiKey: apiKey }
+  //   - shorthand literal:  { ..., apiKey }
+  (() => {
+    return /headers\.\s*apiKey\s*=/.test(functionSrc) ||
+      /apiKey:\s*apiKey\b/.test(functionSrc) ||
+      /headers\s*=\s*\{[^}]*apiKey\b/.test(functionSrc);
+  })(),
+  'expected apiKey to be assigned to a request headers object');
+
+assert('v5.0.3: NVD_API_KEY is never included in the function response body',
+  // The jsonResponse helper is the only place the response
+  // body is constructed. The key must not flow into it.
+  // Comments stripped to avoid matching doc text.
+  (() => {
+    const code = stripComments(functionSrc);
+    const i = code.indexOf('function jsonResponse(');
+    if (i < 0) return true;
+    const tail = code.slice(i, i + 800);
+    return !/NVD_API_KEY/.test(tail) && !/apiKey/.test(tail);
+  })(),
+  'expected NVD_API_KEY to never appear in the function response body');
+
+assert('v5.0.3: NVD_API_KEY is never logged (no console.log / .log of the key)',
+  // Defense-in-depth: the key must not flow into any log
+  // call. console.log of the apiKey variable, of the env
+  // var, or of any string containing "key" is forbidden.
+  // Comments stripped to avoid matching doc text.
+  !/console\.log\([^)]*apiKey/.test(stripComments(functionSrc)) &&
+    !/console\.log\([^)]*NVD_API_KEY/.test(stripComments(functionSrc)) &&
+    !/console\.log\([^)]*process\.env/.test(stripComments(functionSrc)),
+  'expected NVD_API_KEY to never be passed to console.log');
 
 assert('v5.0.2: function uses serial chunk fetch (concurrency = 1) without NVD_API_KEY',
   // Look for the actual `concurrency = apiKey ? X : 1` line in

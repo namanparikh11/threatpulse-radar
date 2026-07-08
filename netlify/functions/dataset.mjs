@@ -382,6 +382,13 @@ function normalizeCisaKevRecord(rec) {
 //        reason verbatim — the banner now reads cleanly instead of
 //        spilling 200+ characters of repeated errors.
 //
+// v5.0.3 — NVD API key transport fix:
+//   NVD's official CVE 2.0 spec passes the API key in the
+//   `apiKey` request HEADER, not the URL query string. v5.0.2
+//   incorrectly used `?apiKey=<key>` in the URL; v5.0.3 moves
+//   it to `headers: { apiKey: <key> }`. The key is still
+//   server-side only — never sent to the browser.
+//
 //   The NVD_API_KEY is read inside the function only. It is never
 //   logged, never included in the response body, and never sent to
 //   the browser. The app works identically without the key (just
@@ -453,14 +460,16 @@ async function fetchNvdForCves(cveIds) {
 }
 
 async function fetchOneNvdChunk(cveChunk, apiKey) {
-  // v5.0.2: append the optional apiKey as a query param. NVD
-  // accepts `?apiKey=...` (it's their standard auth mechanism
-  // for non-authenticated-by-default public access).
-  const url = apiKey
-    ? `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}&apiKey=${encodeURIComponent(apiKey)}`
-    : `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}`;
+  // v5.0.3: pass the optional apiKey as a request HEADER
+  // (per NVD's official CVE 2.0 spec), NOT as a URL query
+  // parameter. The key is still server-side only — never
+  // sent to the browser, never logged, never included in
+  // the response body.
+  const url = `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}`;
+  const headers = { Accept: 'application/json' };
+  if (apiKey) headers.apiKey = apiKey;
   const res = await withTimeout(
-    fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' }),
+    fetch(url, { headers, cache: 'no-store' }),
     PER_REQUEST_TIMEOUT_MS,
     `NVD chunk fetch (${cveChunk.length} CVEs)`,
   );
