@@ -1,12 +1,14 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v5.0.3.
-> Last verified: this session (Pass 17 — NVD API key
-> transport fix; key moved from URL query parameter to
-> request header per NVD's official CVE 2.0 spec).
+> End-of-session handover for **ThreatPulse Radar** v5.1.
+> Last verified: this session (Pass 18 — soft refresh:
+> silent 5-minute background poll, "New dataset available"
+> banner with explicit Apply update button, filters /
+> search / sort / drawer state preserved across the apply).
 > Build clean. Acceptance tests green
 > (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
-> 60/60 v4 cache + 71/71 v5.0/v5.0.1/v5.0.2/v5.0.3 proxy = 266/266**).
+> 60/60 v4 cache + 71/71 v5.0/v5.0.1/v5.0.2/v5.0.3 proxy +
+> 58/58 v5.1 soft-refresh = 324/324**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -35,13 +37,20 @@ cleanly when NVD rate-limits. v5.0.3 fixes the NVD API key
 transport: the key is now passed as request header
 `apiKey: <key>` per NVD's official CVE 2.0 spec (v5.0.2
 incorrectly appended it to the URL query string). The key
-is still server-side only.
+is still server-side only. v5.1 adds soft refresh: a
+silent 5-minute background poll detects newer upstream
+data and surfaces a small "New dataset available.
+Updated 2 min ago." banner with an explicit Apply update
+button. Filters, search, sort, and the open detail view
+are preserved across the apply; the drawer auto-closes
+only if the selected CVE is no longer in the new dataset.
 
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
   Recharts 2 + Lucide React icons + a single Node 20 ESM
   Netlify Function (v5.0) with a v5.0.1 CDN-cacheable response,
-  a v5.0.2 NVD rate-limit path, and a v5.0.3 request-header
-  NVD API key transport.
+  a v5.0.2 NVD rate-limit path, a v5.0.3 request-header
+  NVD API key transport, and a v5.1 silent 5-minute
+  background-poll soft-refresh path.
 - **Backend:** one read-only serverless function with a 15 min
   CDN cache. **Auth:** none. **Database:** none. **Payments:**
   none. **Exploit code:** none. **Live public-feed access:**
@@ -52,21 +61,24 @@ is still server-side only.
   (`NVD_API_KEY`, Netlify function scope only) for higher
   NVD throughput; never exposed to the browser; the app
   works identically without it.
-- **Build:** `npm.cmd run build` passes clean (≈5.3 s this pass, 0 errors, 0 warnings).
+- **Build:** `npm.cmd run build` passes clean (≈7.3 s this pass, 0 errors, 0 warnings). The v5.1 changes add ~30 lines to the main JS chunk (new UpdateAvailableBanner component + polling effect). The CSS chunk is byte-identical to v5.0.3; the icons chunk gains the new `X` lucide-react icon.
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
   KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests** +
   **60/60 v4 cache tests** + **71/71 v5.0/v5.0.1/v5.0.2/v5.0.3 proxy tests**
-  (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs && node scripts/acceptance-proxy.mjs`).
+  + **58/58 v5.1 soft-refresh tests**
+  (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs && node scripts/acceptance-proxy.mjs && node scripts/acceptance-softrefresh.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
-  session (Pass 17). An `origin` remote is configured at
+  session (Pass 18). An `origin` remote is configured at
   `https://github.com/namanparikh11/threatpulse-radar.git` (added in
   pass 5); nothing has been pushed since. Do not push without an
   explicit ask.
-- **Deployment:** v5.0.3 is the Netlify deployment target (see
+- **Deployment:** v5.1 is the Netlify deployment target (see
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) section 0 for the v5.0
   Netlify workflow, section 0.7 for the v5.0.1 CDN-cache
   behavior, and section 0.8 for the v5.0.2 / v5.0.3
-  `NVD_API_KEY` configuration).
+  `NVD_API_KEY` configuration). The v5.1 soft-refresh path
+  is entirely client-side; no deployment-config changes
+  are required.
   hosting (or any Apache-based `public_html` host). See
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the guide.
 
@@ -1042,6 +1054,221 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   - No UI redesign.
   - No new offensive / exploit functionality.
 
+### Pass 18 — v5.1 Soft Refresh ← *current*
+
+- **Motivation.** The dashboard renders its initial
+  dataset, then sits idle until the user manually
+  clicks "Refresh live data" or reloads the page. CISA
+  KEV gets ~5–15 new entries per week on average —
+  a portfolio visitor who keeps the tab open all
+  afternoon sees nothing about those new entries
+  unless they remember to refresh. v5.1 adds a
+  silent 5-minute background poll that detects a
+  newer upstream dataset and surfaces it through a
+  small "New dataset available." banner. The user
+  decides when to apply it, so a triage session
+  mid-investigation is never disturbed. This is the
+  first user-visible behavioral change since v3 —
+  every prior pass was data-source or transport work
+  that the user never saw.
+
+- **UX contract (preserved end-to-end):**
+  1. Visitor opens the dashboard
+     → the latest stored dataset loads instantly
+     (v4 localStorage cache hit, or v5 proxy).
+  2. Background refresh starts / scheduled
+     refresh runs (the 5-minute `setInterval`
+     inside DashboardPage)
+     → no visible disruption. No spinner, no
+     layout shift, no full-page reload, no
+     banner unless something genuinely new was
+     detected.
+  3. New dataset becomes available
+     → a small banner appears at the top of the
+     content area:
+     > **New dataset available. Updated 2 min
+     > ago.** [Apply update] [×]
+  4. User clicks "Apply update"
+     → data updates smoothly. Filters stay.
+     Search stays. Sort stays. The selected
+     detail view stays (or, if the selected CVE
+     is no longer in the new dataset, the drawer
+     auto-closes — showing a phantom record would
+     be worse than closing). No full-page reload.
+  5. User clicks × (or never clicks anything)
+     → the banner is dismissed. The same exact
+     update won't re-appear on every poll tick —
+     only a strictly newer one will.
+
+- **`src/services/vulnerabilityService.ts`** —
+  one new optional flag on `VulnerabilityQuery`:
+  ```ts
+  export interface VulnerabilityQuery {
+    forceRefresh?: boolean;   // existing v4
+    background?: boolean;     // new v5.1
+  }
+  ```
+  `background: true` skips the localStorage cache
+  read for this single call (so the routine poll
+  can actually detect a newer upstream dataset —
+  reading the same local cache forever would
+  never trigger an update) and still writes the
+  result through to the cache on success. It
+  does NOT bust the CDN: a background poll within
+  the CDN's `s-maxage=900` window cheaply gets the
+  cached function response, which is the intended
+  path. Critically different from `forceRefresh`:
+  - `forceRefresh` clears the localStorage cache
+    AND appends a `?t=<timestamp>` cache-buster
+    on the proxy URL. It is the "I really want
+    fresh data right now" button.
+  - `background` skips only the localStorage
+    read, leaves the CDN alone, and is used by
+    the silent poll. The CDN's s-maxage is the
+    right TTL — we don't need to bust it on a
+    routine check.
+
+- **`src/pages/DashboardPage.tsx`** — three
+  additions, no removals:
+  1. **New state slots** — `pendingUpdate`
+     (`FetchResult<Vulnerability[]> | null`) and
+     `dismissedFetchedAt` (`string | null`),
+     plus two refs (`stateRef`, `dismissedRef`)
+     so the polling closure can read the latest
+     values without restarting the interval on
+     every render.
+  2. **Polling `useEffect`** — starts a
+     `setInterval(pollOnce, 5 * 60 * 1000)` when
+     `state.kind === 'ready'`. Each tick:
+     - bails if `document.visibilityState !==
+       'visible'` (hidden tabs don't poll),
+     - calls `fetchVulnerabilities({ background:
+       true })`,
+     - only sets `pendingUpdate` when the result
+       is `mode === 'live'` AND
+       `result.fetchedAt > current.meta.fetchedAt`
+       AND `result.fetchedAt !==
+       dismissedFetchedAt`,
+     - silently swallows any network error in a
+       `try / catch` (a transient proxy error
+       shouldn't surface as a banner).
+     The interval is cleaned up on unmount and
+     re-created if state leaves `ready` and
+     returns (e.g. an explicit manual refresh).
+  3. **`UpdateAvailableBanner` component** —
+     new, inline (matching the four existing
+     banners). Info tone (cyan), small, with a
+     `Sparkles` icon, the new dataset's age
+     (`formatAgeShort`) and absolute time
+     (`formatAbsolute`), and two buttons: Apply
+     update (calls `handleApplyUpdate`) and ×
+     (calls `handleDismissUpdate`).
+
+- **`handleApplyUpdate`** — promotes
+  `pendingUpdate` into `state` via
+  `setState({ kind: 'ready', meta: current })`.
+  Critically, filters / search / sort are NOT
+  touched — they live in separate `useState`
+  slots on DashboardPage and survive this state
+  transition unchanged. The DetailDrawer is
+  reconciled: if the selected CVE still exists
+  in the new dataset, the `selected` reference
+  is swapped to the new record (so any updated
+  CVSS / EPSS scores show through); if the CVE
+  is no longer in the new dataset, `selected`
+  is set to `null` (drawer closes — better
+  than showing a stale phantom record).
+  `dismissedFetchedAt` is cleared on Apply.
+
+- **`handleDismissUpdate`** — sets
+  `dismissedFetchedAt = pendingUpdate.fetchedAt`
+  and clears `pendingUpdate`. Both happen via
+  the functional `setPendingUpdate((current) =>
+  ...)` updater so they always see the same
+  value of `current`. Cleared automatically on
+  Apply.
+
+- **`scripts/acceptance-softrefresh.mjs`** —
+  new file, **58/58** passing:
+  - 12 behavior assertions on a pure-JS
+    re-implementation of the
+    `shouldShowPendingUpdate` decision
+    (newer / equal / older / mock / fallback /
+    dismissed-equal / dismissed-older /
+    defensive nulls).
+  - 6 service-wiring assertions (the
+    `background` flag, the readCache bypass,
+    the writeCache preservation, the v5.1
+    file-level comment, the docstring, the
+    preserved `forceRefresh` contract).
+  - 30 dashboard-wiring assertions (state
+    slots, refs, polling effect cadence and
+    cleanup, visibility / mode / fetchedAt /
+    dismissedFetchedAt guards, silent
+    try/catch, both handlers, drawer close-
+    if-missing + swap-if-present, banner
+    render + copy + icons + tone + buttons).
+  - 10 regression assertions on the existing
+    v4 / v5.0.3 contracts (cache helpers,
+    cache TTL, forceRefresh behavior, all
+    four prior banners still wired).
+
+- **Docs.** `README.md` (status badge +
+  feature bullet), `PROJECT_HANDOFF.md`
+  (header / status / stack / acceptance /
+  repo / deployment / Pass 18 entry /
+  milestone table), `NEXT_AGENT_PROMPT.md`
+  (remove the v5.1 candidate-item note and
+  replace with a "v5.1 done in pass 18"
+  pointer to the relevant files).
+
+- **Honesty contract (preserved):**
+  - No new data sources. OSV.dev / GHSA / other
+    aggregators remain a v5.2+ milestone.
+  - No login / auth.
+  - No database.
+  - No scheduled functions. The 5-minute
+    `setInterval` runs only on the user's open
+    tab — there is no server-side scheduler
+    and no Netlify scheduled function.
+  - No new env vars anywhere. The only
+    server-side env var (`NVD_API_KEY`) is
+    unchanged from v5.0.2 / v5.0.3.
+  - No new API keys, secrets, or tokens.
+  - No CDN changes. The function still serves
+    `Cache-Control: public, s-maxage=900,
+    stale-while-revalidate=300` from v5.0.1.
+  - No automatic background data swap. The
+    user must always click "Apply update" —
+    the soft-refresh banner is informational,
+    never auto-applied. This is the whole
+    point of the feature: a triage session in
+    progress is never disturbed.
+  - No new offensive / exploit
+    functionality.
+  - The cache never hides provider failures.
+    A background poll that returns a `mode:
+    'fallback'` or `mode: 'mock'` result is
+    never surfaced as a "new dataset" banner
+    — the polling effect explicitly drops
+    non-live results.
+
+- **Build**: 0 errors, 0 warnings, ≈7.3 s.
+  Main JS chunk: ~91 kB (up from ~89 kB in
+  v5.0.3 — ~30 lines added: the polling
+  effect, the two handlers, and the banner
+  component). Icons chunk: gains the new `X`
+  lucide-react icon. CSS chunk: byte-identical
+  to v5.0.3 (`index-CiCb1bmX.css`). Charts
+  chunk: rebuilt (Vite re-split), no semantic
+  changes.
+
+- **Acceptance**:
+  **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+  53/53 v3 NVD + 60/60 v4 cache + 71/71 v5.0/
+  v5.0.1/v5.0.2/v5.0.3 proxy + 58/58 v5.1
+  soft-refresh = 324/324**.
+
 ### Items reviewed and intentionally left alone
 
 - **Vulnerability table mobile UX.** The table uses
@@ -1482,7 +1709,8 @@ do any of the following without an explicit ask:
 | v5.0 — Netlify Function live proxy | ✅ done (pass 14) |
 | v5.0.1 — CDN-cacheable function response (performance hardening) | ✅ done (pass 15) |
 | v5.0.2 — NVD rate-limit hardening + optional server-only `NVD_API_KEY` | ✅ done (pass 16) |
-| v5.0.3 — NVD API key transport fix (request header, not URL query param) | ✅ done (pass 17) — *this session* |
+| v5.0.3 — NVD API key transport fix (request header, not URL query param) | ✅ done (pass 17) |
+| v5.1 — Soft refresh (silent 5-min poll, "New dataset available" banner, filters preserved) | ✅ done (pass 18) — *this session* |
 | v4.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
 | v5 — CPE-based asset matching, My Inventory mode | 📋 planned |
 

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CircleAlert, HardDrive, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CircleAlert, HardDrive, RefreshCw, Sparkles, X } from 'lucide-react';
 import Header from '../components/Header';
 import StatsCards from '../components/StatsCards';
 import FiltersPanel from '../components/FiltersPanel';
@@ -26,17 +26,72 @@ import {
   countBySeverity,
 } from '../utils/analytics';
 import { formatAbsolute, formatRelative } from '../utils/format';
+import { formatAgeShort } from '../services/datasetCache';
 
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'ready'; meta: FetchResult<Vulnerability[]> }
   | { kind: 'error'; message: string };
 
+/**
+ * v5.1: Background poll cadence for the soft-refresh path.
+ * Every 5 minutes the dashboard silently checks the proxy
+ * for a newer upstream dataset. If newer data is found AND
+ * the user hasn't dismissed that exact update already, a
+ * small banner appears with an explicit "Apply update"
+ * button. The poll only fires while the document is visible
+ * (browsers throttle hidden-tab timers anyway, but we also
+ * skip explicitly so we don't hit the proxy while the user
+ * is away).
+ *
+ * 5 min chosen to balance latency (worst-case ~20 min from
+ * upstream change → banner, given the CDN's s-maxage=900)
+ * against proxy load (288 polls/day/visitor vs. ~2880/day
+ * at 1-min cadence for no UX benefit).
+ */
+const BACKGROUND_POLL_INTERVAL_MS = 5 * 60 * 1000;
+
 export default function DashboardPage() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [filters, setFilters] = useState<VulnerabilityFilters>(DEFAULT_FILTERS);
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [selected, setSelected] = useState<Vulnerability | null>(null);
+  /**
+   * v5.1: A newer FetchResult detected by the background
+   * poll but not yet applied by the user. When non-null, the
+   * UpdateAvailableBanner is rendered. The polling logic
+   * only sets this when:
+   *   - the poll succeeded (`mode === 'live'`), AND
+   *   - the result's `fetchedAt` is strictly newer than the
+   *     currently displayed `state.meta.fetchedAt`, AND
+   *   - the user hasn't already dismissed that exact
+   *     `fetchedAt` (see `dismissedFetchedAt`).
+   * Null otherwise.
+   */
+  const [pendingUpdate, setPendingUpdate] = useState<FetchResult<Vulnerability[]> | null>(null);
+  /**
+   * v5.1: The `fetchedAt` of the most recently dismissed
+   * pending update. Used so a background poll that returns
+   * the same `fetchedAt` (e.g. a stale-while-revalidate
+   * re-serve with no actual upstream change) does NOT
+   * re-show the banner. Cleared on Apply so a future poll
+   * for the same `fetchedAt` won't be suppressed either.
+   */
+  const [dismissedFetchedAt, setDismissedFetchedAt] = useState<string | null>(null);
+  /**
+   * v5.1: Refs that mirror the latest `state.meta.fetchedAt`
+   * and `dismissedFetchedAt` so the polling closure (started
+   * once on first 'ready') can read the current values
+   * without restarting the interval on every state change.
+   */
+  const stateRef = useRef(state);
+  const dismissedRef = useRef(dismissedFetchedAt);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    dismissedRef.current = dismissedFetchedAt;
+  }, [dismissedFetchedAt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,6 +178,112 @@ export default function DashboardPage() {
     }
   }
 
+  /**
+   * v5.1: Background poll effect. Starts a setInterval when the
+   * initial load reaches 'ready'. Each tick calls
+   * `fetchVulnerabilities({ background: true })` — which bypasses
+   * the localStorage cache read but leaves the CDN alone — and
+   * compares the result's `fetchedAt` against the currently
+   * displayed one. If newer (and the user hasn't already
+   * dismissed that exact update), stores the result as
+   * `pendingUpdate` so the UpdateAvailableBanner can render.
+   *
+   * The closure reads the latest state / dismissedFetchedAt
+   * via refs (stateRef / dismissedRef) so we don't restart the
+   * interval on every render. The interval is torn down on
+   * unmount and re-created if the page leaves 'ready' and
+   * returns (e.g. an explicit manual refresh goes 'loading'
+   * then 'ready' again).
+   */
+  useEffect(() => {
+    if (state.kind !== 'ready') return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    async function pollOnce() {
+      // Don't bother the proxy while the tab is hidden. Browsers
+      // already throttle hidden-tab timers, but we also skip
+      // explicitly so the next visible-tab tick is the first
+      // one to run after the user comes back.
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState !== 'visible'
+      ) {
+        return;
+      }
+      try {
+        const result = await fetchVulnerabilities({ background: true });
+        if (cancelled) return;
+        // Only a real live fetch is a "new dataset." A mock
+        // fallback or stale-cache re-serve is the same data the
+        // user is already looking at — not worth notifying.
+        if (result.mode !== 'live') return;
+        // Read the *current* (not stale-closure) state.
+        const current = stateRef.current;
+        if (current.kind !== 'ready') return;
+        if (result.fetchedAt <= current.meta.fetchedAt) return;
+        // The user already dismissed this exact update. Skip
+        // so the same banner doesn't re-appear on every poll
+        // tick (e.g. a stale-while-revalidate re-serve).
+        if (result.fetchedAt === dismissedRef.current) return;
+        setPendingUpdate(result);
+      } catch {
+        // Background poll failures are silent. The user is
+        // already looking at a working dataset; a transient
+        // proxy error shouldn't surface as a banner.
+      }
+    }
+
+    timer = setInterval(pollOnce, BACKGROUND_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [state.kind === 'ready']);
+
+  /**
+   * v5.1: User clicked "Apply update" on the
+   * UpdateAvailableBanner. Replace the displayed FetchResult
+   * with the pending one. Filters / search / sort are NOT
+   * touched — they live in separate useState slots that
+   * survive this state transition. The DetailDrawer is
+   * updated to reflect the new dataset: if the selected CVE
+   * still exists, swap the selected reference so any
+   * updated CVSS / EPSS scores show through; if it no longer
+   * exists in the new dataset, close the drawer (showing a
+   * phantom record would be worse than closing).
+   */
+  const handleApplyUpdate = useCallback(() => {
+    setPendingUpdate((current) => {
+      if (!current) return null;
+      setState({ kind: 'ready', meta: current });
+      setDismissedFetchedAt(null);
+      setSelected((prev) => {
+        if (!prev) return prev;
+        const stillExists = current.data.find((v) => v.cveId === prev.cveId);
+        if (!stillExists) return null;
+        return stillExists;
+      });
+      return null;
+    });
+  }, []);
+
+  /**
+   * v5.1: User clicked the dismiss (×) button. Hide the
+   * banner. Remember the dismissed `fetchedAt` so a
+   * background poll returning the same fetchedAt (e.g. a
+   * stale-while-revalidate re-serve) doesn't re-show the
+   * banner. Cleared automatically on Apply.
+   */
+  const handleDismissUpdate = useCallback(() => {
+    setPendingUpdate((current) => {
+      if (current) {
+        setDismissedFetchedAt(current.fetchedAt);
+      }
+      return null;
+    });
+  }, []);
+
   return (
     <div className="min-h-screen text-radar-text">
       <Header meta={state.kind === 'ready' ? state.meta : null} />
@@ -138,6 +299,20 @@ export default function DashboardPage() {
 
         {state.kind === 'ready' && charts && (
           <>
+            {/* v5.1: soft-refresh banner is the most actionable
+                thing on screen ("there's a newer dataset waiting
+                for you"), so it sits above all informational
+                banners. Renders only when the background poll
+                has detected a newer FetchResult that the user
+                hasn't dismissed yet. */}
+            {pendingUpdate && (
+              <UpdateAvailableBanner
+                pendingFetchedAt={pendingUpdate.fetchedAt}
+                onApply={handleApplyUpdate}
+                onDismiss={handleDismissUpdate}
+              />
+            )}
+
             {/* v4: cache banner sits above all provider banners. It
                 is the most fundamental "where did this data come
                 from on this load" question; the provider banners
@@ -429,6 +604,78 @@ function CachedDataBanner({
         <RefreshCw className="h-3 w-3" />
         Refresh live data
       </button>
+    </div>
+  );
+}
+
+/**
+ * v5.1: Banner shown when the background poll has detected a
+ * newer upstream dataset that the user hasn't dismissed. Two
+ * buttons:
+ *   - "Apply update" — promotes the newer FetchResult to the
+ *     displayed state. Filters / search / sort / drawer policy
+ *     are handled by `handleApplyUpdate` upstream.
+ *   - "×" — dismiss. Sets `dismissedFetchedAt` so the same
+ *     exact update won't re-appear on every poll tick. Cleared
+ *     automatically on Apply.
+ *
+ * Tone is info (cyan) — the situation is "good news, newer
+ * data is available" rather than a warning or an error. The
+ * banner is intentionally smaller and quieter than the cache
+ * banner because it's a routine, expected event after the
+ * dashboard has been open for a while.
+ */
+function UpdateAvailableBanner({
+  pendingFetchedAt,
+  onApply,
+  onDismiss,
+}: {
+  pendingFetchedAt: string;
+  onApply: () => void;
+  onDismiss: () => void;
+}) {
+  const ageMs = Math.max(0, Date.now() - new Date(pendingFetchedAt).getTime());
+  const ageLabel = formatAgeShort(ageMs);
+  const absolute = formatAbsolute(pendingFetchedAt);
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="panel flex flex-col gap-2 border-radar-accent/30 bg-radar-accent/5 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div className="flex items-start gap-2">
+        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-radar-accent" />
+        <div>
+          <p className="font-medium text-radar-text">
+            New dataset available. Updated {ageLabel}.
+          </p>
+          <p className="mt-0.5 text-xs text-radar-muted">
+            A newer upstream dataset was detected on{' '}
+            <span className="text-radar-text">{absolute}</span>. Click
+            Apply update to load it — your filters, search, sort,
+            and open detail view will be preserved.
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 self-start">
+        <button
+          type="button"
+          onClick={onApply}
+          className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-radar-accent/40 bg-radar-panel2 px-2.5 py-1.5 text-xs text-radar-text transition hover:border-radar-accent"
+        >
+          <Sparkles className="h-3 w-3" />
+          Apply update
+        </button>
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss update notification"
+          title="Dismiss — hide until the next newer dataset"
+          className="focus-ring inline-flex h-7 w-7 items-center justify-center rounded-md border border-radar-border bg-radar-panel2 text-radar-muted transition hover:border-radar-accent/40 hover:text-radar-text"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
