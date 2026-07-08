@@ -1,0 +1,47 @@
+# Netlify configuration for ThreatPulse Radar.
+#
+# v5.0 adds a single serverless function: `/.netlify/functions/dataset`.
+# It runs as a Node 20 ESM function (no build step required — the file
+# is plain `.mjs`) and is the only thing the browser hits to load the
+# vulnerability dataset. The three upstream providers (CISA KEV, NVD,
+# FIRST EPSS) are reached server-side from the function, so the public
+# demo no longer depends on browser-direct CORS, rate limits, or geo
+# restrictions for the third-party feeds.
+#
+# Browser-direct fetches to the upstream feeds are still kept in the
+# client as a fallback: if the function is unreachable, the client
+# tries the same CISA / NVD / EPSS endpoints directly from the
+# browser. If both layers fail, the dashboard falls back to the
+# local mock dataset and shows the existing "Fallback Mode" banner.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+# v5.0: the dataset function. Node 20 ESM, no bundling.
+[functions.dataset]
+  node_bundler = "none"
+
+# Standard security headers. The function sets its own per-response
+# headers; these are for the static `dist/` assets.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+    X-Frame-Options = "DENY"
+
+# Cache the fingerprinted Vite assets aggressively; keep `index.html`
+# at zero so deploys are picked up immediately. (Mirrors the
+# Hostinger `.htaccess` rules from the v4 deployment guide.)
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/radar.svg"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

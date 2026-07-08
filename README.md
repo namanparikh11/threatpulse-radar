@@ -5,7 +5,7 @@
 > probability, and severity across your stack in a single, focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v4.1-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v5.0-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -81,6 +81,22 @@ review access logs"_).
   Fallback Mode) are still rendered on cached data — the cache
   preserves the original FetchResult fields, so it never hides
   failures.
+- **Netlify Function proxy (v5.0)** — the browser prefers
+  `/.netlify/functions/dataset`, a single CORS-safe serverless
+  endpoint that aggregates CISA KEV + NVD CVSS + FIRST EPSS
+  server-side. The browser never hits the upstream feeds
+  directly on the happy path, so the public demo no longer
+  depends on browser-direct CORS, anonymous rate limits, or
+  geo restrictions for those feeds. If the function is
+  unreachable, the client falls back to the v4 browser-direct
+  pipeline automatically; if both transports fail, the
+  existing mock fallback kicks in. A small "Proxy: Netlify"
+  pill in the header makes the live transport visible. **No
+  API keys, secrets, or tokens are ever embedded in the
+  frontend or in the function** — both transports use the
+  same anonymous public endpoints. See
+  [V5.0 live proxy mode](#-v50-live-proxy-mode) for the full
+  architecture.
 - **Service layer** designed to plug in additional real APIs (NVD,
   FIRST EPSS) without touching UI code.
 
@@ -97,20 +113,29 @@ review access logs"_).
 | Charts       | [Recharts 2](https://recharts.org)              |
 | Icons        | [Lucide React](https://lucide.dev)              |
 
-No backend. No login. No database. No payments. No exploit code.
+No login. No database. No payments. No exploit code.
+V5.0 adds a single read-only serverless function
+(`netlify/functions/dataset`) that aggregates the public
+feeds — it is not a backend in the traditional sense
+(no persistent state, no auth, no business logic, no
+credentials, no scheduled jobs).
 
-**Data sources:** the dashboard is **frontend-only and
-defensive-only**. ThreatPulse Radar reads public vulnerability
-feeds directly from the browser when available. In a static
-public demo, third-party feeds may block direct browser
-requests due to CORS, anonymous rate limits, geo restrictions,
-or upstream outages. When that happens, the UI shows the
-provider failure transparently and falls back only according
-to the documented rules (see [V4.1 public-demo
-honesty](#-v41-public-demo-honesty) below for the full
-stance). **No API keys, secrets, or tokens are ever embedded
-in the frontend bundle.** No new data sources planned for
-v3.x / v4.x — see the [Roadmap](#-roadmap).
+**Data sources:** the dashboard is **defensive-only**.
+V5.0 reads public vulnerability feeds via a single
+serverless endpoint (`/.netlify/functions/dataset`) by
+default, with a transparent browser-direct fallback when
+the function is unreachable. The proxy aggregates the
+same three feeds that v4 fetched directly from the
+browser (CISA KEV, NVD CVE 2.0, FIRST EPSS) — it does
+*not* add new sources, and it uses the same anonymous
+public endpoints. **No API keys, secrets, or tokens are
+ever embedded in the frontend bundle or in the
+function.** See [V5.0 live proxy mode](#-v50-live-proxy-mode)
+for the full architecture and
+[V4.1 public-demo honesty](#-v41-public-demo-honesty) for
+the fallback / transparency contract that v5.0 inherits.
+No new data sources planned for v5.0 / v5.x — see the
+[Roadmap](#-roadmap).
 
 ---
 
@@ -119,6 +144,7 @@ v3.x / v4.x — see the [Roadmap](#-roadmap).
 ```
 threatpulse-radar/
 ├── index.html
+├── netlify.toml                       # v5.0 Netlify config (build + functions)
 ├── package.json
 ├── tailwind.config.js
 ├── postcss.config.js
@@ -127,14 +153,18 @@ threatpulse-radar/
 ├── tsconfig.node.json
 ├── vite.config.ts
 ├── public/
-│   ├── .htaccess                     # SPA fallback, cache, security headers
+│   ├── .htaccess                     # SPA fallback, cache, security headers (Hostinger)
 │   └── radar.svg
+├── netlify/
+│   └── functions/
+│       └── dataset.mjs               # v5.0 serverless aggregator (CISA+NVD+EPSS)
 └── src/
     ├── main.tsx                       # entry
     ├── App.tsx                        # thin shell
     ├── index.css                      # Tailwind + global polish
+    ├── vite-env.d.ts                  # import.meta.env typing for v5.0
     ├── components/                    # presentational + container pieces
-    │   ├── Header.tsx
+    │   ├── Header.tsx                 # + "Proxy: Netlify" pill (v5.0)
     │   ├── StatsCards.tsx
     │   ├── FiltersPanel.tsx
     │   ├── VulnerabilityTable.tsx
@@ -152,7 +182,7 @@ threatpulse-radar/
     ├── pages/
     │   └── DashboardPage.tsx          # single-screen dashboard
     ├── services/
-    │   ├── vulnerabilityService.ts    # live/mock/fallback mode switcher
+    │   ├── vulnerabilityService.ts    # v5.0: proxy-first orchestration
     │   ├── datasetCache.ts            # v4 localStorage cache layer
     │   └── providers/
     │       ├── README.ts              # reserved for v4 providers
@@ -327,6 +357,99 @@ under the [Roadmap](#-roadmap) below.
 
 ---
 
+## ⚡ V5.0 live proxy mode
+
+V5.0 ships the v4.1 v5 milestone. The architecture is:
+
+```
+Browser ──► /.netlify/functions/dataset ──► CISA KEV
+                                          NVD CVE 2.0
+                                          FIRST EPSS
+        (only on proxy failure)
+        ──► browser-direct CISA / NVD / EPSS
+        (only on total failure)
+        ──► local mock dataset (Fallback Mode)
+```
+
+The function lives at `netlify/functions/dataset.mjs`. It
+is a self-contained Node 20 ESM module (no imports from
+`src/`, no dependencies) that re-implements the CISA → NVD
+→ EPSS pipeline with the same field shapes and
+normalization rules as the browser-side providers in
+`src/services/providers/`. It returns a JSON envelope
+identical in shape to the client-side `FetchResult`:
+
+- **HTTP 200** on success:
+  `{ data, source: 'merged', mode: 'live', fetchedAt,
+     nvdStatus, nvdReason, epssStatus, epssReason }`. A
+  partial NVD or EPSS failure still returns 200 with
+  `nvdStatus: 'unavailable'` / `epssStatus: 'unavailable'`.
+- **HTTP 502** when CISA itself failed:
+  `{ mode: 'fallback', fallbackReason }`. The client treats
+  this as a proxy failure and falls through to browser-direct.
+
+The frontend (`src/services/vulnerabilityService.ts`)
+prefers the proxy on every fetch:
+
+1. **Proxy success** → return with `proxyStatus: 'proxy'`.
+   The header shows a small cyan "Proxy: Netlify" pill so
+   the user can see which transport carried the data.
+2. **Proxy failure** → fall back to the v4
+   `tryBrowserDirectFetch` (the existing CISA → NVD → EPSS
+   pipeline). If that succeeds, return with
+   `proxyStatus: 'browser-direct'`.
+3. **Both transports failed** → return the local mock
+   dataset with `mode: 'fallback'`,
+   `fallbackReason` explaining the total failure, and
+   `proxyStatus: 'unavailable'`.
+
+**All v4 invariants are preserved:**
+
+- The localStorage cache still wraps the live path. A
+  successful proxy fetch is cached; a successful
+  browser-direct fetch is cached; a mock fallback is never
+  cached. A stale cache hit on a total transport failure
+  still surfaces the original provider-status banners.
+- The per-provider status fields (`nvdStatus`, `epssStatus`)
+  and the `fallbackReason` survive every transport swap and
+  every cache round-trip. The cache never hides failures.
+- The header pills, banners, and source labels are
+  source-honest. The user can see at a glance whether
+  they're looking at proxy-fetched, browser-direct,
+  cached, or mock-fallback data.
+
+**What v5.0 does *not* add (the line that matters):**
+
+- **No API keys** in the frontend or in the function. The
+  proxy uses the same anonymous public endpoints the
+  browser used in v4 — there is no credential to leak.
+- **No new data sources.** OSV.dev, GitHub Advisory
+  Database, and other aggregators remain a v5.1+
+  milestone, not a v5.0 feature.
+- **No scheduled / background functions.** The dataset
+  function runs on demand per request.
+- **No database, no auth, no login.** The function is
+  read-only and idempotent.
+- **No UI redesign.** The v4.1 header, dashboard, table,
+  filters, and detail drawer are unchanged. The only new
+  visible element is the small "Proxy: Netlify" pill in
+  the header, shown only when the proxy was the live
+  transport.
+
+**Local development note:** `npm run dev` runs the Vite
+dev server, which does *not* serve Netlify Functions. The
+proxy endpoint will 404 on `http://localhost:5173` unless
+you run `netlify dev` (which proxies Functions through the
+Vite dev server). On `netlify dev`, both transports work.
+On `npm run dev` only, the proxy returns null and the
+client transparently falls back to the browser-direct
+path — the dashboard still works, the proxyStatus field
+reads `browser-direct`. See
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) for the full local-dev
+and Netlify-deploy workflows.
+
+---
+
 ## 🛣️ Roadmap
 
 - [x] v1 — Polished frontend, mock data, full filtering & visualization
@@ -339,14 +462,22 @@ under the [Roadmap](#-roadmap) below.
   "Cached data" banner above the stats, and a manual
   "Refresh live data" button. Provider failures are never
   hidden.
-- [x] v4.1 — **Public-demo honesty hardening** (this release)
-  — docs updated to be source-honest about static
-  deployment and browser CORS. The public demo is
-  intentionally transparent when any provider is
-  unreachable; no API keys are ever embedded in the
-  frontend bundle. See
+- [x] v4.1 — **Public-demo honesty hardening** — docs
+  updated to be source-honest about static deployment
+  and browser CORS. The public demo is intentionally
+  transparent when any provider is unreachable; no API
+  keys are ever embedded in the frontend bundle. See
   [V4.1 public-demo honesty](#-v41-public-demo-honesty)
   for the full stance.
+- [x] v5.0 — **Netlify Function live proxy** (this release)
+  — a single serverless endpoint at
+  `/.netlify/functions/dataset` aggregates CISA KEV +
+  NVD CVSS + FIRST EPSS server-side. The browser prefers
+  the proxy and falls back to browser-direct on
+  transport failure. No API keys, no new sources, no UI
+  redesign. See
+  [V5.0 live proxy mode](#-v50-live-proxy-mode) for the
+  full architecture.
 - [ ] v4.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
 - [ ] v4.5 — Per-vendor watchlists and email/Slack digest
 - [ ] v4.5 — CSV / JSON export of filtered results
@@ -357,15 +488,24 @@ under the [Roadmap](#-roadmap) below.
 
 ## 🏃 Run it locally
 
-Prerequisites: **Node.js 18+** (tested on Node 24).
+Prerequisites: **Node.js 18+** (tested on Node 24). For the
+v5.0 Netlify Function proxy: **Netlify CLI** (`npm i -g netlify-cli`).
 
 ```bash
 # 1. Install dependencies
 npm install
 
-# 2. Start the dev server
+# 2a. Plain Vite dev server (no Netlify Function).
+#     The dashboard works, but the proxy endpoint will 404.
+#     The client transparently falls back to browser-direct
+#     fetches (proxyStatus === 'browser-direct').
 npm run dev
 # -> http://localhost:5173
+
+# 2b. Netlify dev (Vite + Netlify Functions together).
+#     Use this to test the v5.0 proxy end-to-end locally.
+npx netlify dev
+# -> http://localhost:8888
 
 # 3. Production build (type-check + bundle)
 npm run build
