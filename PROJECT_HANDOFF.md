@@ -1,11 +1,11 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v5.0.
-> Last verified: this session (Pass 14 — Netlify Function
-> live proxy mode).
+> End-of-session handover for **ThreatPulse Radar** v5.0.1.
+> Last verified: this session (Pass 15 — performance
+> hardening, CDN-cacheable function response).
 > Build clean. Acceptance tests green
 > (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
-> 60/60 v4 cache + 45/45 v5 proxy = 240/240**).
+> 60/60 v4 cache + 55/55 v5/v5.0.1 proxy = 250/250**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -22,31 +22,37 @@ transparent 1-hour localStorage cache on top so a returning visitor
 doesn't pay the 30–60 s NVD first-load on every page visit. v5.0
 adds a single read-only Netlify Function that aggregates the same
 three feeds server-side, so the browser no longer depends on direct
-access to the third-party origins for the happy path.
+access to the third-party origins for the happy path. v5.0.1 adds
+a CDN-cacheable function response (`Cache-Control: s-maxage=900,
+stale-while-revalidate=300`) so repeat visitors in a region get
+sub-100 ms responses within a 15 min window, while the
+"Last refresh" pill and the "Refresh live data" button remain
+source-honest.
 
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
   Recharts 2 + Lucide React icons + a single Node 20 ESM
-  Netlify Function (v5.0).
-- **Backend:** one read-only serverless function. **Auth:** none.
-  **Database:** none. **Payments:** none. **Exploit code:** none.
-  **Live public-feed access:** the browser prefers the v5.0
-  Netlify Function proxy and falls back to the v4 browser-direct
-  path on transport failure, then to the local mock dataset on
-  total failure. **API keys:** none read or shipped.
-- **Build:** `npm.cmd run build` passes clean (≈7.7 s this pass, 0 errors, 0 warnings).
+  Netlify Function (v5.0) with a v5.0.1 CDN-cacheable response.
+- **Backend:** one read-only serverless function with a 15 min
+  CDN cache. **Auth:** none. **Database:** none. **Payments:**
+  none. **Exploit code:** none. **Live public-feed access:**
+  the browser prefers the v5.0 Netlify Function proxy
+  (CDN-cached) and falls back to the v4 browser-direct path on
+  transport failure, then to the local mock dataset on total
+  failure. **API keys:** none read or shipped.
+- **Build:** `npm.cmd run build` passes clean (≈5.8 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
   KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests** +
-  **60/60 v4 cache tests** + **45/45 v5 proxy tests**
+  **60/60 v4 cache tests** + **55/55 v5/v5.0.1 proxy tests**
   (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs && node scripts/acceptance-proxy.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
-  session (Pass 14). An `origin` remote is configured at
+  session (Pass 15). An `origin` remote is configured at
   `https://github.com/namanparikh11/threatpulse-radar.git` (added in
   pass 5); nothing has been pushed since. Do not push without an
   explicit ask.
-- **Deployment:** v5.0 is the Netlify deployment target (see
+- **Deployment:** v5.0.1 is the Netlify deployment target (see
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) section 0 for the v5.0
-  Netlify workflow, and sections 1–9 for the v1.0–v4.1
-  Hostinger static-hosting fallback).
+  Netlify workflow and section 0.7 for the v5.0.1 CDN-cache
+  behavior).
   hosting (or any Apache-based `public_html` host). See
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the guide.
 
@@ -624,6 +630,148 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   - No offensive / exploit functionality. The
     v1 / v2 / v3 defensive-only contract is preserved.
 
+### Pass 15 — v5.0.1 performance hardening ← *current*
+
+- **Motivation.** The v5.0 function returned
+  `Cache-Control: no-store` on every response. Netlify's
+  edge cache respected that and re-ran the full
+  CISA → NVD → EPSS pipeline on every request — even if
+  the same visitor reloaded five times in a minute. On a
+  busy public demo that meant dozens of unnecessary
+  upstream fetches per minute per region, and a cold first
+  load for every visitor in every region. v5.0.1 adds a
+  short, safe, source-honest CDN cache so the second-and-
+  onwards visitors within a 15 min window get a sub-100 ms
+  response.
+
+- **Root cause (confirmed by reading the code).**
+  - localStorage cache **is** being written under
+    `tpr:dataset:v1` (`writeCache(live)` at the end of a
+    successful live fetch).
+  - Second reload within 1 h **does** render from
+    localStorage cache (`if (cached && isCacheFresh(...))`
+    is the first branch in `fetchVulnerabilities`).
+  - The function **was** using
+    `Cache-Control: no-store`. **This was the root cause**
+    of repeated slow loads.
+
+- **`netlify/functions/dataset.mjs`** — one line of
+  effective change. The `jsonResponse` helper now returns
+  `Cache-Control: public, s-maxage=900, stale-while-revalidate=300`
+  instead of `Cache-Control: no-store`. Detailed comment
+  block added explaining:
+  - `s-maxage=900` → 15 min CDN cache (repeat visitors
+    within the window get <100 ms responses).
+  - `stale-while-revalidate=300` → after the 15 min
+    mark, the cache is "stale" for another 5 minutes;
+    Netlify serves the stale response immediately AND
+    triggers a background refresh. This avoids the
+    "thundering herd" problem.
+  - No `max-age` directive — the browser is not told to
+    cache the JSON locally (the client uses
+    `cache: 'no-store'` on its fetch anyway). The
+    `s-maxage` directive is what Netlify's edge honors.
+  - The function's `fetchedAt` is set inside the function
+    body at the moment it actually runs, NOT when the
+    CDN serves the response. The "Last refresh" pill
+    therefore shows the time since the *real* upstream
+    fetch, even on CDN-cached responses.
+
+- **`src/services/vulnerabilityService.ts`** — minimal
+  additive change. `tryProxyFetch` now accepts an
+  `opts: { forceRefresh?: boolean }` parameter; when
+  `forceRefresh` is true, the URL gets a unique
+  `?t=${Date.now()}` query string. The CDN treats this
+  as a different URL and re-runs the function, honoring
+  the "Refresh live data" button's contract. `tryLiveFetch`
+  and `fetchVulnerabilities` thread the option through.
+  No new types, no new env vars, no UI changes.
+
+- **Honesty contract (preserved):**
+  - The function's `fetchedAt` is set inside the function
+    body. The dashboard's "Last refresh" pill
+    (`formatRelative(meta.fetchedAt)`) shows the time
+    since the actual upstream fetch, NOT the time the
+    CDN served the response. **A CDN-cached response is
+    never advertised as a fresh fetch.**
+  - The "Refresh live data" button appends a unique
+    `?t=<timestamp>` query string when `forceRefresh: true`
+    is passed. The CDN treats this as a different URL and
+    does NOT hit its cache — a manual refresh always
+    re-runs the function. The button's name remains
+    honest.
+  - The localStorage cache (v4) is unchanged. The two
+    layers compose: a 15 min CDN cache + a 1 h
+    localStorage cache + the in-memory `cacheStatus`
+    pill. No layer hides the others.
+  - The provider-status banners (NVD unavailable, EPSS
+    unavailable, Fallback Mode) survive every layer and
+    are still rendered on cached data. The cache
+    envelope preserves the full `FetchResult`.
+
+- **Test fix in `scripts/acceptance-nvd.mjs`.** Two NVD
+  tests (`header source label mentions NVD when
+  nvdStatus="nvd"` and `Header source label reflects
+  BOTH nvdStatus and epssStatus`) were using
+  `indexOf('\n}\n', fnStart)` to find the closing brace
+  of `describeSource` in `Header.tsx`. This was failing
+  on Windows where `Header.tsx` has CRLF line endings
+  (the indexOf never matched `\n}\n` because the actual
+  bytes are `}\r\n`). Replaced with a regex match
+  (`/\n\s*\}\s*\n/`) that works on both LF and CRLF. No
+  production code changed.
+
+- **`scripts/acceptance-proxy.mjs`** — 9 new
+  v5.0.1-specific assertions added (proxy suite is now
+  55/55, up from 45/45 in v5.0). New section
+  "v5.0.1 — CDN cache headers + forceRefresh cache-busting":
+  - function sets CDN-cacheable Cache-Control with
+    `s-maxage=900` and `stale-while-revalidate=300`
+  - function response does NOT use the v5.0 no-store
+    directive
+  - `tryProxyFetch` accepts a `forceRefresh` option
+  - `tryProxyFetch` appends a cache-busting
+    `?t=<timestamp>` on `forceRefresh`
+  - `tryLiveFetch` accepts `forceRefresh` in its
+    signature
+  - `tryLiveFetch` forwards `opts` to `tryProxyFetch`
+  - `fetchVulnerabilities` forwards `forceRefresh` to
+    `tryLiveFetch`
+  - no `max-age` directive is set (CDN-only caching,
+    not browser caching)
+  - existing `tryProxyFetch` test for catch-null behavior
+    still passes (slice size increased from 4000 to 6000
+    chars to accommodate the longer v5.0.1 function body)
+
+- **Build**: 0 errors, 0 warnings, 5.80 s. App chunk
+  hash changed (`CRAMVlaT` → `CIyVmlOq`); all other
+  chunks are byte-identical to v5.0. App chunk grew by
+  0.08 kB raw / 0.02 kB gzipped for the cache-busting
+  logic. No CSS or icon change.
+
+- **Acceptance**:
+  **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+  53/53 v3 NVD + 60/60 v4 cache + 55/55 v5/v5.0.1
+  proxy = 250/250**.
+
+- **No new dependencies.** No `package.json` change.
+  The function uses only Node 20 built-ins. The client
+  uses only the existing stack.
+
+- **What v5.0.1 does *not* add (deliberate, per the
+  v4.1 / v5.0 docs contract):**
+  - No new data sources. OSV.dev / GHSA / other
+    aggregators remain a v5.1+ milestone.
+  - No API keys, secrets, or tokens are read or shipped.
+  - No new environment variables.
+  - No scheduled / background functions. The
+    `stale-while-revalidate` directive is a CDN-layer
+    mechanism, not a function scheduled job.
+  - No UI redesign.
+  - No offensive / exploit functionality.
+  - No new fake freshness claims. A CDN-cached
+    response is not advertised as a fresh fetch.
+
 ### Items reviewed and intentionally left alone
 
 - **Vulnerability table mobile UX.** The table uses
@@ -1061,7 +1209,8 @@ do any of the following without an explicit ask:
 | v3 QA / portfolio-demo hardening | ✅ done (pass 11) |
 | v4 — Transparent 1-hour localStorage cache | ✅ done (pass 12) |
 | v4.1 — Public-demo honesty hardening (docs-only) | ✅ done (pass 13) |
-| v5.0 — Netlify Function live proxy | ✅ done (pass 14) — *this session* |
+| v5.0 — Netlify Function live proxy | ✅ done (pass 14) |
+| v5.0.1 — CDN-cacheable function response (performance hardening) | ✅ done (pass 15) — *this session* |
 | v4.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
 | v5 — CPE-based asset matching, My Inventory mode | 📋 planned |
 

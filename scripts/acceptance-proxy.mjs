@@ -130,9 +130,13 @@ assert('function uses "unavailable" as the partial-failure value',
   /['"]unavailable['"]/.test(functionSrc),
   'expected nvdStatus / epssStatus "unavailable" sentinel');
 
-assert('function sets Cache-Control: no-store on responses',
-  /Cache-Control['"]\s*:\s*['"]no-store/.test(functionSrc),
-  'expected Cache-Control: no-store (the client already does its own 1 h localStorage cache)');
+assert('v5.0.1: function sets a CDN-cacheable Cache-Control with s-maxage=900',
+  /Cache-Control['"]\s*:\s*['"]public,\s*s-maxage=900,\s*stale-while-revalidate=300/.test(functionSrc),
+  'expected Cache-Control: public, s-maxage=900, stale-while-revalidate=300 (15 min CDN cache + 5 min SWR)');
+
+assert('v5.0.1: function response does NOT use the v5.0 no-store directive',
+  !/Cache-Control['"]\s*:\s*['"]no-store/.test(functionSrc),
+  'expected no-store to be removed in v5.0.1 so the CDN can absorb repeat visits');
 
 assert('function sets Access-Control-Allow-Origin: * (safe for embed / proxy)',
   /Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/.test(functionSrc),
@@ -222,8 +226,12 @@ assert('FetchResult includes optional proxyStatus field',
 
 assert('service has a tryProxyFetch() helper that calls fetch(DATASET_PROXY_URL)',
   /tryProxyFetch/.test(serviceSrc) &&
-    /fetch\(\s*DATASET_PROXY_URL/.test(serviceSrc),
-  'expected tryProxyFetch to call the proxy endpoint');
+    (
+      /fetch\(\s*DATASET_PROXY_URL/.test(serviceSrc) ||
+      /fetch\(\s*url/.test(serviceSrc) ||
+      /fetch\(\s*`?\$\{?DATASET_PROXY_URL/.test(serviceSrc)
+    ),
+  'expected tryProxyFetch to call the proxy endpoint (direct or templated URL)');
 
 assert('service has a tryBrowserDirectFetch() helper for the v4 fallback',
   /tryBrowserDirectFetch/.test(serviceSrc),
@@ -247,12 +255,11 @@ assert('tryProxyFetch treats any fetch failure (network / non-2xx / shape) as nu
     // Look for a `catch {` block inside tryProxyFetch whose body
     // returns null. The error-handling block may have several
     // lines of comments above the return. We slice from the
-    // function definition to the next `async function` (or 4000
-    // chars, whichever is shorter) so the catch block is in
-    // scope.
+    // function definition past the catch block (or 6000 chars,
+    // whichever is shorter) so the catch is in scope.
     const i = serviceSrc.indexOf('tryProxyFetch');
     if (i < 0) return false;
-    const tail = serviceSrc.slice(i, i + 4000);
+    const tail = serviceSrc.slice(i, i + 6000);
     return /catch\s*\{[\s\S]{0,500}return\s+null/.test(tail);
   })(),
   'expected tryProxyFetch to swallow errors and return null on any failure');
@@ -268,6 +275,62 @@ assert('FetchResult on a browser-direct fallback is tagged with proxyStatus: "br
 assert('FetchResult on a total failure is tagged with proxyStatus: "unavailable"',
   /proxyStatus:\s*['"]unavailable['"]/.test(serviceSrc),
   'expected the total-failure branch to set proxyStatus: "unavailable"');
+
+/* ------------------------------------------------------------------ */
+/* 6.5. v5.0.1 — CDN cache + forceRefresh cache-busting               */
+/* ------------------------------------------------------------------ */
+
+section('v5.0.1 — CDN cache headers + forceRefresh cache-busting');
+
+assert('v5.0.1: tryProxyFetch accepts a forceRefresh option',
+  /tryProxyFetch\(\s*[\s\S]{0,400}opts[\s\S]{0,200}forceRefresh/.test(serviceSrc) ||
+    /tryProxyFetch\(\s*opts[\s\S]{0,200}forceRefresh/.test(serviceSrc) ||
+    /async function tryProxyFetch\(\s*opts\s*:\s*\{\s*forceRefresh/.test(serviceSrc),
+  'expected tryProxyFetch to accept an opts object with forceRefresh');
+
+assert('v5.0.1: tryProxyFetch appends a cache-busting ?t=<timestamp> on forceRefresh',
+  (() => {
+    // The cache-busting URL must be constructed inside tryProxyFetch
+    // (not at module scope) and must reference Date.now() so every
+    // forced refresh gets a unique URL.
+    const i = serviceSrc.indexOf('tryProxyFetch');
+    if (i < 0) return false;
+    const tail = serviceSrc.slice(i, i + 4000);
+    return /forceRefresh[\s\S]{0,500}\?t=/.test(tail) &&
+      /Date\.now\(\)/.test(tail);
+  })(),
+  'expected "?t=${Date.now()}" appended to the URL when forceRefresh is true');
+
+assert('v5.0.1: tryLiveFetch accepts a forceRefresh option in its signature',
+  /async function tryLiveFetch\(\s*[\s\S]{0,200}forceRefresh/.test(serviceSrc),
+  'expected the tryLiveFetch signature to declare a forceRefresh option');
+
+assert('v5.0.1: tryLiveFetch forwards opts to tryProxyFetch',
+  /await\s+tryProxyFetch\(\s*opts\s*\)/.test(serviceSrc),
+  'expected tryLiveFetch to call `tryProxyFetch(opts)` (forwarding the option object)');
+
+assert('v5.0.1: fetchVulnerabilities forwards forceRefresh to tryLiveFetch',
+  /tryLiveFetch\(\s*\{\s*forceRefresh:\s*query\.forceRefresh/.test(serviceSrc),
+  'expected fetchVulnerabilities to call tryLiveFetch({ forceRefresh: query.forceRefresh })');
+
+assert('v5.0.1: the no-store directive is removed from the function response',
+  !/Cache-Control['"]\s*:\s*['"]no-store/.test(functionSrc),
+  'expected no-store removed so the CDN can cache repeat visits');
+
+assert('v5.0.1: the function response includes s-maxage=900 (15 min)',
+  /s-maxage=900/.test(functionSrc),
+  'expected s-maxage=900 so Netlify\'s edge caches for 15 minutes');
+
+assert('v5.0.1: the function response includes stale-while-revalidate=300 (5 min)',
+  /stale-while-revalidate=300/.test(functionSrc),
+  'expected stale-while-revalidate=300 so the next visitor after expiry gets a stale response immediately + a background refresh');
+
+assert('v5.0.1: no max-age directive is set (CDN-only caching, not browser caching)',
+  // The browser is told not to cache (`cache: 'no-store'` on the
+  // client fetch). The function response should rely solely on
+  // `s-maxage` (CDN), not `max-age` (browser).
+  !/Cache-Control['"]\s*:\s*['"][^'"]*\bmax-age\s*=/.test(functionSrc),
+  'expected no max-age directive so browser HTTP cache is not used (CDN only)');
 
 /* ------------------------------------------------------------------ */
 /* 7. The Header shows a Proxy pill                                   */

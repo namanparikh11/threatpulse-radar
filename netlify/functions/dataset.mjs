@@ -164,6 +164,39 @@ export default async (request /* Request */) => {
 // which is same-origin to the deployed app, so CORS is technically not
 // required. We still set a permissive header in case someone embeds the
 // dashboard in an iframe or proxies the function from another origin.
+//
+// v5.0.1 — performance hardening: the function previously returned
+// `Cache-Control: no-store`, which meant every visitor triggered a
+// full CISA → NVD → EPSS pipeline run (the 5–15 s cold path). The
+// v5.0.1 response is now `s-maxage=900, stale-while-revalidate=300`:
+//
+//   - s-maxage=900
+//       Netlify's edge cache holds the response for 15 minutes.
+//       Within that window, repeat visitors get the cached function
+//       response in <100 ms — no upstream fetch, no function run.
+//   - stale-while-revalidate=300
+//       After the 15 min mark, the cache is "stale" for another
+//       5 minutes. Netlify serves the stale response immediately
+//       AND triggers a background function invocation to refresh
+//       the cache. The next visitor after the refresh hits the
+//       fresh cache again. This avoids the "thundering herd"
+//       problem of many visitors all waiting on a slow function.
+//   - The response has no `max-age` directive, so the browser
+//     is not told to cache the JSON locally — but the client uses
+//     `cache: 'no-store'` on its fetch anyway. The `s-maxage`
+//     directive is what Netlify's edge honors; `max-age` would
+//     be a stronger signal we don't want here.
+//   - The function's `fetchedAt` field is set inside the function
+//     body (`new Date().toISOString()`) at the moment the function
+//     actually runs, NOT when the CDN serves the response. The
+//     dashboard's "Last refresh" pill therefore shows the time
+//     since the *actual* function run, even on CDN-cached
+//     responses. The freshness copy remains honest.
+//   - The client's "Refresh live data" button appends a unique
+//     `?t=<timestamp>` query string when `forceRefresh: true` is
+//     passed, so a manual refresh always bypasses the CDN cache
+//     and forces a real function run. The button continues to
+//     honor its name.
 // ---------------------------------------------------------------------------
 
 function jsonResponse(status, body) {
@@ -171,7 +204,7 @@ function jsonResponse(status, body) {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store', // dashboard already does its own 1 h localStorage cache
+      'Cache-Control': 'public, s-maxage=900, stale-while-revalidate=300',
       'Access-Control-Allow-Origin': '*',
       'X-Content-Type-Options': 'nosniff',
     },

@@ -173,6 +173,41 @@ to live.
   the first request on a cold function may take ~1 s. The
   client-side 25 s timeout gives plenty of headroom.
 
+### 0.7 V5.0.1 — function response is now CDN-cacheable
+
+v5.0.1 is a performance-only patch. The function's
+`Cache-Control` is now
+`public, s-maxage=900, stale-while-revalidate=300`. The
+behavior:
+
+- **First visitor in a region** (cold CDN cache): the
+  full CISA → NVD → EPSS pipeline runs once, taking
+  5–15 s. The response is cached by Netlify's edge.
+- **Subsequent visitors in the same region within 15 min**:
+  the cached response is served in <100 ms. No upstream
+  fetch, no function run, no cold start.
+- **Visitor at minute 16+** (cache just expired):
+  Netlify serves the stale response immediately AND
+  triggers a background refresh. The next visitor after
+  the refresh hits the fresh cache.
+- **Visitor at minute 21+** (cache fully expired): the
+  request waits for a fresh function invocation. Cold.
+
+The dashboard's "Last refresh" pill shows the time since
+the function *actually* ran (the `fetchedAt` is set
+inside the function body), not the time the CDN served
+the response. Freshness copy is preserved.
+
+The "Refresh live data" button appends a unique
+`?t=<timestamp>` query string when `forceRefresh: true`
+is passed. The CDN treats this as a different URL and
+re-runs the function — a manual refresh always fetches
+fresh upstream data, regardless of the CDN cache state.
+
+Netlify's edge cache is per-region. A new region with
+no cached response pays the full upstream fetch cost
+once, then serves from the regional edge thereafter.
+
 ---
 
 ## 1. TL;DR (v1.0–v4.1 Hostinger static-hosting — fallback)

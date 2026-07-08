@@ -5,7 +5,7 @@
 > probability, and severity across your stack in a single, focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v5.0-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v5.0.1-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -97,6 +97,23 @@ review access logs"_).
   same anonymous public endpoints. See
   [V5.0 live proxy mode](#-v50-live-proxy-mode) for the full
   architecture.
+- **CDN-cacheable function response (v5.0.1)** — the
+  function's `Cache-Control` is now
+  `public, s-maxage=900, stale-while-revalidate=300`. The
+  Netlify edge cache absorbs repeat visitors within a 15 min
+  window (and serves a slightly-stale response for an
+  additional 5 min while a fresh fetch runs in the
+  background). First production load still hits the full
+  upstream pipeline once, but second-and-onwards visitors
+  within the window get a sub-100 ms response from the CDN.
+  The "Refresh live data" button still bypasses the cache
+  (via a unique `?t=<timestamp>` query string) so the
+  button's name remains honest. The "Last refresh" pill
+  reflects the time the function *actually* ran, not the
+  time the CDN served the response — freshness copy is
+  preserved. See
+  [V5.0.1 performance hardening](#-v501-performance-hardening)
+  for the full cache-strategy contract.
 - **Service layer** designed to plug in additional real APIs (NVD,
   FIRST EPSS) without touching UI code.
 
@@ -450,6 +467,123 @@ and Netlify-deploy workflows.
 
 ---
 
+## ⚡ V5.0.1 performance hardening
+
+V5.0.1 is a patch release on top of v5.0. It does **not**
+add features, change data sources, change the UI, or
+change the data flow. The single goal: make repeat
+production loads fast without ever misleading the user
+about how fresh the data is.
+
+### The problem v5.0 left on the table
+
+The v5.0 function returned `Cache-Control: no-store` on
+every response. Netlify's edge cache respected that and
+re-ran the full CISA → NVD → EPSS pipeline on every
+single request — even if the same visitor reloaded five
+times in a minute. On a busy public demo that meant
+dozens of unnecessary upstream fetches per minute per
+region, and a cold first load for every visitor in every
+region.
+
+### The v5.0.1 fix
+
+The function's response is now
+`Cache-Control: public, s-maxage=900, stale-while-revalidate=300`.
+That single header change does three things:
+
+- **`s-maxage=900`** — Netlify's edge cache holds the
+  response for **15 minutes**. Within that window, every
+  visitor in the same region gets the cached response
+  in <100 ms. No upstream fetch, no function run, no
+  cold start.
+- **`stale-while-revalidate=300`** — after the 15 min
+  mark, the cache is "stale" for another **5 minutes**.
+  Netlify serves the stale response immediately AND
+  triggers a background function invocation to refresh
+  the cache. This avoids the "thundering herd" problem
+  where many visitors all wait on a slow function at
+  once.
+- **No `max-age` directive** — the browser is not told
+  to cache the JSON locally (the client uses
+  `cache: 'no-store'` on its fetch anyway). The
+  `s-maxage` directive is what Netlify's edge honors.
+  The `max-age` directive would have told the browser
+  to cache the response across reloads, which would
+  shadow the localStorage cache and the per-load
+  honesty contract.
+
+### How freshness stays honest
+
+Three guarantees keep the dashboard source-honest under
+the new caching:
+
+1. **The function's `fetchedAt` is set inside the
+   function body**, at `new Date().toISOString()` on the
+   moment the function actually runs. When the CDN
+   serves a cached response, the `fetchedAt` is from
+   the *original* function run, not the CDN serve
+   time. The "Last refresh" pill (`formatRelative(meta.fetchedAt)`)
+   therefore shows the time since the real upstream
+   fetch, even on a CDN-cached response.
+2. **The "Refresh live data" button appends a unique
+   `?t=<timestamp>` query string** when `forceRefresh: true`
+   is passed. The CDN treats this as a different URL and
+   does *not* hit its cache — the function actually re-runs.
+   The button's name remains honest: a manual refresh
+   always fetches fresh upstream data.
+3. **The localStorage cache (v4) is unchanged.** It
+   still wraps the live path with a 1 h TTL. The two
+   layers compose: a 15 min CDN cache + a 1 h
+   localStorage cache + the in-memory `cacheStatus`
+   pill. No layer hides the others.
+
+### What you should observe in production
+
+- **First visitor in a region** (cold CDN cache):
+  the full CISA → NVD → EPSS pipeline runs once,
+  taking 5–15 s. Subsequent visitors in the same
+  region within 15 min get the cached response.
+- **Visitor at minute 16** (cache just expired):
+  Netlify serves the stale response immediately AND
+  triggers a background refresh. The next visitor
+  after the refresh hits the fresh cache.
+- **Visitor at minute 21+** (cache fully expired):
+  the next request waits for a fresh function
+  invocation. Cold.
+- **Visitor who clicks "Refresh live data"** at any
+  time: the `?t=<timestamp>` cache-buster forces a
+  real function run. The "Last refresh" pill ticks
+  to "just now".
+
+### What v5.0.1 does *not* add
+
+- **No new data sources.** OSV.dev, GHSA, etc. are
+  still v5.1+ milestones.
+- **No new dependencies.** Plain Node 20 ESM in the
+  function, plain React in the client.
+- **No new environment variables.** The
+  `VITE_DATASET_PROXY_URL` client-side env var
+  default is unchanged.
+- **No UI changes.** Same header, same pills, same
+  banners, same dashboard layout.
+- **No scheduled / background functions.** The
+  `stale-while-revalidate` directive is a CDN-layer
+  mechanism, not a function scheduled job. The
+  function still runs on demand.
+- **No new fake freshness claims.** A CDN-cached
+  response is not advertised as a fresh fetch; the
+  "Last refresh" pill reflects the actual function
+  run time, not the CDN serve time.
+
+### Test count
+
+**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+53/53 v3 NVD + 60/60 v4 cache + 55/55 v5.0/v5.0.1
+proxy = 250/250.**
+
+---
+
 ## 🛣️ Roadmap
 
 - [x] v1 — Polished frontend, mock data, full filtering & visualization
@@ -469,15 +603,25 @@ and Netlify-deploy workflows.
   keys are ever embedded in the frontend bundle. See
   [V4.1 public-demo honesty](#-v41-public-demo-honesty)
   for the full stance.
-- [x] v5.0 — **Netlify Function live proxy** (this release)
-  — a single serverless endpoint at
-  `/.netlify/functions/dataset` aggregates CISA KEV +
-  NVD CVSS + FIRST EPSS server-side. The browser prefers
-  the proxy and falls back to browser-direct on
-  transport failure. No API keys, no new sources, no UI
-  redesign. See
+- [x] v5.0 — **Netlify Function live proxy** — a single
+  serverless endpoint at `/.netlify/functions/dataset`
+  aggregates CISA KEV + NVD CVSS + FIRST EPSS server-side.
+  The browser prefers the proxy and falls back to
+  browser-direct on transport failure. No API keys, no
+  new sources, no UI redesign. See
   [V5.0 live proxy mode](#-v50-live-proxy-mode) for the
   full architecture.
+- [x] v5.0.1 — **CDN-cacheable function response
+  (performance hardening)** (this release) — the
+  function's `Cache-Control` is now
+  `public, s-maxage=900, stale-while-revalidate=300`,
+  so Netlify's edge cache absorbs repeat visitors within
+  a 15 min window. "Refresh live data" still forces a
+  real function run via a cache-busting `?t=<timestamp>`
+  query string. `fetchedAt` remains honest (set inside
+  the function body, not by the CDN). See
+  [V5.0.1 performance hardening](#-v501-performance-hardening)
+  for the full cache-strategy contract.
 - [ ] v4.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
 - [ ] v4.5 — Per-vendor watchlists and email/Slack digest
 - [ ] v4.5 — CSV / JSON export of filtered results
