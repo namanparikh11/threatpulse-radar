@@ -649,8 +649,10 @@ The key is:
 
 - read from `process.env.NVD_API_KEY` **inside the
   Netlify Function only** (server-side);
-- passed to NVD as a `?apiKey=<key>` query parameter on
-  every NVD request;
+- passed to NVD as a request header `apiKey: <key>` from
+  the Netlify Function, never exposed to the browser
+  (v5.0.3 — NVD's official CVE 2.0 spec uses the `apiKey`
+  request header, not a URL query parameter);
 - **never** sent to the browser, **never** included in
   the function response body, **never** logged;
 - **optional** — the function works identically without

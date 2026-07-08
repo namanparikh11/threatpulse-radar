@@ -1,11 +1,12 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v5.0.2.
-> Last verified: this session (Pass 16 — NVD rate-limit
-> hardening, optional server-only `NVD_API_KEY`).
+> End-of-session handover for **ThreatPulse Radar** v5.0.3.
+> Last verified: this session (Pass 17 — NVD API key
+> transport fix; key moved from URL query parameter to
+> request header per NVD's official CVE 2.0 spec).
 > Build clean. Acceptance tests green
 > (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
-> 60/60 v4 cache + 68/68 v5.0/v5.0.1/v5.0.2 proxy = 263/263**).
+> 60/60 v4 cache + 71/71 v5.0/v5.0.1/v5.0.2/v5.0.3 proxy = 266/266**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -30,12 +31,17 @@ sub-100 ms responses within a 15 min window, while the
 source-honest. v5.0.2 adds NVD rate-limit hardening (serial chunks
 when no key, parallel when `NVD_API_KEY` is set) and a concise
 429 reason so the dashboard's `NvdUnavailableBanner` reads
-cleanly when NVD rate-limits.
+cleanly when NVD rate-limits. v5.0.3 fixes the NVD API key
+transport: the key is now passed as request header
+`apiKey: <key>` per NVD's official CVE 2.0 spec (v5.0.2
+incorrectly appended it to the URL query string). The key
+is still server-side only.
 
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
   Recharts 2 + Lucide React icons + a single Node 20 ESM
-  Netlify Function (v5.0) with a v5.0.1 CDN-cacheable response
-  and a v5.0.2 NVD rate-limit path.
+  Netlify Function (v5.0) with a v5.0.1 CDN-cacheable response,
+  a v5.0.2 NVD rate-limit path, and a v5.0.3 request-header
+  NVD API key transport.
 - **Backend:** one read-only serverless function with a 15 min
   CDN cache. **Auth:** none. **Database:** none. **Payments:**
   none. **Exploit code:** none. **Live public-feed access:**
@@ -46,21 +52,21 @@ cleanly when NVD rate-limits.
   (`NVD_API_KEY`, Netlify function scope only) for higher
   NVD throughput; never exposed to the browser; the app
   works identically without it.
-- **Build:** `npm.cmd run build` passes clean (≈5.4 s this pass, 0 errors, 0 warnings).
+- **Build:** `npm.cmd run build` passes clean (≈5.3 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
   KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests** +
-  **60/60 v4 cache tests** + **68/68 v5.0/v5.0.1/v5.0.2 proxy tests**
+  **60/60 v4 cache tests** + **71/71 v5.0/v5.0.1/v5.0.2/v5.0.3 proxy tests**
   (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs && node scripts/acceptance-proxy.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
-  session (Pass 16). An `origin` remote is configured at
+  session (Pass 17). An `origin` remote is configured at
   `https://github.com/namanparikh11/threatpulse-radar.git` (added in
   pass 5); nothing has been pushed since. Do not push without an
   explicit ask.
-- **Deployment:** v5.0.2 is the Netlify deployment target (see
+- **Deployment:** v5.0.3 is the Netlify deployment target (see
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) section 0 for the v5.0
   Netlify workflow, section 0.7 for the v5.0.1 CDN-cache
-  behavior, and section 0.8 for the v5.0.2 `NVD_API_KEY`
-  configuration).
+  behavior, and section 0.8 for the v5.0.2 / v5.0.3
+  `NVD_API_KEY` configuration).
   hosting (or any Apache-based `public_html` host). See
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the guide.
 
@@ -808,15 +814,16 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
      the key is present, the function uses parallel
      chunks; if absent, the function uses serial
      chunks. The key is passed into `fetchOneNvdChunk`
-     and appended to the NVD URL as `?apiKey=<key>` —
-     NVD's standard auth mechanism for the public
-     endpoint. The key is **never** sent in the response
+     and sent to NVD as a request header `apiKey: <key>`
+     (v5.0.3 — NVD's official CVE 2.0 spec uses the
+     `apiKey` request header, not a URL query parameter).
+     The key is **never** sent in the response
      body, **never** logged, **never** exposed to the
      browser.
   3. `fetchOneNvdChunk` accepts an optional `apiKey`
-     parameter. If set, it appends `&apiKey=<key>` to
-     the NVD URL. The URL construction is a single
-     ternary so the auth path is the only difference.
+     parameter. If set, it sets `headers.apiKey = apiKey` on
+     the request to NVD. The URL is unchanged; only the
+     headers object gains the key when present.
   4. The `fetchNvdForCves` "all chunks failed" error
      path now detects 429 specifically: if every failed
      chunk is `HTTP 429`, the function throws a single
@@ -866,8 +873,9 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
     (server-side only)
   - function never puts `NVD_API_KEY` in the response
     body
-  - function passes apiKey as `?apiKey=...` query param
-    to NVD when set
+  - function passes apiKey as a request header
+    (`apiKey: <key>`) to NVD when set (v5.0.3 — was a
+    URL query parameter in v5.0.2)
   - function uses serial chunk fetch (concurrency = 1)
     without `NVD_API_KEY`
   - function uses parallel chunk fetch with
@@ -935,6 +943,103 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
     `NvdUnavailableBanner` continues to render the
     function's `nvdReason` field verbatim. The function
     just returns a more concise reason.
+  - No new offensive / exploit functionality.
+
+### Pass 17 — v5.0.3 NVD API key transport fix ← *current*
+
+- **Motivation.** v5.0.2 introduced the optional
+  `NVD_API_KEY` env var and passed it to NVD as a URL
+  query parameter: `?apiKey=<key>`. That worked, but
+  NVD's official CVE 2.0 spec passes the API key in a
+  request **header** named `apiKey`, not in the URL.
+  v5.0.3 fixes the transport. Per the v4.1 / v5.0
+  docs contract the key is still server-side only.
+
+- **`netlify/functions/dataset.mjs`** — surgical change
+  in `fetchOneNvdChunk` only:
+  1. Removed `&apiKey=<key>` from the URL construction.
+  2. When `apiKey` is present, set
+     `headers.apiKey = apiKey` on the request.
+  3. The URL is now always
+     `${NVD_BASE_URL}?cveId=...` with no key in the
+     query string.
+
+- **No new dependencies. No new features. No UI
+  changes. No data-flow changes.** The v5.0.2 rate-
+  limit path, the v5.0.1 CDN cache, the v4 cache
+  envelope, the v2.5 EPSS enrichment, the v3 NVD
+  severity extraction, and the v1 mock fallback are
+  all untouched. The frontend bundle is byte-
+  identical to v5.0.2 (verified by the build hashes).
+
+- **Honesty contract (preserved):**
+  - The key is read from `process.env.NVD_API_KEY`
+    inside the Netlify Function only.
+  - The key is sent to NVD as the `apiKey` request
+    header (per the CVE 2.0 spec).
+  - The key is **never** appended to the NVD URL
+    query string.
+  - The key is **never** sent to the browser, never
+    included in the function response body, never
+    logged.
+  - The frontend (`src/**`) is unchanged. There is
+    no `VITE_NVD_API_KEY` or any other browser-
+    exposed env var.
+  - The function works identically without the key
+    (just slower for the first visitor in a region
+    per 15 min — repeat visitors ride the v5.0.1 CDN
+    cache either way).
+
+- **`scripts/acceptance-proxy.mjs`** — three new
+  v5.0.3 assertions (proxy suite is now 71/71, up
+  from 68/68 in v5.0.2):
+  - NVD_API_KEY is NOT appended to the NVD URL
+    query string (negative)
+  - NVD_API_KEY IS passed as a request header
+    (`apiKey: <key>`) (positive)
+  - NVD_API_KEY is never logged (defense-in-depth)
+
+  Plus a small `stripComments(s)` helper that strips
+  `//` and `/* */` comments before applying the URL
+  and header regexes — so doc text describing the
+  v5.0.2 → v5.0.3 transition doesn't trip the test.
+  The existing v5.0.2 "function never puts NVD_API_KEY
+  in the response body" test was updated to use the
+  same helper for consistency.
+
+- **Docs.** Three doc files updated to remove the
+  stale "passed to NVD as a `?apiKey=<key>` query
+  parameter" wording and replace it with "passed to
+  NVD as a request header `apiKey: <key>` from the
+  Netlify Function, never exposed to the browser":
+  `README.md`, `DEPLOYMENT.md`,
+  `PROJECT_HANDOFF.md`. The same fix was applied
+  to `NEXT_AGENT_PROMPT.md` (which previously
+  suggested the wrong client-side `VITE_NVD_API_KEY`
+  approach).
+
+- **Build**: 0 errors, 0 warnings, ≈5.3 s. **All
+  client chunks are byte-identical to v5.0.2.** The
+  v5.0.3 changes are entirely server-side (function
+  file + test file + docs).
+
+- **Acceptance**:
+  **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+  53/53 v3 NVD + 60/60 v4 cache + 71/71 v5.0/v5.0.1/
+  v5.0.2/v5.0.3 proxy = 266/266**.
+
+- **What v5.0.3 does *not* add (deliberate, per the
+  v4.1 / v5.0 docs contract):**
+  - No new data sources. OSV.dev / GHSA / other
+    aggregators remain a v5.1+ milestone.
+  - No login / auth.
+  - No database.
+  - No scheduled functions.
+  - No new env vars in the frontend. (The single
+    server-side env var, `NVD_API_KEY`, is
+    unchanged from v5.0.2 — only the transport
+    changed.)
+  - No UI redesign.
   - No new offensive / exploit functionality.
 
 ### Items reviewed and intentionally left alone
@@ -1376,7 +1481,8 @@ do any of the following without an explicit ask:
 | v4.1 — Public-demo honesty hardening (docs-only) | ✅ done (pass 13) |
 | v5.0 — Netlify Function live proxy | ✅ done (pass 14) |
 | v5.0.1 — CDN-cacheable function response (performance hardening) | ✅ done (pass 15) |
-| v5.0.2 — NVD rate-limit hardening + optional server-only `NVD_API_KEY` | ✅ done (pass 16) — *this session* |
+| v5.0.2 — NVD rate-limit hardening + optional server-only `NVD_API_KEY` | ✅ done (pass 16) |
+| v5.0.3 — NVD API key transport fix (request header, not URL query param) | ✅ done (pass 17) — *this session* |
 | v4.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
 | v5 — CPE-based asset matching, My Inventory mode | 📋 planned |
 

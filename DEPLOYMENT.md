@@ -225,10 +225,13 @@ NVD's anonymous public endpoint allows 5 requests /
 
 **The key is server-side only.** It is read from
 `process.env.NVD_API_KEY` inside the Netlify Function,
-passed to NVD as a `?apiKey=<key>` query param, and is
+passed to NVD as a request header `apiKey: <key>` from
+the Netlify Function, never exposed to the browser
+(v5.0.3 — NVD's official CVE 2.0 spec uses the `apiKey`
+request header, not a URL query parameter), and is
 **never** sent to the browser, never logged, never
 included in the function response. The frontend is
-unchanged in v5.0.2 — there is no `VITE_NVD_API_KEY`
+unchanged in v5.0.2 / v5.0.3 — there is no `VITE_NVD_API_KEY`
 or any other browser-exposed env var.
 
 **Setting `NVD_API_KEY` on Netlify:**

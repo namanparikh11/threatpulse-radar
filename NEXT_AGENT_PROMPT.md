@@ -118,9 +118,14 @@ for, but reasonable options include:
 3. **Per-vendor watchlists** — a separate `watchlist`
    `localStorage` key + a small "Watchlist" view that filters the
    dataset to the user's saved vendors. No data-layer change.
-4. **NVD API key support** — read `VITE_NVD_API_KEY` from
-   `import.meta.env`, pass through to NVD's `apiKey` query
-   param for a 10× rate-limit bump. ~10 lines in `nvd.ts`.
+4. **NVD API key support** — already shipped in v5.0.2 /
+   v5.0.3: `NVD_API_KEY` is passed server-side from the
+   Netlify Function as request header `apiKey: <key>`,
+   never as a URL query parameter and never exposed to the
+   browser. If a future pass wants to widen this (e.g.
+   surface the key in the client for some reason), it
+   must remain server-side — a `VITE_NVD_API_KEY` is
+   explicitly forbidden by the v4.1 / v5.0 docs contract.
 
 The user gets to pick. The frozen-scope contract from the
 "Hard rules" section above is the same regardless of which one
