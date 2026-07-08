@@ -189,22 +189,77 @@ full `FetchResult` so the user can't tell (visually) that
 they're looking at cached data except for the explicit pill +
 banner telling them.
 
+### 7. V4.1 — The public demo is source-honest about static deployment and CORS
+
+A static public deployment of a "live" data dashboard has a real
+honesty problem: third-party feeds can block or rate-limit
+direct browser requests at any time (CORS, geo-blocking,
+anonymous rate limits, upstream outages), and the easy response
+is to silently swap in a pre-baked dataset so the page never
+goes blank. **The v4.1 stance is the opposite: the failure mode
+is shown, not hidden.** This is what the public demo at the
+deployed URL is actually showing you, on purpose:
+
+- The header pills, the source label, and the banners above
+  the stats are the source of truth. If CISA is unreachable,
+  the header shows "Fallback Mode" and a "Source: mock
+  (fallback)" pill in amber. The mock dataset is shown, but
+  the page never *claims* it's live data.
+- For *partial* upstream failures (CISA succeeded, NVD or
+  EPSS did not), the same pattern applies per-provider: the
+  working providers' data is shown, the failing providers'
+  pills turn amber, and a soft banner explains the partial
+  outage. A degraded view is never dressed up as a full view.
+- The v4 localStorage cache envelope preserves the original
+  `nvdStatus` / `epssStatus` / `fallbackReason` fields, so
+  cached data is rendered with the same provider-failure
+  banners that the original live load produced. The cache is
+  an optimization, not a way to make failures invisible.
+
+Two consequences of that stance that are worth calling out in
+an interview:
+
+1. **No API keys are ever embedded in the frontend bundle.**
+   A static `dist/` is a public artifact the moment the site
+   is deployed — any key shipped in it is a public credential,
+   and rotating a leaked key is more disruptive than accepting
+   the 5-req/30s NVD anonymous rate limit. Embedding a key
+   would also have made the "the dashboard never claims data
+   it doesn't have" property less honest, because the key
+   itself would be unverifiable from the public bundle. I
+   chose the slower path on purpose.
+2. **A future v5 could add a thin backend or serverless
+   proxy** that aggregates CISA + NVD + FIRST EPSS
+   server-side and exposes a single CORS-safe JSON endpoint.
+   The v4.1 service layer is designed so a backend can be
+   added as a new `provider` without touching UI code or
+   breaking the existing fallback path. **v4.1 does *not*
+   add the backend** — that is an explicit v5 milestone,
+   not a quietly-laid track. The dashboard as deployed
+   today is strictly frontend-only.
+
 ---
 
 ## What I would do differently next time
 
 A short list of honest trade-offs:
 
-- **The NVD rate limit (5 requests / 30 s without an API key)
-  still makes the *first* load feel slow.** The v4 cache makes
-  the second-and-onwards load instant, but the very first visit
-  on a fresh browser pays the full 30–60 s NVD first-load. I
-  considered a "loading NVD… 50 % complete" progress indicator,
-  but the user asked for no UI redesign. The current state uses
-  one spinner and a copy line that says "Loading CISA KEV · NVD
-  CVSS · FIRST EPSS — may take up to a minute on first load…".
-  A future pass could plumb an NVD API key for a 10× rate-limit
-  bump.
+- **The NVD rate limit (5 requests / 30 s on the anonymous
+  endpoint) still makes the *first* load feel slow.** The v4
+  cache makes the second-and-onwards load instant, but the
+  very first visit on a fresh browser pays the full 30–60 s
+  NVD first-load. I considered a "loading NVD… 50 % complete"
+  progress indicator, but the user asked for no UI redesign.
+  The current state uses one spinner and a copy line that says
+  "Loading CISA KEV · NVD CVSS · FIRST EPSS — may take up to a
+  minute on first load…". A v5 backend or serverless proxy
+  could absorb the NVD rate limit server-side and serve a
+  single CORS-safe JSON to the browser, which would fix the
+  first-load latency *and* remove the CORS-failure surface
+  for the public demo. Embedding an NVD API key in the
+  frontend bundle is not on the table — a static `dist/` is
+  a public artifact, and shipping a key is shipping a public
+  credential.
 - **No "save filter preset" or "watchlist" features.** Listed
   in the v4.5 milestone in `PROJECT_HANDOFF.md`. Would be the
   next pass if I had more time. (Note: any new `localStorage`

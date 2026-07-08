@@ -340,10 +340,63 @@ For the avoidance of doubt, the deployed bundle:
 - Sends **no telemetry, no analytics, no third-party scripts**.
   Open DevTools → Network on the deployed page and confirm: only
   the bundle's own assets should be requested.
-- Stores **no user data** — no cookies, no `localStorage`, no
-  service worker.
+- Stores **no user accounts, cookies, credentials, or service
+  worker data**. Uses `localStorage` **only** for a transparent
+  1-hour vulnerability dataset cache under the versioned key
+  `tpr:dataset:v1` (the v4 cache layer; no PII, no auth
+  material, no third-party identifiers — just the previously
+  fetched dataset envelope).
 
 It's a portfolio piece. Treat it as read-only static HTML.
+
+---
+
+## 10. V4.1 public-demo honesty (what visitors will actually see)
+
+A static public deployment of a "live" data dashboard has a real
+honesty problem. The deployed bundle has no backend and no proxy,
+so it depends on each of the three data feeds (CISA KEV, NVD,
+FIRST EPSS) continuing to allow direct browser requests.
+**That is not a guarantee.** CORS policies, anonymous rate
+limits, geo restrictions, and upstream outages can each make a
+provider unreachable from a visitor's browser.
+
+This is expected for v4.1, and the dashboard is intentionally
+transparent about it:
+
+- **CISA KEV unreachable** → the header shows an amber
+  "Fallback Mode" badge, the source pill reads "Source: mock
+  (fallback)", and a "Live CISA KEV feed unavailable — showing
+  mock data" banner appears above the stats with the failure
+  reason and a "Retry live fetch" button. The curated 60-record
+  mock dataset is rendered; filtering, sorting, search, charts,
+  and the detail drawer all work identically against it.
+- **NVD or EPSS unreachable** (CISA succeeded) → the CISA data
+  is still shown. An amber "NVD: unavailable" or "EPSS:
+  unavailable" pill appears in the header, and a soft banner
+  above the stats explains the partial outage. The page never
+  *claims* enrichment that didn't happen.
+- **Cached data** (v4) → a "Cache: fresh" / "Cache: stale" pill
+  in the header and a "Cached data" banner above the stats
+  show the relative and absolute time of the last upstream
+  fetch, plus a manual "Refresh live data" button. The
+  provider-status banners above are preserved through the
+  cache envelope, so cached data is never indistinguishable
+  from a successful live load.
+
+**No API keys, secrets, or tokens are ever embedded in the
+frontend bundle.** A static `dist/` is a public artifact the
+moment the site is deployed; shipping a key in it would ship a
+public credential. The NVD API key path is intentionally not
+implemented in v4.1; the 5-req/30s anonymous rate limit is a
+price worth paying for not leaking a secret.
+
+**A future v5 could add a thin backend or serverless proxy**
+that aggregates CISA + NVD + FIRST EPSS server-side and exposes
+a single CORS-safe JSON endpoint. That would fix the first-load
+NVD latency and remove the CORS-failure surface for the public
+demo. **v4.1 does *not* add the backend** — it is an explicit
+v5 milestone, and the deployment strategy above is unchanged.
 
 ---
 

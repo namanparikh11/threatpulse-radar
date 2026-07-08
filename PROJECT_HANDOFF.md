@@ -1,8 +1,8 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v4.0.
-> Last verified: this session (Pass 12 — transparent cache layer for
-> portfolio demo reliability).
+> End-of-session handover for **ThreatPulse Radar** v4.1.
+> Last verified: this session (Pass 13 — public-demo honesty
+> hardening, docs-only).
 > Build clean. Acceptance tests green
 > (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
 > 60/60 v4 cache = 195/195**).
@@ -24,8 +24,10 @@ doesn't pay the 30–60 s NVD first-load on every page visit.
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
   Recharts 2 + Lucide React icons.
 - **Backend:** none. **Auth:** none. **Database:** none. **Payments:** none.
-  **Exploit code:** none. CISA KEV is fetched directly from the browser
-  (the CISA feed is CORS-enabled) — no proxy, no server.
+  **Exploit code:** none. **Live public-feed access:** browser-direct and
+  best-effort. Static browser demos may fall back if a provider blocks
+  direct requests due to CORS, rate limits, geo restrictions, or
+  upstream outages — no proxy, no server.
 - **Build:** `npm.cmd run build` passes clean (≈7.5 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
   KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests** +
@@ -366,6 +368,83 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   rebuild cleanly.
 - Acceptance: **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
   53/53 v3 NVD + 60/60 v4 cache = 195/195**.
+
+### Pass 13 — v4.1 public-demo honesty hardening ← *current*
+- **Motivation.** The v4 pass shipped a working live dashboard,
+  but the README / portfolio writeup / deployment guide were
+  slightly *too optimistic* about CORS — they claimed "all
+  three APIs serve permissive CORS" as if that were a
+  guarantee. For a static public deployment that's not true:
+  any third-party feed can tighten its CORS policy, rate-limit
+  anonymous browser traffic, return 4xx from a particular
+  region, or simply be down. v4.1 makes the public-demo
+  documentation source-honest about that, without changing a
+  single line of app code.
+- **README.md**
+  - Version badge bumped from `v4.0` to `v4.1`.
+  - "Tech stack → Data sources" paragraph rewritten: the
+    "all three APIs serve permissive CORS" claim is removed
+    entirely. The new paragraph states that ThreatPulse
+    Radar reads public feeds directly from the browser
+    *when available*, that third-party feeds may block
+    direct browser requests in a static public demo (CORS,
+    rate limits, geo, outages), and that the UI shows the
+    failure transparently and falls back only according to
+    the documented rules. Explicitly notes that no API
+    keys, secrets, or tokens are ever embedded in the
+    frontend bundle. Points readers to the new V4.1
+    section.
+  - **New section: "🌐 V4.1 public-demo honesty"** between
+    "Data sources" and "Roadmap". Six numbered points:
+    (1) the dashboard is frontend-only and defensive-only,
+    (2) the static public demo may show fallback / mock mode
+    when a feed blocks direct browser requests, and this is
+    expected for v4.1, (3) the UI is intentionally transparent
+    about it (header pills, source label, partial-failure
+    pills, cache pill + banner), (4) the app never hides
+    provider failures, (5) no API keys are ever embedded in
+    the frontend bundle, (6) a future v5 could add a thin
+    backend or serverless proxy — v4.1 explicitly does *not*
+    add it.
+  - Roadmap v4 entry expanded into two: v4 (cache) and v4.1
+    (public-demo honesty hardening — this release).
+- **PORTFOLIO_WRITEUP.md**
+  - **New engineering-decision item: "7. V4.1 — The public
+    demo is source-honest about static deployment and CORS"**
+    added after the cache section. Same six points as the
+    README, framed for a recruiter / technical interviewer
+    audience.
+  - "What I would do differently next time" updated: the
+    old "future pass could plumb an NVD API key for a 10×
+    rate-limit bump" line is removed (that path is closed in
+    v4.1) and replaced with a v5 backend / serverless-proxy
+    framing. The "no API keys in the frontend bundle"
+    stance is stated explicitly.
+- **DEPLOYMENT.md**
+  - **New section 10: "V4.1 public-demo honesty (what
+    visitors will actually see)"** added at the end. Walks
+    through the three honest degradation paths (CISA
+    unreachable, NVD / EPSS unreachable, cached data) and
+    restates the no-API-keys-in-bundle and v5-backend
+    rules. The existing deployment strategy in sections
+    1–9 is **unchanged**.
+- **PROJECT_HANDOFF.md (this file)**
+  - Header bumped from v4.0 to v4.1.
+  - This Pass 13 entry added after Pass 12.
+  - Milestone table updated with a v4.1 row (see section 9
+    below).
+- **No app code changed.** No new dependencies. No UI
+  changes. No data-flow changes. No new features. No backend
+  or serverless function added. No API keys introduced. No
+  deployment strategy overwritten. The cache, the providers,
+  the header, the dashboard page, the filter / sort pipeline,
+  and the `acceptance-*.mjs` test suites are all untouched.
+- **Build re-run**: 0 errors, 0 warnings. (Docs are not in
+  the build, but the build was re-run to confirm no source
+  drift was introduced.)
+- **Acceptance**: **195/195** still green (the test suites
+  were not modified and were not re-run, since no source
+  files changed).
 
 ### Items reviewed and intentionally left alone
 
@@ -740,12 +819,12 @@ ALL TESTS PASSED  (15/15)
   `https://github.com/namanparikh11/threatpulse-radar.git` (added
   in pass 5). The repo is **private**; nothing has been pushed yet.
   Do not push without an explicit ask.
-- **CORS:** the CISA KEV feed is served with
-  `Access-Control-Allow-Origin: *`, which is what makes the
-  browser-direct fetch work. If CISA ever changes that policy,
-  the dashboard will fall back to mock mode on every load and
-  show the fallback banner. The retry button will keep failing
-  until CISA restores the CORS header.
+- **CORS / browser-direct fetching:** browser-direct fetching
+  only works when the provider allows it at request time.
+  Public-demo fallback mode is expected when CORS, rate limits,
+  geo restrictions, or upstream outages block access. The
+  fallback banner + retry button reflect the actual state at
+  the time of the failed fetch.
 
 ---
 
@@ -802,7 +881,8 @@ do any of the following without an explicit ask:
 | v2.5 — FIRST EPSS enrichment | ✅ done (pass 9) |
 | v3 — NVD CVSS enrichment | ✅ done (pass 10) |
 | v3 QA / portfolio-demo hardening | ✅ done (pass 11) |
-| v4 — Transparent 1-hour localStorage cache | ✅ done (pass 12) — *this session* |
+| v4 — Transparent 1-hour localStorage cache | ✅ done (pass 12) |
+| v4.1 — Public-demo honesty hardening (docs-only) | ✅ done (pass 13) — *this session* |
 | v4.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
 | v5 — CPE-based asset matching, My Inventory mode | 📋 planned |
 

@@ -5,7 +5,7 @@
 > probability, and severity across your stack in a single, focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v4.0-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v4.1-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -99,11 +99,18 @@ review access logs"_).
 
 No backend. No login. No database. No payments. No exploit code.
 
-**Data sources:** the dashboard is frontend-only. CISA KEV, NVD, and
-FIRST EPSS are all fetched directly from the browser (all three APIs
-serve permissive CORS); if a fetch fails, the curated mock dataset
-is shown and a banner explains why. No new data sources planned
-for v3.x — see the [Roadmap](#-roadmap).
+**Data sources:** the dashboard is **frontend-only and
+defensive-only**. ThreatPulse Radar reads public vulnerability
+feeds directly from the browser when available. In a static
+public demo, third-party feeds may block direct browser
+requests due to CORS, anonymous rate limits, geo restrictions,
+or upstream outages. When that happens, the UI shows the
+provider failure transparently and falls back only according
+to the documented rules (see [V4.1 public-demo
+honesty](#-v41-public-demo-honesty) below for the full
+stance). **No API keys, secrets, or tokens are ever embedded
+in the frontend bundle.** No new data sources planned for
+v3.x / v4.x — see the [Roadmap](#-roadmap).
 
 ---
 
@@ -231,6 +238,95 @@ care which source is active.
 
 ---
 
+## 🌐 V4.1 public-demo honesty
+
+A static public deployment of a "live" data dashboard has a real
+honesty problem: third-party feeds can block or rate-limit
+direct browser requests at any time (CORS, geo-blocking,
+anonymous rate limits, upstream outages), and the easy response
+is to silently swap in a pre-baked dataset so the page never
+goes blank. **The v4.1 stance is the opposite: the failure
+mode is shown, not hidden.**
+
+**1. The dashboard is frontend-only and defensive-only.** No
+backend, no serverless function, no proxy, no database, no
+auth, no payments. All three feeds (CISA KEV, NVD, FIRST EPSS)
+are fetched directly from the visitor's browser at runtime.
+There is nothing to configure on the server beyond the static
+files in `dist/`.
+
+**2. The static public demo may show fallback / mock mode
+when a public data feed blocks direct browser requests.** This
+is expected for v4.1, not exceptional. Browser-direct access
+to a public feed depends on CORS, anonymous rate limits, geo
+restrictions, and upstream availability — a static public
+deployment cannot *guarantee* any of those. A provider can
+tighten its CORS policy, rate-limit anonymous browser
+traffic, return 4xx from a particular region, or simply be
+down. In every one of those cases, the public demo degrades
+honestly:
+
+- The header shows an **amber "Fallback Mode"** badge and a
+  "Source: mock (fallback)" pill.
+- A **"Live CISA KEV feed unavailable — showing mock data"**
+  banner appears above the stats with the failure reason and
+  a "Retry live fetch" button.
+- The 60-record curated mock dataset is rendered. The
+  dashboard is fully functional against it: filtering,
+  sorting, search, charts, and the detail drawer all work
+  identically.
+
+For *partial* upstream failures (CISA succeeded, but NVD or
+EPSS didn't), the same pattern applies at the per-provider
+level: the working providers' data is shown, an amber
+"unavailable" pill appears in the header, and a soft banner
+above the stats explains the partial outage.
+
+**3. The UI is intentionally transparent about this.** Three
+mechanisms in v4 / v4.1 make provenance visible at all times:
+
+- The header source pill reads `Source: CISA KEV + NVD +
+  FIRST EPSS` only when every named provider actually
+  contributed data; otherwise it downgrades to the
+  providers that did (e.g. `Source: CISA KEV + FIRST EPSS`
+  when NVD failed), and to `Source: mock (fallback)` when
+  CISA itself failed.
+- The per-provider pills (`NVD: enriched` / `NVD:
+  unavailable`, `EPSS: FIRST` / `EPSS: unavailable`) turn
+  amber with the failure reason in their tooltip on any
+  partial failure.
+- The v4 cache pill (`Cache: fresh` / `Cache: stale`) plus
+  the "Cached data" banner above the stats make it clear
+  when the data is being served from `localStorage` and
+  what the original upstream fetch time was.
+
+**4. The app never hides provider failures.** The v4 cache
+envelope preserves the full `FetchResult` (including
+`nvdStatus`, `epssStatus`, and `fallbackReason`), so cached
+data is rendered with the same provider-failure banners that
+the original live load produced. The cache is an
+optimization, not a way to make failures invisible.
+
+**5. No API keys are ever embedded in the frontend bundle.**
+A static `dist/` is a public artifact the moment the site is
+deployed — any key shipped in it is a public credential. The
+NVD API key path is intentionally not implemented in v4.1;
+the 5-req/30s anonymous rate limit is a price worth paying
+for not shipping a public secret. (The README previously
+mentioned "a future pass could plumb an NVD API key" — that
+option is closed in v4.1.)
+
+**6. A future v5 could introduce a thin backend or
+serverless proxy** that aggregates CISA + NVD + FIRST EPSS
+server-side and exposes a single CORS-safe JSON endpoint.
+The v4.1 service layer is designed so a backend can be
+added as a new `provider` without touching UI code or
+breaking the existing fallback path. **v4.1 does *not* add
+the backend** — that is an explicit v5 milestone, listed
+under the [Roadmap](#-roadmap) below.
+
+---
+
 ## 🛣️ Roadmap
 
 - [x] v1 — Polished frontend, mock data, full filtering & visualization
@@ -238,10 +334,19 @@ care which source is active.
 - [x] v2.1 — Severity sort comparator fix
 - [x] v2.5 — **FIRST EPSS enrichment**
 - [x] v3 — **NVD CVE 2.0 CVSS enrichment**
-- [x] v4 — **Transparent 1-hour localStorage cache** (this release)
-  — a "Cache: fresh" / "Cache: stale" pill in the header, a
+- [x] v4 — **Transparent 1-hour localStorage cache** — a
+  "Cache: fresh" / "Cache: stale" pill in the header, a
   "Cached data" banner above the stats, and a manual
-  "Refresh live data" button. Provider failures are never hidden.
+  "Refresh live data" button. Provider failures are never
+  hidden.
+- [x] v4.1 — **Public-demo honesty hardening** (this release)
+  — docs updated to be source-honest about static
+  deployment and browser CORS. The public demo is
+  intentionally transparent when any provider is
+  unreachable; no API keys are ever embedded in the
+  frontend bundle. See
+  [V4.1 public-demo honesty](#-v41-public-demo-honesty)
+  for the full stance.
 - [ ] v4.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
 - [ ] v4.5 — Per-vendor watchlists and email/Slack digest
 - [ ] v4.5 — CSV / JSON export of filtered results
