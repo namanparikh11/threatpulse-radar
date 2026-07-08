@@ -208,6 +208,65 @@ Netlify's edge cache is per-region. A new region with
 no cached response pays the full upstream fetch cost
 once, then serves from the regional edge thereafter.
 
+### 0.8 V5.0.2 — optional server-side `NVD_API_KEY`
+
+NVD's anonymous public endpoint allows 5 requests /
+30 s. v5.0.2 makes this explicit:
+
+- **Without `NVD_API_KEY` (default):** NVD chunks are
+  fetched serially (`concurrency = 1`) to stay under
+  the anonymous rate limit. The function still
+  enriches every CVE, just one chunk at a time.
+- **With `NVD_API_KEY` (optional):** NVD chunks fetch
+  in parallel (`concurrency = chunks.length`),
+  matching the v5.0.1 speed. NVD allows 50 req / 30 s
+  with a key, so 10 parallel chunks are well under
+  the limit.
+
+**The key is server-side only.** It is read from
+`process.env.NVD_API_KEY` inside the Netlify Function,
+passed to NVD as a `?apiKey=<key>` query param, and is
+**never** sent to the browser, never logged, never
+included in the function response. The frontend is
+unchanged in v5.0.2 — there is no `VITE_NVD_API_KEY`
+or any other browser-exposed env var.
+
+**Setting `NVD_API_KEY` on Netlify:**
+
+```
+# In the Netlify site dashboard:
+#   Site settings → Environment variables → Add variable
+#     Key:   NVD_API_KEY
+#     Value: <your NVD API key>
+#     Scopes: Functions
+#              (NOT "Build" — the function reads it at
+#               runtime, not at build time. Setting it
+#               as a Build-scope var would be a no-op
+#               and the key would still be safely
+#               scoped to the function only.)
+```
+
+**Getting a key:** NVD API keys are free and issued at
+<https://nvd.nist.gov/vuln/request-forms>. The v5.0.2
+hardening does **not** require a key — the dashboard
+works identically without one. The key is an optional
+optimization for higher NVD throughput.
+
+**Without a key, when NVD returns 429** (e.g. a fresh
+demo with no localStorage cache yet), the function
+returns a single concise reason instead of N repeated
+chunk errors:
+
+```
+NVD rate limit reached (HTTP 429). NVD CVSS enrichment
+is unavailable; severity falls back to CISA-derived
+values for this refresh.
+```
+
+The dashboard's `NvdUnavailableBanner` renders this
+reason verbatim. The banner now reads cleanly instead
+of spilling 200+ characters of repeated errors.
+
 ---
 
 ## 1. TL;DR (v1.0–v4.1 Hostinger static-hosting — fallback)

@@ -253,6 +253,37 @@ function withTimeout(promise, ms, label) {
   });
 }
 
+/**
+ * v5.0.2: Run an array of zero-arg async tasks with a hard
+ * concurrency limit. Returns a Promise.allSettled-shaped
+ * array (same shape, same `status` / `value` / `reason`
+ * fields). Used by `fetchNvdForCves` to keep anonymous
+ * NVD requests under the 5-req / 30 s limit by running
+ * chunks serially when no API key is present.
+ *
+ *   concurrency = 1          → fully serial
+ *   concurrency >= tasks.length → fully parallel (== Promise.allSettled)
+ */
+async function settledAll(tasks, concurrency) {
+  const results = new Array(tasks.length);
+  const limit = Math.max(1, Math.min(concurrency, tasks.length));
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= tasks.length) return;
+      try {
+        results[i] = { status: 'fulfilled', value: await tasks[i]() };
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason };
+      }
+    }
+  }
+  const workers = Array.from({ length: limit }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 // ---------------------------------------------------------------------------
 // CISA KEV fetch + normalize. Mirrors src/services/providers/cisaKev.ts.
 // ---------------------------------------------------------------------------
@@ -330,6 +361,32 @@ function normalizeCisaKevRecord(rec) {
 
 // ---------------------------------------------------------------------------
 // NVD batch lookup. Mirrors src/services/providers/nvd.ts.
+//
+// v5.0.2 — NVD rate-limit hardening:
+//   NVD's anonymous public endpoint allows 5 requests / 30 s. With
+//   ~1000 CISA CVEs and CHUNK_SIZE = 100, that's 10 chunks, all
+//   fired in parallel — guaranteed to hit HTTP 429. The previous
+//   code's `Promise.allSettled` produced a long repeated error like
+//   "HTTP 429 Too Many Requests; HTTP 429 Too Many Requests; ..."
+//   on every dashboard render where the rate limit was tripped.
+//
+//   Two changes:
+//     1. Optional NVD_API_KEY env var (SERVER-SIDE ONLY). When set,
+//        NVD allows 50 req / 30 s, so parallel chunks are safe.
+//        When absent, chunks are fetched serially (concurrency = 1)
+//        to stay under the anonymous limit.
+//     2. Concise 429 reason. If every failed chunk is a 429, throw
+//        a single short reason ("NVD rate limit reached (HTTP 429).
+//        ...") instead of joining N repeated chunk errors. The
+//        dashboard's existing NvdUnavailableBanner renders this
+//        reason verbatim — the banner now reads cleanly instead of
+//        spilling 200+ characters of repeated errors.
+//
+//   The NVD_API_KEY is read inside the function only. It is never
+//   logged, never included in the response body, and never sent to
+//   the browser. The app works identically without the key (just
+//   slower for the first visitor in a region per 15 min — repeat
+//   visitors ride the v5.0.1 CDN cache).
 // ---------------------------------------------------------------------------
 
 async function fetchNvdForCves(cveIds) {
@@ -343,8 +400,19 @@ async function fetchNvdForCves(cveIds) {
   for (let i = 0; i < uniqueCves.length; i += CHUNK_SIZE) {
     chunks.push(uniqueCves.slice(i, i + CHUNK_SIZE));
   }
-  const results = await Promise.allSettled(
-    chunks.map((chunk) => fetchOneNvdChunk(chunk)),
+
+  // v5.0.2: server-side only — read once, pass into each chunk.
+  // Never sent in the response, never logged.
+  const apiKey = process.env.NVD_API_KEY && process.env.NVD_API_KEY.length > 0
+    ? process.env.NVD_API_KEY
+    : undefined;
+  // Anonymous NVD: 5 req / 30 s → serialize chunks. With a key:
+  // 50 req / 30 s → parallel is safe.
+  const concurrency = apiKey ? chunks.length : 1;
+
+  const results = await settledAll(
+    chunks.map((chunk) => () => fetchOneNvdChunk(chunk, apiKey)),
+    concurrency,
   );
 
   const merged = new Map();
@@ -357,17 +425,40 @@ async function fetchNvdForCves(cveIds) {
     for (const [cve, score] of r.value) merged.set(cve, score);
   }
   if (!allOk && merged.size === 0) {
+    // v5.0.2: concise 429 reason. If every failed chunk is the
+    // same HTTP 429, return a single short message instead of
+    // joining all N chunk errors into a 200+ char string that
+    // would render unreadably in the dashboard banner.
     const reasons = results
       .filter((r) => r.status === 'rejected')
-      .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
-      .join('; ');
-    throw new Error(`NVD fetch failed for all ${chunks.length} chunk(s): ${reasons}`);
+      .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)));
+    const allRateLimited = reasons.length > 0 && reasons.every(
+      (msg) => /HTTP 429/.test(msg) || /\b429\b/.test(msg),
+    );
+    if (allRateLimited) {
+      throw new Error(
+        'NVD rate limit reached (HTTP 429). NVD CVSS enrichment is ' +
+        'unavailable; severity falls back to CISA-derived values ' +
+        'for this refresh.',
+      );
+    }
+    // Non-429 failure: de-duplicate per-message so the banner
+    // doesn't show "HTTP 503; HTTP 503; HTTP 503" either.
+    const uniqueReasons = Array.from(new Set(reasons));
+    throw new Error(
+      `NVD fetch failed for all ${chunks.length} chunk(s): ${uniqueReasons.join('; ')}`,
+    );
   }
   return merged;
 }
 
-async function fetchOneNvdChunk(cveChunk) {
-  const url = `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}`;
+async function fetchOneNvdChunk(cveChunk, apiKey) {
+  // v5.0.2: append the optional apiKey as a query param. NVD
+  // accepts `?apiKey=...` (it's their standard auth mechanism
+  // for non-authenticated-by-default public access).
+  const url = apiKey
+    ? `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}&apiKey=${encodeURIComponent(apiKey)}`
+    : `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}`;
   const res = await withTimeout(
     fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' }),
     PER_REQUEST_TIMEOUT_MS,

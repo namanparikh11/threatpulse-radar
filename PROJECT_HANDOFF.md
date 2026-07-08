@@ -1,11 +1,11 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v5.0.1.
-> Last verified: this session (Pass 15 — performance
-> hardening, CDN-cacheable function response).
+> End-of-session handover for **ThreatPulse Radar** v5.0.2.
+> Last verified: this session (Pass 16 — NVD rate-limit
+> hardening, optional server-only `NVD_API_KEY`).
 > Build clean. Acceptance tests green
 > (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
-> 60/60 v4 cache + 55/55 v5/v5.0.1 proxy = 250/250**).
+> 60/60 v4 cache + 68/68 v5.0/v5.0.1/v5.0.2 proxy = 263/263**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -27,32 +27,40 @@ a CDN-cacheable function response (`Cache-Control: s-maxage=900,
 stale-while-revalidate=300`) so repeat visitors in a region get
 sub-100 ms responses within a 15 min window, while the
 "Last refresh" pill and the "Refresh live data" button remain
-source-honest.
+source-honest. v5.0.2 adds NVD rate-limit hardening (serial chunks
+when no key, parallel when `NVD_API_KEY` is set) and a concise
+429 reason so the dashboard's `NvdUnavailableBanner` reads
+cleanly when NVD rate-limits.
 
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
   Recharts 2 + Lucide React icons + a single Node 20 ESM
-  Netlify Function (v5.0) with a v5.0.1 CDN-cacheable response.
+  Netlify Function (v5.0) with a v5.0.1 CDN-cacheable response
+  and a v5.0.2 NVD rate-limit path.
 - **Backend:** one read-only serverless function with a 15 min
   CDN cache. **Auth:** none. **Database:** none. **Payments:**
   none. **Exploit code:** none. **Live public-feed access:**
   the browser prefers the v5.0 Netlify Function proxy
   (CDN-cached) and falls back to the v4 browser-direct path on
   transport failure, then to the local mock dataset on total
-  failure. **API keys:** none read or shipped.
-- **Build:** `npm.cmd run build` passes clean (≈5.8 s this pass, 0 errors, 0 warnings).
+  failure. **API keys:** one optional server-side env var
+  (`NVD_API_KEY`, Netlify function scope only) for higher
+  NVD throughput; never exposed to the browser; the app
+  works identically without it.
+- **Build:** `npm.cmd run build` passes clean (≈5.4 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
   KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests** +
-  **60/60 v4 cache tests** + **55/55 v5/v5.0.1 proxy tests**
+  **60/60 v4 cache tests** + **68/68 v5.0/v5.0.1/v5.0.2 proxy tests**
   (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs && node scripts/acceptance-proxy.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
-  session (Pass 15). An `origin` remote is configured at
+  session (Pass 16). An `origin` remote is configured at
   `https://github.com/namanparikh11/threatpulse-radar.git` (added in
   pass 5); nothing has been pushed since. Do not push without an
   explicit ask.
-- **Deployment:** v5.0.1 is the Netlify deployment target (see
+- **Deployment:** v5.0.2 is the Netlify deployment target (see
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) section 0 for the v5.0
-  Netlify workflow and section 0.7 for the v5.0.1 CDN-cache
-  behavior).
+  Netlify workflow, section 0.7 for the v5.0.1 CDN-cache
+  behavior, and section 0.8 for the v5.0.2 `NVD_API_KEY`
+  configuration).
   hosting (or any Apache-based `public_html` host). See
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the guide.
 
@@ -772,6 +780,163 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
   - No new fake freshness claims. A CDN-cached
     response is not advertised as a fresh fetch.
 
+### Pass 16 — v5.0.2 NVD rate-limit hardening ← *current*
+
+- **Motivation.** NVD's anonymous public endpoint allows
+  only 5 requests / 30 s. The v5.0 / v5.0.1 function fired
+  all 10 NVD chunks (one per 100 CVEs) in parallel via
+  `Promise.allSettled` — guaranteed to hit HTTP 429 on the
+  first hit in every region. The function then produced a
+  long repeated error string ("HTTP 429 Too Many Requests;
+  HTTP 429 Too Many Requests; ...") which the
+  `NvdUnavailableBanner` displayed verbatim, spilling past
+  the banner boundary and making the public demo look
+  broken. v5.0.2 fixes both: it serializes chunks when no
+  API key is present, and it returns a single concise
+  reason when NVD rate-limits.
+
+- **`netlify/functions/dataset.mjs`** — three small changes
+  in the NVD path only:
+  1. New `settledAll(tasks, concurrency)` helper — a
+     small Promise.allSettled-shaped runner with a hard
+     concurrency limit. Used by `fetchNvdForCves` to run
+     chunks serially (`concurrency = 1`) or in parallel
+     (`concurrency = chunks.length`) without duplicating
+     the allSettled wiring.
+  2. `fetchNvdForCves` now reads
+     `process.env.NVD_API_KEY` at function runtime. If
+     the key is present, the function uses parallel
+     chunks; if absent, the function uses serial
+     chunks. The key is passed into `fetchOneNvdChunk`
+     and appended to the NVD URL as `?apiKey=<key>` —
+     NVD's standard auth mechanism for the public
+     endpoint. The key is **never** sent in the response
+     body, **never** logged, **never** exposed to the
+     browser.
+  3. `fetchOneNvdChunk` accepts an optional `apiKey`
+     parameter. If set, it appends `&apiKey=<key>` to
+     the NVD URL. The URL construction is a single
+     ternary so the auth path is the only difference.
+  4. The `fetchNvdForCves` "all chunks failed" error
+     path now detects 429 specifically: if every failed
+     chunk is `HTTP 429`, the function throws a single
+     concise reason ("NVD rate limit reached (HTTP 429).
+     NVD CVSS enrichment is unavailable; severity falls
+     back to CISA-derived values for this refresh.")
+     instead of joining N repeated chunk errors. For
+     non-429 failures, the chunk errors are de-duplicated
+     via `Array.from(new Set(reasons))` so the banner
+     doesn't show "HTTP 503; HTTP 503; HTTP 503" either.
+
+- **Frontend is unchanged.** No new env var, no new
+  provider, no UI change, no FetchResult shape change,
+  no new pill / banner / cache layer. The v4
+  `NvdUnavailableBanner` in `DashboardPage.tsx`
+  continues to render the function's `nvdReason` field
+  verbatim. The concise reason string is what the user
+  sees.
+
+- **Honesty guarantees (preserved):**
+  - The function's `fetchedAt` is still set inside the
+    function body. The dashboard's "Last refresh" pill
+    reflects when the function *actually* ran. The
+    v5.0.1 `?t=<timestamp>` cache-buster on "Refresh
+    live data" still forces a real function run.
+  - The function response never contains the API key.
+    Asserted by `acceptance-proxy.mjs` (the new
+    `v5.0.2: function never puts NVD_API_KEY in the
+    response body` test reads the `jsonResponse` helper
+    and asserts no `NVD_API_KEY` substring is present).
+  - Provider-status banners are preserved on cached
+    data and on key-less deployments. A 429 with no key
+    renders as "NVD: unavailable" with the concise
+    reason; a successful NVD call with a key renders as
+    "NVD: enriched" with no rate-limit copy.
+  - The dashboard never claims NVD is enriched when it
+    is unavailable — the `nvdStatus` field is the source
+    of truth, and the banner only renders when
+    `nvdStatus === 'unavailable'`.
+
+- **`scripts/acceptance-proxy.mjs`** — 13 new
+  v5.0.2-specific assertions added (proxy suite is now
+  68/68, up from 55/55 in v5.0.1). New section
+  "v5.0.2 — NVD rate-limit hardening + optional server-
+  only NVD_API_KEY":
+  - function reads `NVD_API_KEY` from `process.env`
+    (server-side only)
+  - function never puts `NVD_API_KEY` in the response
+    body
+  - function passes apiKey as `?apiKey=...` query param
+    to NVD when set
+  - function uses serial chunk fetch (concurrency = 1)
+    without `NVD_API_KEY`
+  - function uses parallel chunk fetch with
+    `NVD_API_KEY`
+  - function includes a small `settledAll` concurrency
+    helper
+  - function returns a concise 429 reason (not repeated
+    chunk errors)
+  - 429 reason mentions severity fallback to
+    CISA-derived values
+  - non-429 chunk errors are de-duplicated in the error
+    message
+  - v5.0.1 CDN cache headers are preserved
+  - v5.0.1 `forceRefresh` cache-busting (`?t=<timestamp>`)
+    is preserved (in the client service, not the
+    function)
+  - v5.0.1 `no-store` removal is preserved
+  - no new build-time env vars are required for the
+    frontend
+  - `NVD_API_KEY` is a runtime server-side env var
+    (not exposed to the browser)
+
+  - **Two v5.0-era tests updated** (the spirit of the
+    tests is preserved, but the strict v5.0 "no env
+    vars" assertion is replaced with a v5.0.2 "only
+    NVD_API_KEY, server-side, optional" assertion):
+    - "function does NOT read any API key / secret /
+      env credential" → "v5.0.2: function reads ONLY
+      the documented optional NVD_API_KEY env var (no
+      others)"
+    - "No new environment variables are required at
+      build time" → "v5.0.2: no new build-time env
+      vars are required for the frontend" + a new
+      test asserting `NVD_API_KEY` is server-side
+      (process.env, not VITE_*)
+
+- **Build**: 0 errors, 0 warnings, 5.42 s. **Bundle
+  hashes are byte-identical to v5.0.1.** The v5.0.2
+  changes are server-side only (function + test file
+  only). The frontend bundle (`index-CIyVmlOq.js`) and
+  the v5.0.1 CDN-cache headers are unchanged.
+
+- **Acceptance**:
+  **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+  53/53 v3 NVD + 60/60 v4 cache + 68/68 v5.0/v5.0.1/
+  v5.0.2 proxy = 263/263**.
+
+- **No new dependencies.** No `package.json` change.
+  The function uses only Node 20 built-ins. The client
+  uses only the existing stack.
+
+- **What v5.0.2 does *not* add (deliberate, per the
+  v4.1 / v5.0 / v5.0.1 docs contract):**
+  - No new data sources. OSV.dev / GHSA / other
+    aggregators remain a v5.1+ milestone.
+  - No login / auth. The `NVD_API_KEY` is an
+    unauthenticated-public-API rate-limit-bump key, not
+    a user credential.
+  - No database.
+  - No scheduled functions. The `stale-while-revalidate`
+    in v5.0.1 is a CDN-layer mechanism.
+  - No new env vars in the frontend. The single new
+    env var is `NVD_API_KEY`, server-side only.
+  - No UI redesign. The dashboard's
+    `NvdUnavailableBanner` continues to render the
+    function's `nvdReason` field verbatim. The function
+    just returns a more concise reason.
+  - No new offensive / exploit functionality.
+
 ### Items reviewed and intentionally left alone
 
 - **Vulnerability table mobile UX.** The table uses
@@ -1210,7 +1375,8 @@ do any of the following without an explicit ask:
 | v4 — Transparent 1-hour localStorage cache | ✅ done (pass 12) |
 | v4.1 — Public-demo honesty hardening (docs-only) | ✅ done (pass 13) |
 | v5.0 — Netlify Function live proxy | ✅ done (pass 14) |
-| v5.0.1 — CDN-cacheable function response (performance hardening) | ✅ done (pass 15) — *this session* |
+| v5.0.1 — CDN-cacheable function response (performance hardening) | ✅ done (pass 15) |
+| v5.0.2 — NVD rate-limit hardening + optional server-only `NVD_API_KEY` | ✅ done (pass 16) — *this session* |
 | v4.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
 | v5 — CPE-based asset matching, My Inventory mode | 📋 planned |
 
