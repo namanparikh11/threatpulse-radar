@@ -1,15 +1,181 @@
-# Deployment — Hostinger static hosting
+# Deployment — Netlify (with the v5.0 serverless proxy)
 
-> Drop-in deployment guide for **ThreatPulse Radar** on Hostinger's
-> static hosting (or any Apache-based `public_html` host: shared
-> hosting, subdomain, or subdirectory).
+> Drop-in deployment guide for **ThreatPulse Radar** on
+> **Netlify**, which is the v5.0 deployment target.
 >
-> Last verified against the v1.0 build (`dist/` with `base: './'`,
-> `dist/.htaccess` present, 13/13 acceptance tests passing).
+> The v5.0 deploy uses `netlify.toml` to wire a single
+> serverless function (`/.netlify/functions/dataset`) that
+> aggregates CISA KEV + NVD CVSS + FIRST EPSS server-side.
+> The function runs on demand per request — no scheduled
+> jobs, no persistent state, no credentials.
+>
+> Sections 2–8 below document the **v1.0–v4.1 Hostinger
+> static-hosting** workflow, which is preserved as a
+> fallback host (the `dist/.htaccess` file is still shipped
+> with the bundle). V5.0 prefers Netlify, but a Hostinger
+> static deploy still works for the v4.1 browser-direct
+> demo if the function is not available.
 
 ---
 
-## 1. TL;DR
+## 0. V5.0 deployment (Netlify — recommended)
+
+The v5.0 architecture is a single static site + one serverless
+function. Netlify is the supported host; deploy via the Netlify
+CLI or a Git-connected site.
+
+### 0.1 TL;DR (v5.0)
+
+```bash
+# 1. Install the Netlify CLI (once)
+npm i -g netlify-cli
+
+# 2. Login + link to your site (first time only)
+netlify login
+netlify link                 # links to an existing site, or...
+
+# 3. ...create a new site from this directory
+netlify init                 # creates a draft site on Netlify
+
+# 4. Deploy
+netlify deploy --prod
+# (or `netlify deploy` for a preview URL first)
+```
+
+That's it. `netlify.toml` at the project root tells Netlify:
+
+- `command = "npm run build"` runs the Vite production build.
+- `publish = "dist"` ships the built `dist/` as the site.
+- `functions = "netlify/functions"` picks up the serverless
+  function at `netlify/functions/dataset.mjs`.
+- `[functions.dataset] node_bundler = "none"` skips esbuild
+  bundling — the function is plain Node 20 ESM, no
+  dependencies to bundle.
+
+The site is live on a Netlify URL like
+`https://<your-site>.netlify.app`. The function is reachable
+at `https://<your-site>.netlify.app/.netlify/functions/dataset`.
+
+### 0.2 What gets deployed (v5.0)
+
+```
+dist/                                    ← built by Vite, served as the site
+├── .htaccess                            ← Apache config (Hostinger fallback; Netlify ignores it)
+├── index.html                           ← SPA entry; references assets/ with relative URLs
+├── radar.svg
+└── assets/
+    ├── index-*.css                      ← Tailwind output
+    ├── index-*.js                       ← App code (v5.0: ~+1 kB for the proxy orchestration)
+    ├── react-*.js
+    ├── icons-*.js                       ← Lucide icons
+    └── charts-*.js                      ← Recharts
+
+netlify/functions/
+└── dataset.mjs                          ← v5.0 serverless aggregator
+
+netlify.toml                             ← Netlify config
+```
+
+The function is **separate from `dist/`** — Netlify deploys
+both as one unit but they live in different runtime layers.
+The browser hits the static `index.html` first, then the
+function at `/.netlify/functions/dataset` for the live data.
+
+### 0.3 Local development with the proxy
+
+`npm run dev` runs Vite only — the function is **not** served.
+On `http://localhost:5173` the dashboard works, but the
+client-side `tryProxyFetch` will get a 404 and fall back to
+the v4 browser-direct path (`proxyStatus: 'browser-direct'`).
+
+To test the v5.0 proxy locally end-to-end:
+
+```bash
+# Option A: Netlify dev (Vite + Netlify Functions together)
+npx netlify dev
+# -> http://localhost:8888
+# /.netlify/functions/dataset works here.
+
+# Option B: Vite-only dev (function returns 404, client falls back)
+npm run dev
+# -> http://localhost:5173
+# Dashboard still works. Header shows "Proxy: Netlify" only when
+# the proxy is reachable; on Vite-only dev, no Proxy pill shows.
+```
+
+### 0.4 Verifying the v5.0 deploy
+
+After `netlify deploy --prod`, open the deployed URL and
+confirm:
+
+- [ ] The dashboard loads. Title "ThreatPulse Radar",
+      header pills render.
+- [ ] DevTools → Network → `/.netlify/functions/dataset` returns
+      `200` with a JSON body of shape
+      `{ data: [...], source: "merged", mode: "live", ... }`.
+      This is the proxy success path.
+- [ ] The header shows a cyan **"Proxy: Netlify"** pill — the
+      v5.0 transport indicator.
+- [ ] The "Last refresh" pill ticks every fresh fetch.
+- [ ] Hard refresh on `/` keeps the app working.
+- [ ] Open DevTools → Network and confirm no requests to
+      `cisa.gov`, `nvd.nist.gov`, or `api.first.org` from the
+      browser — those calls are now made server-side by the
+      function, not by the user. (This is the key v5.0
+      property: the browser never touches the upstream feeds.)
+- [ ] DevTools → Network → no 4xx / 5xx errors.
+- [ ] DevTools → Application → Local Storage → `tpr:dataset:v1`
+      appears after the first successful fetch. The v4 cache
+      is still wired.
+
+### 0.5 Verifying the v5.0 fallback path (Netlify)
+
+To confirm the fallback path works (proxy down → browser-direct
+→ mock), the simplest manual check is to break the function
+endpoint in DevTools:
+
+1. Open DevTools → Network.
+2. Right-click the `/.netlify/functions/dataset` request →
+   **Block request URL**.
+3. Reload the page.
+4. The dashboard should render with live CISA data (the
+   browser-direct path), and the header should *not* show the
+   "Proxy: Netlify" pill. Internally `proxyStatus` is
+   `'browser-direct'`.
+
+To confirm the *total* failure path (proxy down + browser-direct
+down), block both `/.netlify/functions/dataset` *and* the three
+upstream hosts. The dashboard should show the "Fallback Mode"
+banner with `proxyStatus: 'unavailable'`. Restore Network access
+and click "Retry live fetch" — the dashboard should come back
+to live.
+
+### 0.6 V5.0 deployment notes
+
+- **No environment variables** need to be configured in
+  Netlify's dashboard. The function reads no env vars. The
+  `VITE_DATASET_PROXY_URL` client-side env var has a default
+  of `/.netlify/functions/dataset` baked into
+  `src/services/vulnerabilityService.ts`, so even an
+  unconfigured deploy works out of the box.
+- **No build hooks** or scheduled functions are configured.
+  The function is read-only and runs on demand.
+- **No CORS** issues — the function is at the same origin as
+  the deployed site, so the browser hits it as a same-origin
+  request. `Access-Control-Allow-Origin: *` is also set on
+  the function response in case someone embeds the
+  dashboard in an iframe.
+- **The function is anonymous** — no auth, no rate limiting
+  beyond Netlify's default 1.5M requests / month on the
+  free tier. The dashboard is read-only public data, so
+  this is fine.
+- **Function cold start** is typically <500 ms on Netlify;
+  the first request on a cold function may take ~1 s. The
+  client-side 25 s timeout gives plenty of headroom.
+
+---
+
+## 1. TL;DR (v1.0–v4.1 Hostinger static-hosting — fallback)
 
 1. `npm.cmd run build` — produces `dist/`.
 2. Upload **the entire contents of `dist/`** (not the folder itself)
@@ -331,27 +497,36 @@ Open the deployed URL and confirm:
 
 For the avoidance of doubt, the deployed bundle:
 
-- Has **no backend** — there is nothing to configure on the
-  server beyond the static files.
-- Reads **no environment variables** at build time. There is
-  nothing to swap per environment. If you ever need to point the
-  app at a real API, that change goes in v2 (see
-  `README.md` → "Planned data sources").
-- Sends **no telemetry, no analytics, no third-party scripts**.
-  Open DevTools → Network on the deployed page and confirm: only
-  the bundle's own assets should be requested.
-- Stores **no user accounts, cookies, credentials, or service
-  worker data**. Uses `localStorage` **only** for a transparent
-  1-hour vulnerability dataset cache under the versioned key
-  `tpr:dataset:v1` (the v4 cache layer; no PII, no auth
-  material, no third-party identifiers — just the previously
-  fetched dataset envelope).
+- Has **no traditional backend** — the v5.0 deploy is one
+  read-only serverless function plus a static site. There
+  is no database, no auth, no business logic, no
+  persistent state, and no scheduled jobs. The function is
+  invoked on demand per request and does not retain any
+  data between invocations.
+- Reads **no environment variables** at build time. The
+  single optional client-side env var
+  (`VITE_DATASET_PROXY_URL`) has a baked-in default of
+  `/.netlify/functions/dataset` and is documented but not
+  required. The function itself reads no env vars.
+- Sends **no telemetry, no analytics, no third-party
+  scripts** from the browser. (The server-side function
+  makes outbound HTTP requests to CISA, NVD, and FIRST
+  EPSS — those are the *upstream data sources*, not
+  third-party trackers, and they are visible in the
+  function's own logs.)
+- Stores **no user accounts, cookies, credentials, or
+  service worker data**. Uses `localStorage` **only** for
+  a transparent 1-hour vulnerability dataset cache under
+  the versioned key `tpr:dataset:v1` (the v4 cache layer;
+  no PII, no auth material, no third-party identifiers —
+  just the previously fetched dataset envelope).
 
-It's a portfolio piece. Treat it as read-only static HTML.
+It's a portfolio piece. Treat it as read-only static HTML
+plus one read-only function.
 
 ---
 
-## 10. V4.1 public-demo honesty (what visitors will actually see)
+## 10. V4.1 / V5.0 public-demo honesty (what visitors will actually see)
 
 A static public deployment of a "live" data dashboard has a real
 honesty problem. The deployed bundle has no backend and no proxy,

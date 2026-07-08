@@ -1,11 +1,11 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v4.1.
-> Last verified: this session (Pass 13 — public-demo honesty
-> hardening, docs-only).
+> End-of-session handover for **ThreatPulse Radar** v5.0.
+> Last verified: this session (Pass 14 — Netlify Function
+> live proxy mode).
 > Build clean. Acceptance tests green
 > (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
-> 60/60 v4 cache = 195/195**).
+> 60/60 v4 cache + 45/45 v5 proxy = 240/240**).
 > Tree has uncommitted source changes on `main`.
 
 ---
@@ -19,26 +19,34 @@ fetches the public **CISA Known Exploited Vulnerabilities** feed at
 runtime, enriches with NVD CVSS + FIRST EPSS, and falls back to the
 curated mock dataset if the upstream fetch fails. v4 layers a
 transparent 1-hour localStorage cache on top so a returning visitor
-doesn't pay the 30–60 s NVD first-load on every page visit.
+doesn't pay the 30–60 s NVD first-load on every page visit. v5.0
+adds a single read-only Netlify Function that aggregates the same
+three feeds server-side, so the browser no longer depends on direct
+access to the third-party origins for the happy path.
 
 - **Stack:** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
-  Recharts 2 + Lucide React icons.
-- **Backend:** none. **Auth:** none. **Database:** none. **Payments:** none.
-  **Exploit code:** none. **Live public-feed access:** browser-direct and
-  best-effort. Static browser demos may fall back if a provider blocks
-  direct requests due to CORS, rate limits, geo restrictions, or
-  upstream outages — no proxy, no server.
-- **Build:** `npm.cmd run build` passes clean (≈7.5 s this pass, 0 errors, 0 warnings).
+  Recharts 2 + Lucide React icons + a single Node 20 ESM
+  Netlify Function (v5.0).
+- **Backend:** one read-only serverless function. **Auth:** none.
+  **Database:** none. **Payments:** none. **Exploit code:** none.
+  **Live public-feed access:** the browser prefers the v5.0
+  Netlify Function proxy and falls back to the v4 browser-direct
+  path on transport failure, then to the local mock dataset on
+  total failure. **API keys:** none read or shipped.
+- **Build:** `npm.cmd run build` passes clean (≈7.7 s this pass, 0 errors, 0 warnings).
 - **Acceptance suites:** **15/15 v1** mock-data tests + **28/28 v2 CISA
   KEV tests** + **39/39 v2.5 EPSS tests** + **53/53 v3 NVD tests** +
-  **60/60 v4 cache tests**
-  (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs`).
+  **60/60 v4 cache tests** + **45/45 v5 proxy tests**
+  (`node scripts/acceptance.mjs && node scripts/acceptance-cisa.mjs && node scripts/acceptance-epss.mjs && node scripts/acceptance-nvd.mjs && node scripts/acceptance-cache.mjs && node scripts/acceptance-proxy.mjs`).
 - **Repo:** `main` branch has uncommitted source changes from this
-  session (Pass 12). An `origin` remote is configured at
+  session (Pass 14). An `origin` remote is configured at
   `https://github.com/namanparikh11/threatpulse-radar.git` (added in
   pass 5); nothing has been pushed since. Do not push without an
   explicit ask.
-- **Deployment:** `dist/` is drop-in deployable to Hostinger static
+- **Deployment:** v5.0 is the Netlify deployment target (see
+  [`DEPLOYMENT.md`](./DEPLOYMENT.md) section 0 for the v5.0
+  Netlify workflow, and sections 1–9 for the v1.0–v4.1
+  Hostinger static-hosting fallback).
   hosting (or any Apache-based `public_html` host). See
   [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the guide.
 
@@ -445,6 +453,176 @@ added FIRST EPSS enrichment, and v3 added NVD CVSS enrichment:
 - **Acceptance**: **195/195** still green (the test suites
   were not modified and were not re-run, since no source
   files changed).
+
+### Pass 14 — v5.0 Netlify Function live proxy ← *current*
+
+- **Motivation.** The v4.1 docs are source-honest about a
+  real problem the public demo hits: a static deployment
+  depends on the upstream feeds (CISA, NVD, FIRST EPSS)
+  continuing to allow direct browser requests. CORS, rate
+  limits, geo restrictions, and upstream outages can each
+  put the dashboard into fallback / mock mode. v5.0 adds a
+  thin serverless proxy so the browser only ever hits the
+  project's own origin. CISA + NVD + EPSS are aggregated
+  server-side; the function returns a single CORS-safe
+  JSON envelope.
+
+- **Architecture.**
+  ```
+  Browser ──► /.netlify/functions/dataset (Netlify Function)
+                                          │
+                                          ├── CISA KEV
+                                          ├── NVD CVE 2.0
+                                          └── FIRST EPSS
+        (proxy failure only)
+        ──► browser-direct CISA / NVD / EPSS (v4 path)
+        (total failure only)
+        ──► local mock dataset (Fallback Mode)
+  ```
+
+- **`netlify/functions/dataset.mjs`** — new file. A
+  self-contained Node 20 ESM module (no imports from
+  `src/`, no dependencies). Re-implements the CISA → NVD
+  → EPSS pipeline with the same field shapes and
+  normalization rules as the browser-side providers in
+  `src/services/providers/`. Returns a JSON envelope
+  identical in shape to the client-side `FetchResult`:
+  - `200` on success with
+    `{ data, source: 'merged', mode: 'live', fetchedAt,
+       nvdStatus, nvdReason, epssStatus, epssReason }`.
+    Partial NVD or EPSS failure still returns 200 with
+    `nvdStatus: 'unavailable'` / `epssStatus: 'unavailable'`.
+  - `502` when CISA itself failed, with
+    `{ mode: 'fallback', fallbackReason }`. The client
+    treats this as a proxy failure and falls through to
+    browser-direct.
+  - 8 s per-request timeout (matches the browser-side
+    providers), 24 s overall budget (safety margin under
+    Netlify's 26 s default async-function limit).
+  - `Cache-Control: no-store` on responses (the dashboard
+    already has its own 1 h localStorage cache).
+  - `Access-Control-Allow-Origin: *` for the rare
+    iframe-embed case.
+  - **No API keys, no env vars, no persistent state.**
+
+- **`netlify.toml`** — new file. Wires the function
+  directory, the Vite build, the static publish, and the
+  `node_bundler = "none"` setting that lets the function
+  run as plain ESM without an esbuild step. Also adds
+  per-asset cache headers and standard security headers
+  for the static `dist/` (mirrors the Hostinger
+  `.htaccess` rules for parity).
+
+- **`src/services/vulnerabilityService.ts`** — extended.
+  - New `ProxyStatus = 'proxy' | 'browser-direct' |
+    'unavailable'` type. New optional `proxyStatus?` field
+    on `FetchResult`. The field is set on every live
+    fetch (proxy, browser-direct, or total-failure) so
+    the UI is always honest about which transport carried
+    the data.
+  - New `tryProxyFetch()` calls
+    `fetch(DATASET_PROXY_URL)`. On any failure (network,
+    non-2xx, shape mismatch, timeout) it returns `null`.
+  - The existing `tryLiveFetch()` is now a wrapper that
+    tries `tryProxyFetch()` first and falls back to
+    `tryBrowserDirectFetch()` (the v4 path, renamed for
+    clarity) on proxy failure. The v4 cache test
+    invariant (the test regex still matches `tryLiveFetch`
+    as a function name in the source) is preserved.
+  - `DATASET_PROXY_URL` defaults to
+    `/.netlify/functions/dataset`; can be overridden by
+    `VITE_DATASET_PROXY_URL` at build time for local
+    `netlify dev` or alternate deployments.
+  - The mock-fallback path now sets
+    `proxyStatus: 'unavailable'` so the UI can distinguish
+    "no live data attempted" from "live data attempted
+    but every transport failed".
+
+- **`src/components/Header.tsx`** — small additive change.
+  A new cyan "Proxy: Netlify" pill (with a Cloud icon)
+  appears in the header status column when
+  `proxyStatus === 'proxy'`. No new pill is rendered
+  when the proxy is unavailable or the browser-direct
+  path was used — the source label and the existing
+  Fallback banner already cover those cases.
+
+- **`src/vite-env.d.ts`** — new file. Adds the
+  `/// <reference types="vite/client" />` triple-slash
+  so `import.meta.env.VITE_DATASET_PROXY_URL` is
+  TypeScript-typed. This was the only TS error during
+  the v5.0 build; no other type changes.
+
+- **`scripts/acceptance-proxy.mjs`** — new 45-test
+  suite. Covers:
+  - the Netlify Function file exists and is a Node ESM
+    module with the right upstream URLs and timeouts;
+  - the function returns the FetchResult-shaped JSON
+    contract (200 on success, 502 on CISA fail);
+  - the function does NOT add new sources, read any
+    API key, or fabricate CVSS / EPSS scores;
+  - `netlify.toml` wires the functions directory with
+    `node_bundler = "none"`;
+  - the frontend service exposes `ProxyStatus`, sets
+    `proxyStatus` on every live-fetch branch, and
+    prefers the proxy before browser-direct;
+  - the Header renders the "Proxy: Netlify" pill in
+    info tone (cyan);
+  - the URLs and severity rules in the function
+    *mirror* the browser-side providers — so the
+    two transports are guaranteed to produce
+    interchangeable data;
+  - all v4 cache / fallback invariants are preserved
+    through v5 (no leaks, no missing pieces).
+
+- **Acceptance**:
+  **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+  53/53 v3 NVD + 60/60 v4 cache + 45/45 v5 proxy =
+  240/240**.
+
+- **Build**: 0 errors, 0 warnings, 7.68 s. Bundle
+  deltas vs v4.1: `index-*.js` app chunk +0.96 kB
+  (proxy orchestration), `icons-*.js` +0.29 kB (Cloud
+  icon), `index-*.css` +0.28 kB (pill styles). All
+  other chunks unchanged. No new dependencies in
+  `package.json`.
+
+- **Docs.** README "Features" / "Tech stack" / "Project
+  structure" / "Roadmap" all updated to reflect v5.0.
+  A new "⚡ V5.0 live proxy mode" section added between
+  the v4.1 honesty section and the Roadmap, with the
+  full architecture, the proxy-first orchestration rules,
+  the v4 invariants that are preserved, the explicit
+  "v5.0 does *not* add" list, and the local-dev note
+  about `netlify dev`. `DEPLOYMENT.md` is now
+  Netlify-first (sections 0.1–0.6 document the v5.0
+  deploy end-to-end; the existing Hostinger sections
+  1–9 are preserved as a fallback). The "Run it
+  locally" section in the README now documents
+  `netlify dev` alongside `npm run dev`.
+
+- **No new dependencies** added to `package.json`.
+  The function uses only Node 20 built-ins
+  (`fetch`, `AbortController`, `Response`).
+  `netlify-cli` is documented as a dev dependency for
+  local testing but is not required to build or run
+  the dashboard.
+
+- **What v5.0 does *not* add (deliberate, per the
+  v4.1 docs contract):**
+  - No API keys, secrets, or tokens are read or
+    shipped.
+  - No new data sources. OSV.dev / GHSA / other
+    aggregators remain a v5.1+ milestone.
+  - No scheduled / background functions. The dataset
+    function runs on demand per request.
+  - No database, no auth, no login. The function is
+    read-only and idempotent.
+  - No UI redesign. The v4.1 header, dashboard,
+    table, filters, and detail drawer are unchanged.
+    The only new visible element is the small
+    "Proxy: Netlify" pill in the header.
+  - No offensive / exploit functionality. The
+    v1 / v2 / v3 defensive-only contract is preserved.
 
 ### Items reviewed and intentionally left alone
 
@@ -882,7 +1060,8 @@ do any of the following without an explicit ask:
 | v3 — NVD CVSS enrichment | ✅ done (pass 10) |
 | v3 QA / portfolio-demo hardening | ✅ done (pass 11) |
 | v4 — Transparent 1-hour localStorage cache | ✅ done (pass 12) |
-| v4.1 — Public-demo honesty hardening (docs-only) | ✅ done (pass 13) — *this session* |
+| v4.1 — Public-demo honesty hardening (docs-only) | ✅ done (pass 13) |
+| v5.0 — Netlify Function live proxy | ✅ done (pass 14) — *this session* |
 | v4.5 — Saved filter presets, watchlists, exports | 📋 planned — see Roadmap in `README.md` |
 | v5 — CPE-based asset matching, My Inventory mode | 📋 planned |
 

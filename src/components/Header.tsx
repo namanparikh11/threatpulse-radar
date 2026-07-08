@@ -2,6 +2,7 @@ import {
   Briefcase,
   CircleAlert,
   Clock,
+  Cloud,
   Database,
   FlaskConical,
   Gauge,
@@ -277,6 +278,14 @@ export default function Header({ meta }: HeaderProps) {
                 label="Cache: stale"
                 tone="warn"
                 title="Served from expired local cache because the live fetch failed. Use the Refresh live data button to retry."
+              />
+            )}
+            {meta?.proxyStatus === 'proxy' && (
+              <StatusPill
+                icon={<Cloud className="h-3 w-3" />}
+                label="Proxy: Netlify"
+                tone="info"
+                title="Live data was aggregated server-side by the Netlify Function at /.netlify/functions/dataset — the browser never hit the upstream feeds directly."
               />
             )}
             <StatusPill
