@@ -499,9 +499,12 @@ section('Service-layer wiring (source-code assertions)');
     (() => {
       const fnStart = headerSrc.indexOf('function describeSource(');
       if (fnStart < 0) return false;
-      const fnEnd = headerSrc.indexOf('\n}\n', fnStart);
-      if (fnEnd < 0) return false;
-      const fnBody = headerSrc.slice(fnStart, fnEnd + 2);
+      // Find the closing brace — accept either LF or CRLF line endings.
+      const tail = headerSrc.slice(fnStart);
+      const m = tail.match(/\n\s*\}\s*\n/);
+      if (!m) return false;
+      const fnEnd = fnStart + m.index + m[0].length;
+      const fnBody = headerSrc.slice(fnStart, fnEnd);
       return /nvdStatus\s*===\s*['"]nvd['"][\s\S]*?parts\.push\(\s*['"]NVD['"]\s*\)/.test(fnBody);
     })(),
     'NVD-aware source label not found in header');
@@ -524,13 +527,16 @@ section('Service-layer wiring (source-code assertions)');
     // is unavailable but NVD loaded, the label must NOT contain
     // "FIRST EPSS".
     (() => {
-      const headerSrc = readFileSync(join(root, 'src', 'components', 'Header.tsx'), 'utf8');
+      const headerSrc2 = readFileSync(join(root, 'src', 'components', 'Header.tsx'), 'utf8');
       // Find the describeSource function and read the next ~30 lines.
-      const fnStart = headerSrc.indexOf('function describeSource(');
+      // Accept either LF or CRLF line endings.
+      const fnStart = headerSrc2.indexOf('function describeSource(');
       if (fnStart < 0) return false;
-      const fnEnd = headerSrc.indexOf('\n}\n', fnStart);
-      if (fnEnd < 0) return false;
-      const fnBody = headerSrc.slice(fnStart, fnEnd + 2);
+      const tail = headerSrc2.slice(fnStart);
+      const m = tail.match(/\n\s*\}\s*\n/);
+      if (!m) return false;
+      const fnEnd = fnStart + m.index + m[0].length;
+      const fnBody = headerSrc2.slice(fnStart, fnEnd);
       // The fix is in the function body: it must check epssStatus
       // (not just nvdStatus) before adding 'FIRST EPSS' to the
       // label. Pre-fix, the label always said "FIRST EPSS" when

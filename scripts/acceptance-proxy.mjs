@@ -130,9 +130,13 @@ assert('function uses "unavailable" as the partial-failure value',
   /['"]unavailable['"]/.test(functionSrc),
   'expected nvdStatus / epssStatus "unavailable" sentinel');
 
-assert('function sets Cache-Control: no-store on responses',
-  /Cache-Control['"]\s*:\s*['"]no-store/.test(functionSrc),
-  'expected Cache-Control: no-store (the client already does its own 1 h localStorage cache)');
+assert('v5.0.1: function sets a CDN-cacheable Cache-Control with s-maxage=900',
+  /Cache-Control['"]\s*:\s*['"]public,\s*s-maxage=900,\s*stale-while-revalidate=300/.test(functionSrc),
+  'expected Cache-Control: public, s-maxage=900, stale-while-revalidate=300 (15 min CDN cache + 5 min SWR)');
+
+assert('v5.0.1: function response does NOT use the v5.0 no-store directive',
+  !/Cache-Control['"]\s*:\s*['"]no-store/.test(functionSrc),
+  'expected no-store to be removed in v5.0.1 so the CDN can absorb repeat visits');
 
 assert('function sets Access-Control-Allow-Origin: * (safe for embed / proxy)',
   /Access-Control-Allow-Origin['"]\s*:\s*['"]\*['"]/.test(functionSrc),
@@ -148,9 +152,18 @@ assert('function does NOT add any new data source (no OSV, GHSA, etc.)',
   !/osv\.dev|osv\.osvdev|ghsa|advisories\.github/.test(functionSrc),
   'v5.0 must not silently add OSV.dev / GHSA — those are v5.1+');
 
-assert('function does NOT read any API key / secret / env credential',
-  !/process\.env\.(NVD_API_KEY|EPSS_API_KEY|CISA_API_KEY|API_KEY|TOKEN|SECRET)/.test(functionSrc),
-  'v5.0 must not silently embed or read any API key');
+assert('v5.0.2: function reads ONLY the documented optional NVD_API_KEY env var (no others)',
+  // v5.0.2 added an optional NVD_API_KEY env var. It must be
+  // the ONLY env var the function reads — no silent new
+  // credentials. The test asserts that NVD_API_KEY is the
+  // only process.env.* read in the function.
+  (() => {
+    const envReads = functionSrc.match(/process\.env\.[A-Z_][A-Z0-9_]*/g) || [];
+    if (envReads.length === 0) return false; // v5.0.2 must read at least NVD_API_KEY
+    const unique = Array.from(new Set(envReads));
+    return unique.length === 1 && unique[0] === 'process.env.NVD_API_KEY';
+  })(),
+  'expected the function to read ONLY process.env.NVD_API_KEY (no other env vars)');
 
 assert('function does NOT fabricate CVSS / EPSS scores',
   // The function should only assign cvssScore / epssProbability
@@ -222,8 +235,12 @@ assert('FetchResult includes optional proxyStatus field',
 
 assert('service has a tryProxyFetch() helper that calls fetch(DATASET_PROXY_URL)',
   /tryProxyFetch/.test(serviceSrc) &&
-    /fetch\(\s*DATASET_PROXY_URL/.test(serviceSrc),
-  'expected tryProxyFetch to call the proxy endpoint');
+    (
+      /fetch\(\s*DATASET_PROXY_URL/.test(serviceSrc) ||
+      /fetch\(\s*url/.test(serviceSrc) ||
+      /fetch\(\s*`?\$\{?DATASET_PROXY_URL/.test(serviceSrc)
+    ),
+  'expected tryProxyFetch to call the proxy endpoint (direct or templated URL)');
 
 assert('service has a tryBrowserDirectFetch() helper for the v4 fallback',
   /tryBrowserDirectFetch/.test(serviceSrc),
@@ -247,12 +264,11 @@ assert('tryProxyFetch treats any fetch failure (network / non-2xx / shape) as nu
     // Look for a `catch {` block inside tryProxyFetch whose body
     // returns null. The error-handling block may have several
     // lines of comments above the return. We slice from the
-    // function definition to the next `async function` (or 4000
-    // chars, whichever is shorter) so the catch block is in
-    // scope.
+    // function definition past the catch block (or 6000 chars,
+    // whichever is shorter) so the catch is in scope.
     const i = serviceSrc.indexOf('tryProxyFetch');
     if (i < 0) return false;
-    const tail = serviceSrc.slice(i, i + 4000);
+    const tail = serviceSrc.slice(i, i + 6000);
     return /catch\s*\{[\s\S]{0,500}return\s+null/.test(tail);
   })(),
   'expected tryProxyFetch to swallow errors and return null on any failure');
@@ -268,6 +284,62 @@ assert('FetchResult on a browser-direct fallback is tagged with proxyStatus: "br
 assert('FetchResult on a total failure is tagged with proxyStatus: "unavailable"',
   /proxyStatus:\s*['"]unavailable['"]/.test(serviceSrc),
   'expected the total-failure branch to set proxyStatus: "unavailable"');
+
+/* ------------------------------------------------------------------ */
+/* 6.5. v5.0.1 — CDN cache + forceRefresh cache-busting               */
+/* ------------------------------------------------------------------ */
+
+section('v5.0.1 — CDN cache headers + forceRefresh cache-busting');
+
+assert('v5.0.1: tryProxyFetch accepts a forceRefresh option',
+  /tryProxyFetch\(\s*[\s\S]{0,400}opts[\s\S]{0,200}forceRefresh/.test(serviceSrc) ||
+    /tryProxyFetch\(\s*opts[\s\S]{0,200}forceRefresh/.test(serviceSrc) ||
+    /async function tryProxyFetch\(\s*opts\s*:\s*\{\s*forceRefresh/.test(serviceSrc),
+  'expected tryProxyFetch to accept an opts object with forceRefresh');
+
+assert('v5.0.1: tryProxyFetch appends a cache-busting ?t=<timestamp> on forceRefresh',
+  (() => {
+    // The cache-busting URL must be constructed inside tryProxyFetch
+    // (not at module scope) and must reference Date.now() so every
+    // forced refresh gets a unique URL.
+    const i = serviceSrc.indexOf('tryProxyFetch');
+    if (i < 0) return false;
+    const tail = serviceSrc.slice(i, i + 4000);
+    return /forceRefresh[\s\S]{0,500}\?t=/.test(tail) &&
+      /Date\.now\(\)/.test(tail);
+  })(),
+  'expected "?t=${Date.now()}" appended to the URL when forceRefresh is true');
+
+assert('v5.0.1: tryLiveFetch accepts a forceRefresh option in its signature',
+  /async function tryLiveFetch\(\s*[\s\S]{0,200}forceRefresh/.test(serviceSrc),
+  'expected the tryLiveFetch signature to declare a forceRefresh option');
+
+assert('v5.0.1: tryLiveFetch forwards opts to tryProxyFetch',
+  /await\s+tryProxyFetch\(\s*opts\s*\)/.test(serviceSrc),
+  'expected tryLiveFetch to call `tryProxyFetch(opts)` (forwarding the option object)');
+
+assert('v5.0.1: fetchVulnerabilities forwards forceRefresh to tryLiveFetch',
+  /tryLiveFetch\(\s*\{\s*forceRefresh:\s*query\.forceRefresh/.test(serviceSrc),
+  'expected fetchVulnerabilities to call tryLiveFetch({ forceRefresh: query.forceRefresh })');
+
+assert('v5.0.1: the no-store directive is removed from the function response',
+  !/Cache-Control['"]\s*:\s*['"]no-store/.test(functionSrc),
+  'expected no-store removed so the CDN can cache repeat visits');
+
+assert('v5.0.1: the function response includes s-maxage=900 (15 min)',
+  /s-maxage=900/.test(functionSrc),
+  'expected s-maxage=900 so Netlify\'s edge caches for 15 minutes');
+
+assert('v5.0.1: the function response includes stale-while-revalidate=300 (5 min)',
+  /stale-while-revalidate=300/.test(functionSrc),
+  'expected stale-while-revalidate=300 so the next visitor after expiry gets a stale response immediately + a background refresh');
+
+assert('v5.0.1: no max-age directive is set (CDN-only caching, not browser caching)',
+  // The browser is told not to cache (`cache: 'no-store'` on the
+  // client fetch). The function response should rely solely on
+  // `s-maxage` (CDN), not `max-age` (browser).
+  !/Cache-Control['"]\s*:\s*['"][^'"]*\bmax-age\s*=/.test(functionSrc),
+  'expected no max-age directive so browser HTTP cache is not used (CDN only)');
 
 /* ------------------------------------------------------------------ */
 /* 7. The Header shows a Proxy pill                                   */
@@ -334,6 +406,102 @@ assert('EPSS chunk size matches between function and browser provider (100 CVEs)
   /CHUNK_SIZE\s*=\s*100/.test(epssSrc));
 
 /* ------------------------------------------------------------------ */
+/* 8.5. v5.0.2 — NVD rate-limit hardening + optional server-only key  */
+/* ------------------------------------------------------------------ */
+
+section('v5.0.2 — NVD rate-limit hardening + optional server-only NVD_API_KEY');
+
+assert('v5.0.2: function reads NVD_API_KEY from process.env (server-side only)',
+  /process\.env\.NVD_API_KEY/.test(functionSrc),
+  'expected process.env.NVD_API_KEY to be read inside the function');
+
+assert('v5.0.2: function never puts NVD_API_KEY in the response body',
+  // The jsonResponse helper's body parameter is the FetchResult
+  // shape (data, source, mode, nvdStatus, etc.). It must never
+  // receive a NVD_API_KEY, and the function body must not
+  // assign the key to a response field.
+  (() => {
+    // Find the jsonResponse helper definition.
+    const i = functionSrc.indexOf('function jsonResponse(');
+    if (i < 0) return true; // if no helper to inspect, pass
+    const tail = functionSrc.slice(i, i + 800);
+    return !/NVD_API_KEY/.test(tail);
+  })() &&
+    // Also: the function must not return a field named anything
+    // like 'apiKey' on the success path.
+    !/nvdApiKey|apiKey\s*:\s*[^,}\s]+/.test(functionSrc),
+  'expected NVD_API_KEY to never appear in the function response');
+
+assert('v5.0.2: function passes apiKey as ?apiKey=... query param to NVD when set',
+  // Look for a URL construction that appends `&apiKey=...` or
+  // a conditional that uses apiKey in the URL.
+  /apiKey\s*=\s*\$\{[^}]*encodeURIComponent[^}]*apiKey\}/.test(functionSrc) ||
+    /apiKey=.{0,30}apiKey/.test(functionSrc) ||
+    /\?apiKey=/.test(functionSrc),
+  'expected ?apiKey=<key> on the NVD URL when NVD_API_KEY is set');
+
+assert('v5.0.2: function uses serial chunk fetch (concurrency = 1) without NVD_API_KEY',
+  // Look for the actual `concurrency = apiKey ? X : 1` line in
+  // the function body (NOT the docstring comment). Find the
+  // `process.env.NVD_API_KEY` line and slice from there.
+  (() => {
+    const i = functionSrc.indexOf('process.env.NVD_API_KEY');
+    if (i < 0) return false;
+    const tail = functionSrc.slice(i, i + 1000);
+    return /concurrency\s*=\s*apiKey\s*\?\s*[^:]+\s*:\s*1\b/.test(tail);
+  })(),
+  'expected concurrency = apiKey ? chunks.length : 1 (serial) when NVD_API_KEY is absent');
+
+assert('v5.0.2: function uses parallel chunk fetch with NVD_API_KEY',
+  // Same approach: find the actual concurrency line, assert
+  // the "true" branch uses parallel chunks (chunks.length).
+  (() => {
+    const i = functionSrc.indexOf('process.env.NVD_API_KEY');
+    if (i < 0) return false;
+    const tail = functionSrc.slice(i, i + 1000);
+    return /concurrency\s*=\s*apiKey\s*\?\s*chunks\.length/.test(tail);
+  })(),
+  'expected concurrency = apiKey ? chunks.length (parallel) when NVD_API_KEY is set');
+
+assert('v5.0.2: function includes a small settledAll concurrency helper',
+  /async function settledAll\(/.test(functionSrc) ||
+    /function settledAll\(/.test(functionSrc),
+  'expected a concurrency helper (e.g. settledAll) for serial chunk fetch');
+
+assert('v5.0.2: function returns a concise 429 reason (not repeated chunk errors)',
+  /rate limit reached[\s\S]{0,400}HTTP 429/.test(functionSrc) ||
+    /HTTP 429[\s\S]{0,400}rate limit reached/.test(functionSrc) ||
+    (/rate limit reached/.test(functionSrc) && /HTTP 429/.test(functionSrc)),
+  'expected a single concise reason string for 429, not a joined per-chunk error list');
+
+assert('v5.0.2: 429 reason mentions severity fallback to CISA-derived values',
+  /rate limit reached[\s\S]{0,500}CISA-derived/.test(functionSrc),
+  'expected the 429 reason to tell the user severity falls back to CISA-derived');
+
+assert('v5.0.2: non-429 chunk errors are de-duplicated in the error message',
+  // The new code uses `Array.from(new Set(reasons))` to avoid
+  // "HTTP 503; HTTP 503; HTTP 503" repetition. Look for the
+  // de-duplication call.
+  /new Set\(reasons\)/.test(functionSrc),
+  'expected new Set(reasons) to de-duplicate per-chunk errors');
+
+assert('v5.0.2: v5.0.1 CDN cache headers are preserved',
+  /Cache-Control['"]\s*:\s*['"]public,\s*s-maxage=900/.test(functionSrc),
+  'expected the v5.0.1 s-maxage=900 directive to remain unchanged');
+
+assert('v5.0.2: v5.0.1 forceRefresh cache-busting (?t=<timestamp>) is preserved',
+  // The ?t=<timestamp> cache-busting lives in the CLIENT
+  // (src/services/vulnerabilityService.ts), not in the function.
+  // Look in serviceSrc directly — the two pieces are far apart
+  // in the file, so a positional slice is unreliable.
+  /\?t=/.test(serviceSrc) && /forceRefresh/.test(serviceSrc),
+  'expected the v5.0.1 ?t= cache-busting to remain in the client service code');
+
+assert('v5.0.2: v5.0.1 no-store removal is preserved',
+  !/Cache-Control['"]\s*:\s*['"]no-store/.test(functionSrc),
+  'expected no-store to remain removed in v5.0.2');
+
+/* ------------------------------------------------------------------ */
 /* 9. Cache / fallback invariants are preserved through v5            */
 /* ------------------------------------------------------------------ */
 
@@ -363,11 +531,21 @@ assert('Mock fallback is still reachable (mode = "fallback" with mock data)',
     /MOCK_VULNERABILITIES[\s\S]{0,400}mode:\s*['"]fallback['"]/.test(serviceSrc),
   'expected the mock-fallback path to still be reachable');
 
-assert('No new environment variables are required at build time',
-  // VITE_DATASET_PROXY_URL is the only one introduced, and it
-  // has a default. The function file doesn't read any env vars.
-  !/process\.env\./.test(functionSrc),
-  'expected the function to read no environment variables');
+assert('v5.0.2: no new build-time env vars are required for the frontend',
+  // v5.0.2 adds ONE optional server-side runtime env var
+  // (NVD_API_KEY) inside the Netlify Function. The FRONTEND
+  // build is unchanged — no new VITE_* vars are required.
+  // Existing VITE_DATASET_PROXY_URL still has a default.
+  !/import\.meta\.env\.VITE_(?!DATASET_PROXY_URL)/.test(serviceSrc),
+  'expected no new VITE_* env vars in the frontend (NVD_API_KEY is server-side only)');
+
+assert('v5.0.2: NVD_API_KEY is a runtime server-side env var (not exposed to the browser)',
+  // The function reads it from process.env at runtime. The
+  // function's response body never includes it.
+  /process\.env\.NVD_API_KEY/.test(functionSrc) &&
+    !/VITE_NVD_API_KEY/.test(serviceSrc) &&
+    !/import\.meta\.env\.NVD_API_KEY/.test(serviceSrc),
+  'expected NVD_API_KEY to be process.env (server-side), never VITE_* (browser-exposed)');
 
 /* ------------------------------------------------------------------ */
 /* Summary                                                            */

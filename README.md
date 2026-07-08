@@ -5,7 +5,7 @@
 > probability, and severity across your stack in a single, focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v5.0-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v5.0.2-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -97,6 +97,42 @@ review access logs"_).
   same anonymous public endpoints. See
   [V5.0 live proxy mode](#-v50-live-proxy-mode) for the full
   architecture.
+- **CDN-cacheable function response (v5.0.1)** — the
+  function's `Cache-Control` is now
+  `public, s-maxage=900, stale-while-revalidate=300`. The
+  Netlify edge cache absorbs repeat visitors within a 15 min
+  window (and serves a slightly-stale response for an
+  additional 5 min while a fresh fetch runs in the
+  background). First production load still hits the full
+  upstream pipeline once, but second-and-onwards visitors
+  within the window get a sub-100 ms response from the CDN.
+  The "Refresh live data" button still bypasses the cache
+  (via a unique `?t=<timestamp>` query string) so the
+  button's name remains honest. The "Last refresh" pill
+  reflects the time the function *actually* ran, not the
+  time the CDN served the response — freshness copy is
+  preserved. See
+  [V5.0.1 performance hardening](#-v501-performance-hardening)
+  for the full cache-strategy contract.
+- **NVD rate-limit hardening + optional server-only
+  `NVD_API_KEY` (v5.0.2)** — NVD's anonymous public
+  endpoint allows only 5 requests / 30 s, so without a
+  key the function serializes NVD chunks (concurrency = 1)
+  to avoid HTTP 429. When all chunks return 429, the
+  function returns a single concise reason ("NVD rate
+  limit reached (HTTP 429). NVD CVSS enrichment is
+  unavailable; severity falls back to CISA-derived values
+  for this refresh.") instead of repeating the chunk
+  error N times — the dashboard's
+  `NvdUnavailableBanner` reads cleanly. **An optional
+  `NVD_API_KEY` env var is supported server-side only.**
+  When set in the Netlify function's environment, NVD
+  allows 50 req / 30 s, the function parallelizes chunks,
+  and the key is never exposed to the browser. The app
+  works identically without the key (just slower for
+  the first visitor in a region per 15 min). See
+  [V5.0.2 NVD rate-limit hardening](#-v502-nvd-rate-limit-hardening)
+  for the full rate-limit story.
 - **Service layer** designed to plug in additional real APIs (NVD,
   FIRST EPSS) without touching UI code.
 
@@ -450,6 +486,254 @@ and Netlify-deploy workflows.
 
 ---
 
+## ⚡ V5.0.1 performance hardening
+
+V5.0.1 is a patch release on top of v5.0. It does **not**
+add features, change data sources, change the UI, or
+change the data flow. The single goal: make repeat
+production loads fast without ever misleading the user
+about how fresh the data is.
+
+### The problem v5.0 left on the table
+
+The v5.0 function returned `Cache-Control: no-store` on
+every response. Netlify's edge cache respected that and
+re-ran the full CISA → NVD → EPSS pipeline on every
+single request — even if the same visitor reloaded five
+times in a minute. On a busy public demo that meant
+dozens of unnecessary upstream fetches per minute per
+region, and a cold first load for every visitor in every
+region.
+
+### The v5.0.1 fix
+
+The function's response is now
+`Cache-Control: public, s-maxage=900, stale-while-revalidate=300`.
+That single header change does three things:
+
+- **`s-maxage=900`** — Netlify's edge cache holds the
+  response for **15 minutes**. Within that window, every
+  visitor in the same region gets the cached response
+  in <100 ms. No upstream fetch, no function run, no
+  cold start.
+- **`stale-while-revalidate=300`** — after the 15 min
+  mark, the cache is "stale" for another **5 minutes**.
+  Netlify serves the stale response immediately AND
+  triggers a background function invocation to refresh
+  the cache. This avoids the "thundering herd" problem
+  where many visitors all wait on a slow function at
+  once.
+- **No `max-age` directive** — the browser is not told
+  to cache the JSON locally (the client uses
+  `cache: 'no-store'` on its fetch anyway). The
+  `s-maxage` directive is what Netlify's edge honors.
+  The `max-age` directive would have told the browser
+  to cache the response across reloads, which would
+  shadow the localStorage cache and the per-load
+  honesty contract.
+
+### How freshness stays honest
+
+Three guarantees keep the dashboard source-honest under
+the new caching:
+
+1. **The function's `fetchedAt` is set inside the
+   function body**, at `new Date().toISOString()` on the
+   moment the function actually runs. When the CDN
+   serves a cached response, the `fetchedAt` is from
+   the *original* function run, not the CDN serve
+   time. The "Last refresh" pill (`formatRelative(meta.fetchedAt)`)
+   therefore shows the time since the real upstream
+   fetch, even on a CDN-cached response.
+2. **The "Refresh live data" button appends a unique
+   `?t=<timestamp>` query string** when `forceRefresh: true`
+   is passed. The CDN treats this as a different URL and
+   does *not* hit its cache — the function actually re-runs.
+   The button's name remains honest: a manual refresh
+   always fetches fresh upstream data.
+3. **The localStorage cache (v4) is unchanged.** It
+   still wraps the live path with a 1 h TTL. The two
+   layers compose: a 15 min CDN cache + a 1 h
+   localStorage cache + the in-memory `cacheStatus`
+   pill. No layer hides the others.
+
+### What you should observe in production
+
+- **First visitor in a region** (cold CDN cache):
+  the full CISA → NVD → EPSS pipeline runs once,
+  taking 5–15 s. Subsequent visitors in the same
+  region within 15 min get the cached response.
+- **Visitor at minute 16** (cache just expired):
+  Netlify serves the stale response immediately AND
+  triggers a background refresh. The next visitor
+  after the refresh hits the fresh cache.
+- **Visitor at minute 21+** (cache fully expired):
+  the next request waits for a fresh function
+  invocation. Cold.
+- **Visitor who clicks "Refresh live data"** at any
+  time: the `?t=<timestamp>` cache-buster forces a
+  real function run. The "Last refresh" pill ticks
+  to "just now".
+
+### What v5.0.1 does *not* add
+
+- **No new data sources.** OSV.dev, GHSA, etc. are
+  still v5.1+ milestones.
+- **No new dependencies.** Plain Node 20 ESM in the
+  function, plain React in the client.
+- **No new environment variables.** The
+  `VITE_DATASET_PROXY_URL` client-side env var
+  default is unchanged.
+- **No UI changes.** Same header, same pills, same
+  banners, same dashboard layout.
+- **No scheduled / background functions.** The
+  `stale-while-revalidate` directive is a CDN-layer
+  mechanism, not a function scheduled job. The
+  function still runs on demand.
+- **No new fake freshness claims.** A CDN-cached
+  response is not advertised as a fresh fetch; the
+  "Last refresh" pill reflects the actual function
+  run time, not the CDN serve time.
+
+### Test count
+
+**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+53/53 v3 NVD + 60/60 v4 cache + 55/55 v5.0/v5.0.1
+proxy = 250/250.**
+
+---
+
+## 🛡️ V5.0.2 NVD rate-limit hardening
+
+V5.0.2 is a small reliability/UX patch on top of v5.0.1.
+It does **not** add new sources, change the UI, or change
+the data flow. Two related changes that solve a real
+friction point on the public demo.
+
+### The problem v5.0.1 left on the table
+
+NVD's anonymous public endpoint allows only
+**5 requests / 30 s** per source IP. The v5.0 function
+was firing all 10 NVD chunks (one per 100 CVEs) in
+parallel via `Promise.allSettled` — guaranteed to hit
+HTTP 429 on the first hit in every region. The function
+then produced a long repeated error string like
+
+```
+HTTP 429 Too Many Requests; HTTP 429 Too Many Requests;
+HTTP 429 Too Many Requests; HTTP 429 Too Many Requests;
+HTTP 429 Too Many Requests; HTTP 429 Too Many Requests;
+HTTP 429 Too Many Requests; HTTP 429 Too Many Requests;
+HTTP 429 Too Many Requests; HTTP 429 Too Many Requests
+```
+
+…which the dashboard's `NvdUnavailableBanner`
+displayed verbatim, spilling past the banner boundary and
+making the public demo look broken.
+
+### The v5.0.2 fix
+
+**1. Optional `NVD_API_KEY` env var, server-side only.**
+When the Netlify function has `process.env.NVD_API_KEY`
+set, NVD allows 50 req / 30 s, and the function
+parallelizes NVD chunks. When the var is absent (the
+default), the function **serializes NVD chunks
+(concurrency = 1)** to stay under the anonymous limit.
+
+```
+without NVD_API_KEY:    CISA → [NVD chunk 1 → NVD chunk 2 → ... → NVD chunk 10] → EPSS
+with NVD_API_KEY:       CISA → [NVD chunk 1, 2, 3, ..., 10]  → EPSS
+```
+
+The key is:
+
+- read from `process.env.NVD_API_KEY` **inside the
+  Netlify Function only** (server-side);
+- passed to NVD as a `?apiKey=<key>` query parameter on
+  every NVD request;
+- **never** sent to the browser, **never** included in
+  the function response body, **never** logged;
+- **optional** — the function works identically without
+  it (just slower for the first visitor in a region per
+  15 min — repeat visitors ride the v5.0.1 CDN cache
+  either way).
+
+The frontend (`src/**`) is unchanged. No `VITE_NVD_API_KEY`
+or any other build-time env var is added. **There is no
+API key in the frontend bundle.**
+
+**2. Concise 429 reason.** If every failed chunk is
+HTTP 429, the function throws a single short reason
+instead of joining N repeated chunk errors:
+
+```
+NVD rate limit reached (HTTP 429). NVD CVSS enrichment is
+unavailable; severity falls back to CISA-derived values
+for this refresh.
+```
+
+The dashboard's `NvdUnavailableBanner` reads this
+reason verbatim. The banner now renders cleanly as:
+
+> **NVD CVSS enrichment unavailable — scores default to 0.**
+>
+> CISA KEV data is current. NVD could not be reached:
+> NVD rate limit reached (HTTP 429). NVD CVSS enrichment
+> is unavailable; severity falls back to CISA-derived
+> values for this refresh. Severity and CVSS sorting
+> will fall back to the CISA-derived values (KEV records
+> default to "High"; ransomware-known records to
+> "Critical").
+
+For non-429 failures (timeout, 5xx, network error), the
+function de-duplicates per-chunk error messages via
+`Array.from(new Set(reasons))` so the banner doesn't
+show "HTTP 503; HTTP 503; HTTP 503" either.
+
+### Honesty guarantees (preserved)
+
+- The function's `fetchedAt` is still set inside the
+  function body. The dashboard's "Last refresh" pill
+  reflects when the function *actually* ran, even on a
+  CDN-cached response. The `?t=<timestamp>` cache-buster
+  on the "Refresh live data" button still forces a real
+  function run.
+- The function response never contains the API key
+  (asserted by `acceptance-proxy.mjs`: the key is read
+  from `process.env`, passed to NVD's URL, and never
+  flows into the JSON body).
+- Provider-status banners are preserved on cached data
+  and on key-less deployments: a 429 with no key renders
+  as "NVD: unavailable" with the concise reason; a
+  successful NVD call with a key renders as "NVD:
+  enriched" with no rate-limit copy.
+- The dashboard never claims NVD is enriched when it
+  is unavailable — the `nvdStatus` field is the
+  source of truth, and the banner only renders when
+  `nvdStatus === 'unavailable'`.
+
+### Configuring `NVD_API_KEY` on Netlify
+
+```
+# In the Netlify site dashboard:
+#   Site settings → Environment variables → Add variable
+#   Key:   NVD_API_KEY
+#   Value: <your NVD API key>
+#   Scopes: Functions (NOT "Build" — the function reads it at runtime, not at build time)
+```
+
+The function picks the key up at the next invocation.
+No rebuild is required. The key is never sent to the
+browser, never logged, never stored anywhere else.
+
+### Test count
+
+**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
+53/53 v3 NVD + 60/60 v4 cache + 68/68 v5.0/v5.0.1/v5.0.2
+proxy = 263/263.**
+
+---
+
 ## 🛣️ Roadmap
 
 - [x] v1 — Polished frontend, mock data, full filtering & visualization
@@ -469,15 +753,36 @@ and Netlify-deploy workflows.
   keys are ever embedded in the frontend bundle. See
   [V4.1 public-demo honesty](#-v41-public-demo-honesty)
   for the full stance.
-- [x] v5.0 — **Netlify Function live proxy** (this release)
-  — a single serverless endpoint at
-  `/.netlify/functions/dataset` aggregates CISA KEV +
-  NVD CVSS + FIRST EPSS server-side. The browser prefers
-  the proxy and falls back to browser-direct on
-  transport failure. No API keys, no new sources, no UI
-  redesign. See
+- [x] v5.0 — **Netlify Function live proxy** — a single
+  serverless endpoint at `/.netlify/functions/dataset`
+  aggregates CISA KEV + NVD CVSS + FIRST EPSS server-side.
+  The browser prefers the proxy and falls back to
+  browser-direct on transport failure. No API keys, no
+  new sources, no UI redesign. See
   [V5.0 live proxy mode](#-v50-live-proxy-mode) for the
   full architecture.
+- [x] v5.0.1 — **CDN-cacheable function response
+  (performance hardening)** — the function's
+  `Cache-Control` is now
+  `public, s-maxage=900, stale-while-revalidate=300`,
+  so Netlify's edge cache absorbs repeat visitors within
+  a 15 min window. "Refresh live data" still forces a
+  real function run via a cache-busting `?t=<timestamp>`
+  query string. `fetchedAt` remains honest (set inside
+  the function body, not by the CDN). See
+  [V5.0.1 performance hardening](#-v501-performance-hardening)
+  for the full cache-strategy contract.
+- [x] v5.0.2 — **NVD rate-limit hardening + optional
+  server-only `NVD_API_KEY`** (this release) — without
+  a key, NVD chunks fetch serially (concurrency = 1) to
+  stay under the 5-req/30s anonymous limit; with a key,
+  chunks fetch in parallel. The function returns a
+  single concise 429 reason instead of N repeated chunk
+  errors. The key is `process.env.NVD_API_KEY`,
+  server-side only, never sent to the browser. The app
+  works identically without the key. See
+  [V5.0.2 NVD rate-limit hardening](#-v502-nvd-rate-limit-hardening)
+  for the full rate-limit story.
 - [ ] v4.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
 - [ ] v4.5 — Per-vendor watchlists and email/Slack digest
 - [ ] v4.5 — CSV / JSON export of filtered results
