@@ -24,6 +24,20 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 
+/**
+ * Strip JS-style comments from a source string so the
+ * tests below can check the code, not the comments. Used
+ * by the v5.2.4 cveIds= URL assertions to avoid matching
+ * explanatory doc text that mentions the deprecated
+ * `cveId=` parameter historically.
+ */
+function stripComments(s) {
+  return s
+    .replace(/\/\*[\s\S]*?\*\//g, '')   // /* ... */ block comments
+    .replace(/^\s*\/\/.*$/gm, '')       // // line comments (line start)
+    .replace(/\s+\/\/.*$/gm, '');      // // trailing-line comments
+}
+
 /* ------------------------------------------------------------------ */
 /* Re-implementation of the production logic, in plain JS.            */
 /* Kept in lockstep with src/services/providers/nvd.ts.               */
@@ -471,6 +485,44 @@ section('Service-layer wiring (source-code assertions)');
   assert('NVD provider chunks CVEs (CHUNK_SIZE constant exists)',
     /const\s+CHUNK_SIZE\s*=/.test(nvdSrc),
     'CHUNK_SIZE not found');
+
+  assert('NVD provider chunks at 100 CVEs per request (NVD API limit)',
+    /CHUNK_SIZE\s*=\s*100\b/.test(nvdSrc),
+    'expected CHUNK_SIZE = 100 (NVD API max per request)');
+
+  assert('v5.2.4: browser-direct NVD batch URL uses ?cveIds= (plural)',
+    // v5.2.4 parity with the v5.2.3 server-side fix.
+    // NVD's `cveIds=` (plural) accepts a comma-separated list,
+    // max 100 per request. The deprecated `cveId=` (singular)
+    // expects a single CVE ID and returns HTTP 404 when given
+    // a comma-separated list. This provider's only batch path
+    // is `fetchOneChunk(cveChunk: string[])` — no single-CVE
+    // path exists — so the URL must unconditionally use
+    // `?cveIds=`.
+    (() => {
+      const code = stripComments(nvdSrc);
+      return /\?cveIds=\$\{encodeURIComponent\([^)]*\.join\(['"],['"]\)\)\}/.test(code);
+    })(),
+    'expected browser NVD batch URL to use `?cveIds=${encodeURIComponent(...)}`');
+
+  assert('v5.2.4: browser-direct NVD batch URL does NOT use the deprecated ?cveId= (singular)',
+    // The browser provider has no single-CVE path, so any
+    // `?cveId=` followed by an encodeURIComponent is a batch
+    // URL — and the singular parameter is wrong for batches.
+    (() => {
+      const code = stripComments(nvdSrc);
+      return !/\?cveId=\$\{encodeURIComponent/.test(code);
+    })(),
+    'expected browser NVD to NOT use the deprecated `?cveId=` parameter');
+
+  assert('v5.2.4: browser-direct NVD never sends NVD_API_KEY (browser has no key)',
+    // The browser provider must not import process.env, must
+    // not read any env var, and must not set the apiKey request
+    // header. The key is server-side only (v5.0.2 / v5.0.3).
+    !/process\.env/.test(nvdSrc) &&
+      !/apiKey/.test(nvdSrc) &&
+      !/NVD_API_KEY/.test(nvdSrc),
+    'expected browser NVD provider to have no NVD_API_KEY reference at all');
 
   assert('NVD provider uses AbortController timeout',
     /AbortController[\s\S]{0,300}abort/.test(nvdSrc),

@@ -2,13 +2,18 @@
  * NVD CVE 2.0 — live provider.
  *
  * Endpoint:
- *   https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=CVE-XXXX-NNNN,...
+ *   https://services.nvd.nist.gov/rest/json/cves/2.0?cveIds=CVE-XXXX-NNNN,...
  *
  * NVD's API is public, CORS-enabled, and supports a comma-separated
- * `cveId` query parameter for batch lookups. We do NOT fabricate
- * CVSS scores for CVEs that aren't in the NVD response — those
- * records keep `cvssScore: 0` and the UI surfaces "NVD: unavailable"
- * if the whole fetch failed.
+ * `cveIds` (plural) query parameter for batch lookups, max 100 per
+ * request. (The deprecated singular `cveId=` parameter expects a
+ * single CVE ID; passing a comma-separated list to it returns
+ * HTTP 404. The server-side path in `_shared/liveBuild.mjs`
+ * was fixed for this in v5.2.3; this provider gets the same
+ * treatment in v5.2.4 so the browser-direct fallback works.)
+ * We do NOT fabricate CVSS scores for CVEs that aren't in the
+ * NVD response — those records keep `cvssScore: 0` and the UI
+ * surfaces "NVD: unavailable" if the whole fetch failed.
  *
  * Rate limit (per NVD's docs): 5 requests / 30 s without an API
  * key. With ~1000 CISA CVEs / 100 per chunk = 10 requests, the
@@ -133,7 +138,16 @@ export async function fetchNvdForCves(
 }
 
 async function fetchOneChunk(cveChunk: string[]): Promise<Map<string, NvdScore>> {
-  const url = `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}`;
+  // v5.2.4: NVD CVE 2.0 uses `cveIds=` (plural) for a
+  // comma-separated list of CVE IDs in a single request,
+  // max 100 per request. The deprecated singular `cveId=`
+  // parameter expects a single CVE ID and returns HTTP 404
+  // when given a comma-separated list. This provider's only
+  // batch path is `fetchOneChunk(cveChunk: string[])` — no
+  // single-CVE path exists — so the swap is unconditional.
+  // Server-side parity: `_shared/liveBuild.mjs` uses the
+  // same parameter (v5.2.3).
+  const url = `${NVD_BASE_URL}?cveIds=${encodeURIComponent(cveChunk.join(','))}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 

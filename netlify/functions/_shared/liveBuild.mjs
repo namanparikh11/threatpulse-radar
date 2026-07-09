@@ -306,9 +306,18 @@ async function fetchNvdForCves(cveIds) {
 }
 
 async function fetchOneNvdChunk(cveChunk, apiKey) {
-  // v5.0.3: pass the optional apiKey as a request HEADER
-  // (per NVD's official CVE 2.0 spec), NOT as a URL query parameter.
-  const url = `${NVD_BASE_URL}?cveId=${encodeURIComponent(cveChunk.join(','))}`;
+  // v5.2.3: NVD CVE 2.0 uses `cveIds=` (plural) for a
+  // comma-separated list of CVE IDs in a single request,
+  // max 100 per request. The older `cveId=` (singular)
+  // parameter expects a single CVE ID; passing a
+  // comma-separated list to it returns HTTP 404. The
+  // prebuilt-dataset deploy preview caught this — every
+  // chunk was returning "HTTP 404 Not Found".
+  //
+  // v5.0.3 (unchanged): the optional `apiKey` is passed as
+  // a request HEADER per NVD's official CVE 2.0 spec, NOT
+  // as a URL query parameter. Server-side only.
+  const url = `${NVD_BASE_URL}?cveIds=${encodeURIComponent(cveChunk.join(','))}`;
   const headers = { Accept: 'application/json' };
   if (apiKey) headers.apiKey = apiKey;
   const res = await withTimeout(

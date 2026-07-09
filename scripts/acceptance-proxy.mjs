@@ -489,6 +489,36 @@ assert('v5.0.3: NVD_API_KEY is NOT appended to the NVD URL query string',
     !/&apiKey=/.test(stripComments(datasetOrSharedSrc)),
   'expected NVD_API_KEY to NOT appear in any NVD URL query string');
 
+assert('v5.2.3: chunked NVD requests use ?cveIds= (plural) for comma-separated batches',
+  // NVD CVE 2.0 uses `cveIds=` (plural) for a comma-separated
+  // list of CVE IDs, max 100 per request. The deprecated
+  // singular `cveId=` parameter expects a single CVE ID;
+  // passing a comma-separated list to it returns HTTP 404.
+  // (Caught by the v5.2.3 prebuilt-dataset deploy preview —
+  // every chunk failed with "HTTP 404 Not Found".)
+  // The actual code must construct URLs with `?cveIds=`.
+  // Strip comments first so the explanatory doc text that
+  // references the deprecated `cveId=` form doesn't trip
+  // the test.
+  (() => {
+    const code = stripComments(datasetOrSharedSrc);
+    // Must contain a URL construction with `?cveIds=` followed
+    // by an encodeURIComponent of a comma-joined chunk.
+    return /\?cveIds=\$\{encodeURIComponent\([^)]*\.join\(['"],['"]\)\)\}/.test(code);
+  })(),
+  'expected chunked NVD URL to use `?cveIds=${encodeURIComponent(cveChunk.join(\",\"))}`');
+
+assert('v5.2.3: chunked NVD requests do NOT use the deprecated ?cveId= (singular)',
+  // The deprecated singular `cveId=` parameter returns 404
+  // when given a comma-separated list. It must not appear
+  // in any actual NVD URL construction (code only; comments
+  // are fine to reference it historically).
+  (() => {
+    const code = stripComments(datasetOrSharedSrc);
+    return !/\?cveId=\$\{encodeURIComponent/.test(code);
+  })(),
+  'expected no chunked NVD URL to use the deprecated `?cveId=` parameter');
+
 assert('v5.0.3: NVD_API_KEY IS passed as a request header (apiKey: <key>)',
   // v5.0.3: the apiKey must be assigned to the request
   // headers object, not the URL. Acceptable forms:
