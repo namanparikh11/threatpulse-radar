@@ -1,19 +1,20 @@
 # PROJECT_HANDOFF
 
-> End-of-session handover for **ThreatPulse Radar** v5.2.
-> Last verified: this session (Pass 19 — prebuilt dataset
-> store: shared Netlify Blobs `latest-dataset` envelope
-> + 15-min `refresh-lock` + scheduled cron every 30 min +
-> manual background-refresh endpoint; UI honesty via new
-> "Dataset store: latest available" and "Refresh running
-> in background" pills; the v5.1 soft-refresh banner is
-> preserved end-to-end as the only way new data is
-> surfaced to the user).
+> End-of-session handover for **ThreatPulse Radar** v5.2.6 (with v5.3
+> launch documentation polish queued on `v5-3-launch-polish`).
+> Last verified: this session — v5.2.6 NVD backoff + dataset quality
+> guard (the `latest-dataset` blob is preserved when a later refresh
+> hits NVD HTTP 429 and the new build is worse; a 15-min
+> `nvd-cooldown` marker avoids hammering a known-flaky NVD; the
+> `skipNvd` opt short-circuits the NVD fetch when the cooldown is
+> active and no good existing blob is present). v5.3 is a
+> documentation-only release — README rewritten as a clean
+> public-facing launch doc (~399 lines, down from 1232); DEPLOYMENT,
+> PROJECT_HANDOFF, NEXT_AGENT_PROMPT updated to reflect v5.2.6 status.
 > Build clean. Acceptance tests green
-> (**15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS + 53/53 v3 NVD +
-> 60/60 v4 cache + 71/71 v5.0/v5.0.1/v5.0.2/v5.0.3 proxy +
-> 58/58 v5.1 soft-refresh + 98/98 v5.2 prebuilt = 422/422**).
-> Tree has uncommitted source changes on `main`.
+> (**28/28 CISA + 39/39 EPSS + 57/57 NVD + 60/60 cache +
+> 58/58 softrefresh + 110/110 proxy + 148/148 prebuilt = 500/500**).
+> Tree has uncommitted source changes on `v5-3-launch-polish`.
 
 ---
 

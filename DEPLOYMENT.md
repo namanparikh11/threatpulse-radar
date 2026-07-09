@@ -1,20 +1,41 @@
-# Deployment — Netlify (with the v5.0 serverless proxy)
+# Deployment — Netlify (v5.2 prebuilt dataset store, v5.2.6 NVD backoff)
 
 > Drop-in deployment guide for **ThreatPulse Radar** on
-> **Netlify**, which is the v5.0 deployment target.
+> **Netlify**, the supported deployment target.
 >
-> The v5.0 deploy uses `netlify.toml` to wire a single
-> serverless function (`/.netlify/functions/dataset`) that
-> aggregates CISA KEV + NVD CVSS + FIRST EPSS server-side.
-> The function runs on demand per request — no scheduled
-> jobs, no persistent state, no credentials.
+> The current production deploy uses `netlify.toml` to wire
+> three serverless functions:
+>
+> - `/.netlify/functions/dataset` (read endpoint; serves the
+>   v5.2 prebuilt `latest-dataset` blob on the happy path,
+>   bootstraps a fresh build when the blob is missing, and
+>   returns 502 with `mode: 'fallback'` on a CISA failure)
+> - `/.netlify/functions/refresh-dataset-background`
+>   (Background Function; manual "Refresh live data" trigger
+>   from the dashboard's button — 15-min timeout)
+> - `/.netlify/functions/refresh-dataset-scheduled`
+>   (cron, every 30 min via `*/30 * * * *` — keeps the
+>   prebuilt blob fresh on its own)
+>
+> The three functions share three modules in
+> `netlify/functions/_shared/` (`store.mjs`, `refresh.mjs`,
+> `liveBuild.mjs`). v5.2.6 layers an NVD backoff + dataset
+> quality guard on top: a 15-min `nvd-cooldown` marker
+> short-circuits the doomed NVD fetch during a known NVD
+> rate-limit window, and the refresh orchestrator refuses to
+> overwrite a better existing prebuilt envelope with a
+> rate-limited downgrade. No credentials ever leave the
+> function layer; `NVD_API_KEY` (optional, raises the rate
+> limit from 5 to 50 req / 30 s) is read from `process.env`
+> and passed to NVD as a request header.
 >
 > Sections 2–8 below document the **v1.0–v4.1 Hostinger
 > static-hosting** workflow, which is preserved as a
 > fallback host (the `dist/.htaccess` file is still shipped
-> with the bundle). V5.0 prefers Netlify, but a Hostinger
-> static deploy still works for the v4.1 browser-direct
-> demo if the function is not available.
+> with the bundle). The supported production path is the
+> v5.2 Netlify deploy, but a Hostinger static deploy still
+> works for the v4.1 browser-direct demo if the function is
+> not available.
 
 ---
 

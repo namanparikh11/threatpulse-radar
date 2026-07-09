@@ -10,7 +10,8 @@
 
 **What it is.** A polished, dark-themed, frontend-only cybersecurity
 vulnerability-intelligence dashboard for **defensive** security
-portfolio use. Now in v5.2.
+portfolio use. Now in v5.2.6, with a v5.3 launch-documentation
+polish queued on `v5-3-launch-polish`.
 
 **Stack.** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
 Recharts 2 + Lucide React + three Node 20 ESM Netlify Functions
@@ -21,43 +22,41 @@ modules in `netlify/functions/_shared/` (`store.mjs`, `refresh.mjs`,
 `liveBuild.mjs`). The read endpoint serves a v5.0.1 CDN-cacheable
 response (now serving from the v5.2 prebuilt Blob when present),
 the v5.0.2 NVD rate-limit path and v5.0.3 request-header NVD
-API key transport are preserved, and the v5.1 soft-refresh
-polling + banner mechanism now also serves as the only path
-through which v5.2 background-refresh results reach the UI.
-The new `@netlify/blobs` runtime dependency is zipped alongside
-the function code on deploy.
+API key transport are preserved, the v5.1 soft-refresh
+polling + banner mechanism serves as the only path through which
+v5.2 background-refresh results reach the UI, and v5.2.6 adds the
+NVD backoff + dataset quality guard so a 429-induced downgrade
+cannot overwrite a better existing blob. The new `@netlify/blobs`
+runtime dependency is zipped alongside the function code on deploy.
 
-**Status.** v1 (mock data) through v5.2 (prebuilt dataset store) are done.
-- `npm.cmd run build` → 0 errors, 0 warnings, ~5.8 s.
-- `node scripts/acceptance.mjs` → **15/15** (v1 mock-data tests).
-- `node scripts/acceptance-cisa.mjs` → **28/28** (v2 CISA tests).
-- `node scripts/acceptance-epss.mjs` → **39/39** (v2.5 EPSS tests).
-- `node scripts/acceptance-nvd.mjs` → **53/53** (v3 NVD tests).
-- `node scripts/acceptance-cache.mjs` → **60/60** (v4 cache tests).
-- `node scripts/acceptance-proxy.mjs` → **71/71** (v5.0 +
+**Status.** v1 (mock data) through v5.2.6 (NVD backoff + dataset
+quality guard) are done; v5.3 is documentation-only (README polish,
+queued on `v5-3-launch-polish`).
+- `node node_modules/typescript/bin/tsc -b ; node node_modules/vite/bin/vite.js build` → 0 errors, ~7 s.
+- `node scripts/acceptance-cisa.mjs` → **28/28**.
+- `node scripts/acceptance-epss.mjs` → **39/39**.
+- `node scripts/acceptance-nvd.mjs` → **57/57** (v3.0 / v3.0.1
+  NVD upstream tests + v5.2.4 batch URL fixes).
+- `node scripts/acceptance-cache.mjs` → **60/60**.
+- `node scripts/acceptance-softrefresh.mjs` → **58/58**.
+- `node scripts/acceptance-proxy.mjs` → **110/110** (v5.0 +
   v5.0.1 CDN cache + v5.0.2 NVD rate-limit hardening +
-  v5.0.3 NVD_API_KEY request-header transport).
-- `node scripts/acceptance-softrefresh.mjs` → **58/58** (v5.1
-  soft-refresh path: pure-JS decision logic + service
-  `background` flag + DashboardPage polling effect + apply /
-  dismiss handlers + UpdateAvailableBanner + drawer policy +
-  v4 / v5.0.3 regression checks).
-- `node scripts/acceptance-prebuilt.mjs` → **98/98** (v5.2
-  prebuilt-dataset store: `@netlify/blobs` dependency +
-  shared `_shared/{store,refresh,liveBuild}.mjs` modules +
-  blob keys (`latest-dataset`, `refresh-lock`) + 15-min
-  refresh-lock TTL + pure-JS lock + decideRefresh logic +
-  background-function wiring + scheduled-function wiring +
-  `netlify.toml` cron config + dataset-function blob-first
-  / bootstrap / no-overwrite contract + frontend-service
-  `manualRefresh()` + new FetchResult fields +
-  DashboardPage `RefreshInProgressBanner` + Header UI
-  honesty pills + v5.1 regression checks).
-- Total: **422/422** acceptance tests.
+  v5.0.3 NVD_API_KEY request-header transport + v5.2.5 NVD
+  partial-fallback hardening + v5.2.6 NVD backoff + dataset
+  quality guard source-level checks).
+- `node scripts/acceptance-prebuilt.mjs` → **148/148** (v5.2
+  prebuilt-dataset store + v5.2.6 quality-guard decision table:
+  `nvd-cooldown` blob key + 15-min TTL + cooldown read / write /
+  clear helpers + pure-JS cooldown-active check +
+  `countCvssAboveZero` + `isNvdRateLimitedReason` +
+  `shouldSkipOverwrite` + 8 quality-guard scenarios + cooldown
+  short-circuit + `skipNvd` opt + source-level wiring + no-`apiKey`
+  invariants).
+- Total: **500/500** acceptance tests.
 - 60 unique mock records (offline fallback) + the live CISA KEV
   feed (default) + live NVD CVSS enrichment + live FIRST EPSS
   enrichment, all server-aggregated by the v5.0 Netlify
-  Function and now prebuilt into a shared Netlify Blobs
+  Function and prebuilt into a shared Netlify Blobs
   `latest-dataset` entry on a 30-min cron.
 - Returning visitors hit the v5.2 prebuilt blob first —
   no upstream build runs on their request. The v4
@@ -80,6 +79,13 @@ the function code on deploy.
   preserved; the v5.1 banner is the only way the data is
   swapped. A "Refresh running in background" pill appears
   immediately and auto-clears when the build completes.
+- v5.2.6 quality guard: if a later refresh hits NVD HTTP 429
+  and the new build has fewer CVSS-positive records than the
+  existing prebuilt blob, the new build is discarded
+  (`status: "preserved"`) and the existing blob continues to
+  serve visitors. A 15-min `nvd-cooldown` marker is set so the
+  next refresh short-circuits the doomed NVD fetch
+  (`status: "cooldown"`).
 - Filter / search / sort pipeline in `useVulnerabilityFilter`
   works identically on every data path.
 - Severity sort verified: `desc` = Critical, High, Medium,
@@ -91,11 +97,12 @@ the function code on deploy.
   is preserved for the v4.1 browser-direct demo if the
   function is not available, but the supported path is
   Netlify.
-- `main` has **uncommitted** source changes from the most
-  recent pass. The `origin` remote is configured (private
-  repo at `https://github.com/namanparikh11/threatpulse-radar.git`)
-  but nothing has been pushed. Do not push without an
-  explicit ask.
+- `main` is clean (v5.2.6 was merged via PR). The current
+  branch is `v5-3-launch-polish` with uncommitted source changes
+  (README rewrite + internal-doc header updates). The `origin`
+  remote is configured (private repo at
+  `https://github.com/namanparikh11/threatpulse-radar.git`) but
+  nothing has been pushed. Do not push without an explicit ask.
 
 ## Read first
 
