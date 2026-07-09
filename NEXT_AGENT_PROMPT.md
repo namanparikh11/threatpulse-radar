@@ -10,19 +10,25 @@
 
 **What it is.** A polished, dark-themed, frontend-only cybersecurity
 vulnerability-intelligence dashboard for **defensive** security
-portfolio use. Now in v5.1.
+portfolio use. Now in v5.2.
 
 **Stack.** React 18 + Vite 5 + TypeScript 5 (strict) + Tailwind CSS 3 +
-Recharts 2 + Lucide React + a single Node 20 ESM Netlify Function
-(`netlify/functions/dataset.mjs`) that aggregates CISA KEV +
-NVD CVE 2.0 + FIRST EPSS server-side. The function is
-CDN-cacheable (`Cache-Control: public, s-maxage=900,
-stale-while-revalidate=300`) and supports an optional
-server-side `NVD_API_KEY` env var passed as a request header
-per NVD's CVE 2.0 spec.
+Recharts 2 + Lucide React + three Node 20 ESM Netlify Functions
+(`netlify/functions/dataset.mjs`,
+`netlify/functions/refresh-dataset-background.mjs`,
+`netlify/functions/refresh-dataset-scheduled.mjs`) sharing three
+modules in `netlify/functions/_shared/` (`store.mjs`, `refresh.mjs`,
+`liveBuild.mjs`). The read endpoint serves a v5.0.1 CDN-cacheable
+response (now serving from the v5.2 prebuilt Blob when present),
+the v5.0.2 NVD rate-limit path and v5.0.3 request-header NVD
+API key transport are preserved, and the v5.1 soft-refresh
+polling + banner mechanism now also serves as the only path
+through which v5.2 background-refresh results reach the UI.
+The new `@netlify/blobs` runtime dependency is zipped alongside
+the function code on deploy.
 
-**Status.** v1 (mock data) through v5.1 (soft refresh) are done.
-- `npm.cmd run build` → 0 errors, 0 warnings, ~7.3 s.
+**Status.** v1 (mock data) through v5.2 (prebuilt dataset store) are done.
+- `npm.cmd run build` → 0 errors, 0 warnings, ~5.8 s.
 - `node scripts/acceptance.mjs` → **15/15** (v1 mock-data tests).
 - `node scripts/acceptance-cisa.mjs` → **28/28** (v2 CISA tests).
 - `node scripts/acceptance-epss.mjs` → **39/39** (v2.5 EPSS tests).
@@ -36,16 +42,32 @@ per NVD's CVE 2.0 spec.
   `background` flag + DashboardPage polling effect + apply /
   dismiss handlers + UpdateAvailableBanner + drawer policy +
   v4 / v5.0.3 regression checks).
-- Total: **324/324** acceptance tests.
+- `node scripts/acceptance-prebuilt.mjs` → **98/98** (v5.2
+  prebuilt-dataset store: `@netlify/blobs` dependency +
+  shared `_shared/{store,refresh,liveBuild}.mjs` modules +
+  blob keys (`latest-dataset`, `refresh-lock`) + 15-min
+  refresh-lock TTL + pure-JS lock + decideRefresh logic +
+  background-function wiring + scheduled-function wiring +
+  `netlify.toml` cron config + dataset-function blob-first
+  / bootstrap / no-overwrite contract + frontend-service
+  `manualRefresh()` + new FetchResult fields +
+  DashboardPage `RefreshInProgressBanner` + Header UI
+  honesty pills + v5.1 regression checks).
+- Total: **422/422** acceptance tests.
 - 60 unique mock records (offline fallback) + the live CISA KEV
   feed (default) + live NVD CVSS enrichment + live FIRST EPSS
   enrichment, all server-aggregated by the v5.0 Netlify
-  Function.
-- Returning visitors hit the v4 localStorage cache first —
-  no 30–60 s NVD first-load on every page visit. A "Cache:
-  fresh" / "Cache: stale" pill in the header and a "Cached
-  data" banner above the stats make it obvious when data
-  is from `localStorage`.
+  Function and now prebuilt into a shared Netlify Blobs
+  `latest-dataset` entry on a 30-min cron.
+- Returning visitors hit the v5.2 prebuilt blob first —
+  no upstream build runs on their request. The v4
+  localStorage cache still wraps the read path with a 1 h
+  TTL; both layers compose. A "Cache: fresh" / "Cache:
+  stale" pill in the header and a "Cached data" banner
+  above the stats make it obvious when data is from
+  `localStorage`; a "Dataset store: latest available"
+  pill makes it obvious when the read came from the
+  shared blob.
 - v5.1 silently polls the proxy every 5 minutes (only while
   the tab is visible) and surfaces a small "New dataset
   available." banner with an Apply update button when a
@@ -53,6 +75,11 @@ per NVD's CVE 2.0 spec.
   sort / selected detail view are preserved across the
   apply; the drawer auto-closes only if the selected CVE
   is no longer in the new dataset.
+- v5.2 manual "Refresh live data" button POSTs to the
+  Netlify Background Function — the visible dataset is
+  preserved; the v5.1 banner is the only way the data is
+  swapped. A "Refresh running in background" pill appears
+  immediately and auto-clears when the build completes.
 - Filter / search / sort pipeline in `useVulnerabilityFilter`
   works identically on every data path.
 - Severity sort verified: `desc` = Critical, High, Medium,
@@ -102,21 +129,22 @@ These are non-negotiable. The next agent (you) must not:
 - ❌ Touch the filter / search / sort pipeline. The 15 v1
   acceptance tests + 28 CISA tests + 39 EPSS tests + 53 NVD
   tests + 60 cache tests + 71 proxy tests + 58 soft-refresh
-  tests must keep passing. Do not weaken them. The severity
-  sort comparator in `src/utils/analytics.ts`
-  (`compareByField`'s `case 'severity':`) was corrected in
-  pass 8 to put Critical first when descending; do not
-  revert it.
+  tests + 98 prebuilt tests must keep passing. Do not weaken
+  them. The severity sort comparator in
+  `src/utils/analytics.ts` (`compareByField`'s
+  `case 'severity':`) was corrected in pass 8 to put Critical
+  first when descending; do not revert it.
 - ❌ Touch `src/data/mockVulnerabilities.ts`,
   `src/hooks/useVulnerabilityFilter.ts`, or
   `src/hooks/useDebouncedValue.ts` unless the user explicitly
   asks.
 - ❌ Bump major versions of React / Vite / Recharts.
 - ❌ Add a backend, a database, or any kind of server beyond
-  the existing single read-only Netlify Function.
-- ❌ Add a scheduled function. The 5-minute soft-refresh
-  poll runs only on the user's open tab — there is no
-  server-side scheduler and none should be added.
+  the existing three Netlify Functions + the shared
+  `_shared/{store,refresh,liveBuild}.mjs` modules. The
+  prebuilt Blob store is the only server-side state.
+- ❌ Add additional scheduled functions or change the v5.2
+  cron cadence (currently `*/30 * * * *`).
 - ❌ Remove `base: './'` from `vite.config.ts` or the
   `public/.htaccess` file.
 - ❌ Change `DATA_MODE` away from `'live'` in
@@ -147,6 +175,21 @@ These are non-negotiable. The next agent (you) must not:
 - ❌ Auto-apply a background poll result. The user must
   always click "Apply update" — soft refresh is
   informational, never automatic.
+- ❌ Revert the v5.2 prebuilt store. The read endpoint must
+  read `latest-dataset` BEFORE running the live build. The
+  blob must NEVER be overwritten with a mock fallback. The
+  refresh-lock TTL must stay at 15 minutes. The scheduled
+  function must stay at `*/30 * * * *`. The manual button
+  must POST to the background endpoint — it must NOT
+  call `fetchVulnerabilities({ forceRefresh: true })` on
+  the read endpoint.
+- ❌ Auto-replace the visible dataset on a manual refresh.
+  The v5.2 contract is: the manual button POSTs to the
+  background endpoint, the visible data is preserved, and
+  the v5.1 banner is the only way the data is swapped.
+- ❌ Add new VITE_* env vars beyond `VITE_DATASET_PROXY_URL`
+  and `VITE_REFRESH_ENDPOINT_URL` (both are public routes,
+  not secrets).
 - ❌ Push to `origin` without an explicit ask.
 
 If a request seems to violate these, push back once, then
@@ -197,11 +240,13 @@ When work is done, report:
 6. `node scripts/acceptance-cache.mjs` result (must be **60/60**).
 7. `node scripts/acceptance-proxy.mjs` result (must be **71/71**).
 8. `node scripts/acceptance-softrefresh.mjs` result (must be **58/58**).
-9. New tests (if any) result (must be `N/N`).
-10. List of files added / modified.
-11. A short note on whether `dist/` is still drop-in
+9. `node scripts/acceptance-prebuilt.mjs` result (must be **98/98**).
+10. New tests (if any) result (must be `N/N`).
+11. List of files added / modified.
+12. A short note on whether `dist/` is still drop-in
     deployable to Netlify (it should be — `netlify.toml`
-    is unchanged).
+    registers the new functions, the read endpoint still
+    serves a CDN-cacheable response).
 
 ## Things that are already correct (don't redo them)
 
@@ -300,6 +345,47 @@ When work is done, report:
   icon, Apply update + × buttons, formatAgeShort +
   formatAbsolute labels). All guarded by tests in
   `scripts/acceptance-softrefresh.mjs`.
+- The v5.2 prebuilt-dataset store: the
+  `netlify/functions/_shared/store.mjs` module
+  (`getDatasetStore`, `readLatestDataset`,
+  `writeLatestDataset`, `readRefreshLock`,
+  `isRefreshLocked`, `tryAcquireRefreshLock`,
+  `clearRefreshLock`; constants `STORE_NAME =
+  "tpr-dataset"`, `LATEST_DATASET_KEY =
+  "latest-dataset"`, `REFRESH_LOCK_KEY = "refresh-lock"`,
+  `REFRESH_LOCK_TTL_MS = 15 * 60 * 1000`), the
+  `netlify/functions/_shared/refresh.mjs` module
+  (`runRefresh` orchestrator: lock-check → acquire →
+  build → write-on-success → release), the
+  `netlify/functions/_shared/liveBuild.mjs` module
+  (the CISA → NVD → EPSS pipeline extracted from the
+  v5.0 / v5.0.1 / v5.0.2 / v5.0.3 dataset function —
+  byte-identical upstream URLs, NVD_API_KEY header
+  transport, 429 reason), the `dataset.mjs` blob-first
+  read with the bootstrap path on a cold deploy
+  (returns `dataSource: "prebuilt-store"` on a hit,
+  `dataSource: "live-build"` on the bootstrap), the
+  `refresh-dataset-background.mjs` Netlify Background
+  Function (POSTed by the manual button, returns 202
+  immediately, runs the build via `context.waitUntil`),
+  the `refresh-dataset-scheduled.mjs` scheduled
+  function (`*/30 * * * *` cron, same orchestrator),
+  the `netlify.toml` cron registration, the
+  `REFRESH_ENDPOINT_URL` constant + `manualRefresh()`
+  function in `vulnerabilityService.ts`, the new
+  `RefreshStatus` + `RefreshResult` + `PrebuiltDataSource`
+  types, the new `dataSource` + `refreshInProgress`
+  fields on `FetchResult`, the three new Header pills
+  ("Dataset store: latest available" /
+  "Dataset store: bootstrapping" / "Refresh running in
+  background"), the "Last dataset build" tooltip
+  wording, the `RefreshInProgressBanner` component in
+  `DashboardPage.tsx` (info tone, Loader2 spinner,
+  three messages: started / in-progress / failed,
+  dismissible via ×), and the rewired manual button
+  (`handleManualRefresh` calls `manualRefresh()`, NOT
+  `fetchVulnerabilities({ forceRefresh: true })`). All
+  guarded by tests in `scripts/acceptance-prebuilt.mjs`.
 
 ## Style notes
 

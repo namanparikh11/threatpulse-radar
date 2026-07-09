@@ -73,6 +73,25 @@ function stripComments(s) {
     .replace(/\s+\/\/.*$/gm, '');      // // trailing-line comments
 }
 
+/**
+ * v5.2: Read both the dataset.mjs entry function and the
+ * shared `_shared/liveBuild.mjs` module. The build pipeline
+ * was extracted into a shared module in v5.2 so the
+ * background / scheduled refresh functions can call the same
+ * code without duplicating upstream-fetch logic. The dataset
+ * function imports from the shared module — the URLs,
+ * timeouts, and `NVD_API_KEY` handling now live there.
+ *
+ * Both files are read below, after `functionSrc` is
+ * initialized. The combined source (`datasetOrSharedSrc`)
+ * lets the URL / NVD / NVD_API_KEY tests search both files
+ * without losing any v5.0 / v5.0.1 / v5.0.2 / v5.0.3
+ * coverage.
+ */
+const liveBuildPath = join(root, 'netlify', 'functions', '_shared', 'liveBuild.mjs');
+const liveBuildExists = existsSync(liveBuildPath);
+const liveBuildSrc = liveBuildExists ? readFileSync(liveBuildPath, 'utf8') : '';
+
 /* ------------------------------------------------------------------ */
 /* 1. The Netlify Function file exists and is a Node ESM module       */
 /* ------------------------------------------------------------------ */
@@ -89,6 +108,18 @@ if (functionExists) {
   functionSrc = readFileSync(functionPath, 'utf8');
 }
 
+/**
+ * v5.2: Combined source for any test that needs to look
+ * across both `dataset.mjs` and `_shared/liveBuild.mjs`. The
+ * build pipeline was extracted into a shared module so the
+ * background / scheduled refresh functions can call the same
+ * upstream-fetch code; the dataset entry just delegates.
+ * Tests that look for CISA / NVD / EPSS URLs, NVD_API_KEY
+ * handling, and the chunk-size constants search the combined
+ * source so a regression in either file is caught.
+ */
+const datasetOrSharedSrc = functionSrc + '\n' + liveBuildSrc;
+
 assert('function is an ES module (export default handler)',
   /export\s+default\s+async\s*\(/.test(functionSrc) ||
     /export\s+default\s+async\s+function/.test(functionSrc) ||
@@ -102,23 +133,23 @@ assert('function is an ES module (export default handler)',
 section('Function references the right upstream feeds');
 
 assert('function reads the CISA KEV JSON feed',
-  /cisa\.gov\/sites\/default\/files\/feeds\/known_exploited_vulnerabilities\.json/.test(functionSrc),
+  /cisa\.gov\/sites\/default\/files\/feeds\/known_exploited_vulnerabilities\.json/.test(datasetOrSharedSrc),
   'expected the official CISA KEV feed URL');
 
 assert('function reads the NVD CVE 2.0 endpoint',
-  /services\.nvd\.nist\.gov\/rest\/json\/cves\/2\.0/.test(functionSrc),
+  /services\.nvd\.nist\.gov\/rest\/json\/cves\/2\.0/.test(datasetOrSharedSrc),
   'expected the official NVD CVE 2.0 endpoint URL');
 
 assert('function reads the FIRST EPSS endpoint',
-  /api\.first\.org\/data\/v1\/epss/.test(functionSrc),
+  /api\.first\.org\/data\/v1\/epss/.test(datasetOrSharedSrc),
   'expected the official FIRST EPSS endpoint URL');
 
 assert('function uses an 8-second per-request timeout (matches browser)',
-  /8000|PER_REQUEST_TIMEOUT_MS\s*=\s*8_?000/.test(functionSrc),
+  /8000|PER_REQUEST_TIMEOUT_MS\s*=\s*8_?000/.test(datasetOrSharedSrc),
   'expected per-request timeout to match the browser-side 8 s ceiling');
 
 assert('function applies an overall budget under the 26 s Netlify limit',
-  /24_?000|OVERALL_BUDGET_MS\s*=\s*24_?000/.test(functionSrc),
+  /24_?000|OVERALL_BUDGET_MS\s*=\s*24_?000/.test(datasetOrSharedSrc),
   'expected an overall budget of 24 s (safety margin under Netlify default)');
 
 /* ------------------------------------------------------------------ */
@@ -171,9 +202,10 @@ assert('v5.0.2: function reads ONLY the documented optional NVD_API_KEY env var 
   // v5.0.2 added an optional NVD_API_KEY env var. It must be
   // the ONLY env var the function reads — no silent new
   // credentials. The test asserts that NVD_API_KEY is the
-  // only process.env.* read in the function.
+  // only process.env.* read across both dataset.mjs and the
+  // shared liveBuild module.
   (() => {
-    const envReads = functionSrc.match(/process\.env\.[A-Z_][A-Z0-9_]*/g) || [];
+    const envReads = datasetOrSharedSrc.match(/process\.env\.[A-Z_][A-Z0-9_]*/g) || [];
     if (envReads.length === 0) return false; // v5.0.2 must read at least NVD_API_KEY
     const unique = Array.from(new Set(envReads));
     return unique.length === 1 && unique[0] === 'process.env.NVD_API_KEY';
@@ -396,25 +428,25 @@ const epssSrc = readFileSync(
   join(root, 'src', 'services', 'providers', 'epss.ts'), 'utf8');
 
 assert('CISA KEV URL matches between function and browser provider',
-  (functionSrc.match(/cisa\.gov\/sites\/default\/files\/feeds\/known_exploited_vulnerabilities\.json/) || [])[0] ===
+  (datasetOrSharedSrc.match(/cisa\.gov\/sites\/default\/files\/feeds\/known_exploited_vulnerabilities\.json/) || [])[0] ===
     (cisaSrc.match(/cisa\.gov\/sites\/default\/files\/feeds\/known_exploited_vulnerabilities\.json/) || [])[0]);
 
 assert('NVD base URL matches between function and browser provider',
-  (functionSrc.match(/services\.nvd\.nist\.gov\/rest\/json\/cves\/2\.0/) || [])[0] ===
+  (datasetOrSharedSrc.match(/services\.nvd\.nist\.gov\/rest\/json\/cves\/2\.0/) || [])[0] ===
     (nvdSrc.match(/services\.nvd\.nist\.gov\/rest\/json\/cves\/2\.0/) || [])[0]);
 
 assert('FIRST EPSS base URL matches between function and browser provider',
-  (functionSrc.match(/api\.first\.org\/data\/v1\/epss/) || [])[0] ===
+  (datasetOrSharedSrc.match(/api\.first\.org\/data\/v1\/epss/) || [])[0] ===
     (epssSrc.match(/api\.first\.org\/data\/v1\/epss/) || [])[0]);
 
 assert('CISA severity rule (Known ransomware → Critical, else High) matches',
-  /knownRansomwareCampaignUse\s*===\s*['"]Known['"]/.test(functionSrc) &&
-    /['"]High['"]/.test(functionSrc) &&
+  /knownRansomwareCampaignUse\s*===\s*['"]Known['"]/.test(datasetOrSharedSrc) &&
+    /['"]High['"]/.test(datasetOrSharedSrc) &&
     /knownRansomwareCampaignUse\s*===\s*['"]Known['"]/.test(cisaSrc) &&
     /['"]High['"]/.test(cisaSrc));
 
 assert('NVD chunk size matches between function and browser provider (100 CVEs)',
-  /CHUNK_SIZE\s*=\s*100/.test(functionSrc) &&
+  /CHUNK_SIZE\s*=\s*100/.test(datasetOrSharedSrc) &&
     /CHUNK_SIZE\s*=\s*100/.test(nvdSrc));
 
 assert('EPSS chunk size matches between function and browser provider (100 CVEs)',
@@ -427,7 +459,7 @@ assert('EPSS chunk size matches between function and browser provider (100 CVEs)
 section('v5.0.2 — NVD rate-limit hardening + optional server-only NVD_API_KEY');
 
 assert('v5.0.2: function reads NVD_API_KEY from process.env (server-side only)',
-  /process\.env\.NVD_API_KEY/.test(functionSrc),
+  /process\.env\.NVD_API_KEY/.test(datasetOrSharedSrc),
   'expected process.env.NVD_API_KEY to be read inside the function');
 
 assert('v5.0.2: function never puts NVD_API_KEY in the response body',
@@ -453,8 +485,8 @@ assert('v5.0.3: NVD_API_KEY is NOT appended to the NVD URL query string',
   // to a request header per NVD's official CVE 2.0 spec.
   // Comments stripped first so the doc text describing
   // the v5.0.2 → v5.0.3 transition doesn't trip the test.
-  !/\?apiKey=/.test(stripComments(functionSrc)) &&
-    !/&apiKey=/.test(stripComments(functionSrc)),
+  !/\?apiKey=/.test(stripComments(datasetOrSharedSrc)) &&
+    !/&apiKey=/.test(stripComments(datasetOrSharedSrc)),
   'expected NVD_API_KEY to NOT appear in any NVD URL query string');
 
 assert('v5.0.3: NVD_API_KEY IS passed as a request header (apiKey: <key>)',
@@ -464,9 +496,9 @@ assert('v5.0.3: NVD_API_KEY IS passed as a request header (apiKey: <key>)',
   //   - object literal:     { ..., apiKey: apiKey }
   //   - shorthand literal:  { ..., apiKey }
   (() => {
-    return /headers\.\s*apiKey\s*=/.test(functionSrc) ||
-      /apiKey:\s*apiKey\b/.test(functionSrc) ||
-      /headers\s*=\s*\{[^}]*apiKey\b/.test(functionSrc);
+    return /headers\.\s*apiKey\s*=/.test(datasetOrSharedSrc) ||
+      /apiKey:\s*apiKey\b/.test(datasetOrSharedSrc) ||
+      /headers\s*=\s*\{[^}]*apiKey\b/.test(datasetOrSharedSrc);
   })(),
   'expected apiKey to be assigned to a request headers object');
 
@@ -488,9 +520,9 @@ assert('v5.0.3: NVD_API_KEY is never logged (no console.log / .log of the key)',
   // call. console.log of the apiKey variable, of the env
   // var, or of any string containing "key" is forbidden.
   // Comments stripped to avoid matching doc text.
-  !/console\.log\([^)]*apiKey/.test(stripComments(functionSrc)) &&
-    !/console\.log\([^)]*NVD_API_KEY/.test(stripComments(functionSrc)) &&
-    !/console\.log\([^)]*process\.env/.test(stripComments(functionSrc)),
+  !/console\.log\([^)]*apiKey/.test(stripComments(datasetOrSharedSrc)) &&
+    !/console\.log\([^)]*NVD_API_KEY/.test(stripComments(datasetOrSharedSrc)) &&
+    !/console\.log\([^)]*process\.env/.test(stripComments(datasetOrSharedSrc)),
   'expected NVD_API_KEY to never be passed to console.log');
 
 assert('v5.0.2: function uses serial chunk fetch (concurrency = 1) without NVD_API_KEY',
@@ -498,9 +530,9 @@ assert('v5.0.2: function uses serial chunk fetch (concurrency = 1) without NVD_A
   // the function body (NOT the docstring comment). Find the
   // `process.env.NVD_API_KEY` line and slice from there.
   (() => {
-    const i = functionSrc.indexOf('process.env.NVD_API_KEY');
+    const i = datasetOrSharedSrc.indexOf('process.env.NVD_API_KEY');
     if (i < 0) return false;
-    const tail = functionSrc.slice(i, i + 1000);
+    const tail = datasetOrSharedSrc.slice(i, i + 1000);
     return /concurrency\s*=\s*apiKey\s*\?\s*[^:]+\s*:\s*1\b/.test(tail);
   })(),
   'expected concurrency = apiKey ? chunks.length : 1 (serial) when NVD_API_KEY is absent');
@@ -509,33 +541,33 @@ assert('v5.0.2: function uses parallel chunk fetch with NVD_API_KEY',
   // Same approach: find the actual concurrency line, assert
   // the "true" branch uses parallel chunks (chunks.length).
   (() => {
-    const i = functionSrc.indexOf('process.env.NVD_API_KEY');
+    const i = datasetOrSharedSrc.indexOf('process.env.NVD_API_KEY');
     if (i < 0) return false;
-    const tail = functionSrc.slice(i, i + 1000);
+    const tail = datasetOrSharedSrc.slice(i, i + 1000);
     return /concurrency\s*=\s*apiKey\s*\?\s*chunks\.length/.test(tail);
   })(),
   'expected concurrency = apiKey ? chunks.length (parallel) when NVD_API_KEY is set');
 
 assert('v5.0.2: function includes a small settledAll concurrency helper',
-  /async function settledAll\(/.test(functionSrc) ||
-    /function settledAll\(/.test(functionSrc),
+  /async function settledAll\(/.test(datasetOrSharedSrc) ||
+    /function settledAll\(/.test(datasetOrSharedSrc),
   'expected a concurrency helper (e.g. settledAll) for serial chunk fetch');
 
 assert('v5.0.2: function returns a concise 429 reason (not repeated chunk errors)',
-  /rate limit reached[\s\S]{0,400}HTTP 429/.test(functionSrc) ||
-    /HTTP 429[\s\S]{0,400}rate limit reached/.test(functionSrc) ||
-    (/rate limit reached/.test(functionSrc) && /HTTP 429/.test(functionSrc)),
+  /rate limit reached[\s\S]{0,400}HTTP 429/.test(datasetOrSharedSrc) ||
+    /HTTP 429[\s\S]{0,400}rate limit reached/.test(datasetOrSharedSrc) ||
+    (/rate limit reached/.test(datasetOrSharedSrc) && /HTTP 429/.test(datasetOrSharedSrc)),
   'expected a single concise reason string for 429, not a joined per-chunk error list');
 
 assert('v5.0.2: 429 reason mentions severity fallback to CISA-derived values',
-  /rate limit reached[\s\S]{0,500}CISA-derived/.test(functionSrc),
+  /rate limit reached[\s\S]{0,500}CISA-derived/.test(datasetOrSharedSrc),
   'expected the 429 reason to tell the user severity falls back to CISA-derived');
 
 assert('v5.0.2: non-429 chunk errors are de-duplicated in the error message',
   // The new code uses `Array.from(new Set(reasons))` to avoid
   // "HTTP 503; HTTP 503; HTTP 503" repetition. Look for the
   // de-duplication call.
-  /new Set\(reasons\)/.test(functionSrc),
+  /new Set\(reasons\)/.test(datasetOrSharedSrc),
   'expected new Set(reasons) to de-duplicate per-chunk errors');
 
 assert('v5.0.2: v5.0.1 CDN cache headers are preserved',
@@ -584,18 +616,23 @@ assert('Mock fallback is still reachable (mode = "fallback" with mock data)',
     /MOCK_VULNERABILITIES[\s\S]{0,400}mode:\s*['"]fallback['"]/.test(serviceSrc),
   'expected the mock-fallback path to still be reachable');
 
-assert('v5.0.2: no new build-time env vars are required for the frontend',
-  // v5.0.2 adds ONE optional server-side runtime env var
-  // (NVD_API_KEY) inside the Netlify Function. The FRONTEND
-  // build is unchanged — no new VITE_* vars are required.
-  // Existing VITE_DATASET_PROXY_URL still has a default.
-  !/import\.meta\.env\.VITE_(?!DATASET_PROXY_URL)/.test(serviceSrc),
-  'expected no new VITE_* env vars in the frontend (NVD_API_KEY is server-side only)');
+assert('v5.0.2 / v5.2: no VITE_* env vars leak secrets to the frontend',
+  // v5.0.2: NVD_API_KEY is server-side only — must NOT
+  // appear in the frontend via any VITE_* name.
+  // v5.2: VITE_REFRESH_ENDPOINT_URL is allowed (it's a
+  // public route, not a secret, with a default of
+  // '/.netlify/functions/refresh-dataset-background'). VITE_DATASET_PROXY_URL
+  // was already allowed in v5.0.
+  // The regex below explicitly excludes the two public
+  // endpoint vars and forbids any other VITE_* env var.
+  !/import\.meta\.env\.VITE_(?!DATASET_PROXY_URL|REFRESH_ENDPOINT_URL)([A-Z_]+)/.test(serviceSrc) &&
+    !/VITE_NVD_API_KEY/.test(serviceSrc),
+  'expected no secret VITE_* env vars in the frontend (NVD_API_KEY is server-side only)');
 
 assert('v5.0.2: NVD_API_KEY is a runtime server-side env var (not exposed to the browser)',
   // The function reads it from process.env at runtime. The
   // function's response body never includes it.
-  /process\.env\.NVD_API_KEY/.test(functionSrc) &&
+  /process\.env\.NVD_API_KEY/.test(datasetOrSharedSrc) &&
     !/VITE_NVD_API_KEY/.test(serviceSrc) &&
     !/import\.meta\.env\.NVD_API_KEY/.test(serviceSrc),
   'expected NVD_API_KEY to be process.env (server-side), never VITE_* (browser-exposed)');

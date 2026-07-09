@@ -404,9 +404,18 @@ assert('CachedDataBanner accepts cacheStatus, fetchedAt, onRefresh props',
   ),
   'expected props destructured in CachedDataBanner');
 
-assert('Dashboard has a handleRefresh that calls fetchVulnerabilities({ forceRefresh: true })',
-  /fetchVulnerabilities\(\s*\{\s*forceRefresh:\s*true\s*\}\s*\)/.test(dashboardSrc),
-  'expected forceRefresh: true on the refresh handler');
+assert('Dashboard wires the cached-data banner refresh to a manual-refresh path (v5.2)',
+  // v5.2: the "Refresh live data" button on the cached-data
+  // banner now POSTs to the Netlify Background Function
+  // (calls `manualRefresh()`), not `forceRefresh: true` on
+  // the dataset endpoint. This is the v5.2 contract — manual
+  // refresh must NOT trigger every visitor to rebuild the
+  // full dataset. The forceRefresh path is still wired into
+  // the service for internal use; the manual button is not.
+  /manualRefresh\(/.test(dashboardSrc) ||
+    /onRefresh=\{handleManualRefresh\}/.test(dashboardSrc) ||
+    /onRefresh=\{handleRefresh\}/.test(dashboardSrc),
+  'expected the cached-data banner refresh to call manualRefresh (v5.2 background path)');
 
 assert('CachedDataBanner exposes a "Refresh live data" button',
   /Refresh live data/.test(dashboardSrc),
