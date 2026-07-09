@@ -5,7 +5,7 @@
 > probability, and severity across your stack in a single, focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v5.0.2-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v5.1-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -127,12 +127,33 @@ review access logs"_).
   `NvdUnavailableBanner` reads cleanly. **An optional
   `NVD_API_KEY` env var is supported server-side only.**
   When set in the Netlify function's environment, NVD
-  allows 50 req / 30 s, the function parallelizes chunks,
-  and the key is never exposed to the browser. The app
-  works identically without the key (just slower for
-  the first visitor in a region per 15 min). See
-  [V5.0.2 NVD rate-limit hardening](#-v502-nvd-rate-limit-hardening)
-  for the full rate-limit story.
+allows 50 req / 30 s, the function parallelizes chunks,
+   and the key is never exposed to the browser. The app
+   works identically without the key (just slower for
+   the first visitor in a region per 15 min). See
+   [V5.0.2 NVD rate-limit hardening](#-v502-nvd-rate-limit-hardening)
+   for the full rate-limit story.
+- **Soft refresh with explicit user consent (v5.1)** — the
+  dashboard silently polls the proxy every 5 minutes
+  (only while the tab is visible) and detects when a
+  newer upstream dataset has landed. A small banner
+  appears at the top of the content area:
+  > **New dataset available. Updated 2 min ago.** [Apply update] [×]
+  Clicking **Apply update** swaps the data in place —
+  filters, search, sort, and the open detail view all
+  stay exactly as they were. The drawer auto-closes
+  only if the selected CVE is no longer in the new
+  dataset. The × dismisses the banner until the *next*
+  newer dataset arrives (so the same update doesn't
+  re-appear on every poll tick). The soft-refresh path
+  is entirely client-side: a `setInterval` in
+  `DashboardPage` calls `fetchVulnerabilities({
+  background: true })`, which skips the localStorage
+  cache read but still writes the new result through.
+  No deployment-config changes, no new env vars, no
+  scheduled functions, no automatic data swap. See
+  [V5.1 soft refresh](#-v51-soft-refresh) for the full
+  UX contract.
 - **Service layer** designed to plug in additional real APIs (NVD,
   FIRST EPSS) without touching UI code.
 
@@ -731,8 +752,122 @@ browser, never logged, never stored anywhere else.
 ### Test count
 
 **15/15 v1 + 28/28 v2 CISA + 39/39 v2.5 EPSS +
-53/53 v3 NVD + 60/60 v4 cache + 68/68 v5.0/v5.0.1/v5.0.2
-proxy = 263/263.**
+53/53 v3 NVD + 60/60 v4 cache + 71/71 v5.0/v5.0.1/v5.0.2/v5.0.3
+proxy + 58/58 v5.1 soft-refresh = 324/324.**
+
+---
+
+## 🔄 V5.1 soft refresh
+
+> The dashboard now silently polls the proxy for newer
+> upstream data and lets *you* decide when to swap it in.
+> A triage session mid-investigation is never disturbed.
+
+### The UX contract
+
+1. **Visitor opens the dashboard** — the latest stored
+   dataset loads instantly (v4 localStorage cache hit,
+   or v5 proxy).
+2. **Background refresh starts / scheduled refresh runs**
+   — a `setInterval` inside `DashboardPage` calls
+   `fetchVulnerabilities({ background: true })` every
+   5 minutes, but only while the tab is visible. No
+   spinner, no layout shift, no full-page reload.
+3. **New dataset becomes available** — a small banner
+   appears at the top of the content area:
+
+   > **New dataset available. Updated 2 min ago.** [Apply update] [×]
+
+4. **User clicks "Apply update"** — the data updates
+   smoothly in place:
+   - Filters stay.
+   - Search stays.
+   - Sort stays.
+   - Selected detail view stays (or, if the selected
+     CVE is no longer in the new dataset, the drawer
+     auto-closes).
+   - No full-page reload.
+5. **User clicks × (or never clicks anything)** — the
+   banner is dismissed. The same exact update won't
+   re-appear on every poll tick — only a strictly newer
+   one will.
+
+### How detection works
+
+The dashboard polls with a new optional flag:
+
+```ts
+fetchVulnerabilities({ background: true })
+```
+
+`background: true` skips the localStorage cache read
+for this single call (so a routine poll can actually
+detect a newer upstream dataset — reading the same
+local cache forever would never trigger an update)
+and still writes the result through to the cache on
+success. It does **not** bust the CDN: a background
+poll within the CDN's `s-maxage=900` window cheaply
+gets the cached function response, which is the
+intended path.
+
+The polling effect then compares the result's
+`fetchedAt` to the currently displayed one. A banner
+is shown only when:
+
+- the result is `mode === 'live'` (a mock fallback or
+  stale cache re-serve is never surfaced — that
+  isn't a "new dataset"),
+- `result.fetchedAt > displayed.fetchedAt`, AND
+- `result.fetchedAt !== dismissedFetchedAt` (so a
+  stale-while-revalidate re-serve of the same exact
+  update doesn't re-show the banner).
+
+### Why explicit user consent
+
+The whole point of v5.1 is that the user is never
+disturbed mid-task. Auto-applying a new dataset while
+the user is mid-row in the table, or has carefully
+scoped filters / a search query, would clobber their
+context. The banner sits at the top of the content
+area, doesn't auto-dismiss, and only goes away on
+Apply or × click. The poll is silent otherwise.
+
+### Honesty guarantees (preserved)
+
+- **No new data sources.** OSV.dev / GHSA / other
+  aggregators remain a v5.2+ milestone.
+- **No login / auth.** No database. **No scheduled
+  functions.** The 5-minute `setInterval` runs only
+  on the user's open tab — there is no server-side
+  scheduler and no Netlify scheduled function.
+- **No new env vars.** The only server-side env var
+  (`NVD_API_KEY`) is unchanged from v5.0.2 / v5.0.3.
+- **No new API keys, secrets, or tokens.**
+- **No CDN changes.** The function still serves
+  `Cache-Control: public, s-maxage=900,
+  stale-while-revalidate=300` from v5.0.1.
+- **No automatic background data swap.** The user
+  must always click "Apply update" — the soft-refresh
+  banner is informational, never auto-applied.
+- **The cache never hides provider failures.** A
+  background poll that returns `mode: 'fallback'` or
+  `mode: 'mock'` is never surfaced as a "new
+  dataset" banner.
+- **No new offensive / exploit functionality.**
+
+### Test count
+
+**58/58 v5.1 soft-refresh tests.** 12 pure-JS
+behavior assertions on the `shouldShowPendingUpdate`
+decision (newer / equal / older / mock / fallback /
+dismissed-equal / dismissed-older / defensive nulls).
+6 service-wiring assertions. 30 dashboard-wiring
+assertions. 10 regression assertions on the existing
+v4 / v5.0.3 contracts. Run with:
+
+```bash
+node scripts/acceptance-softrefresh.mjs
+```
 
 ---
 
@@ -775,16 +910,36 @@ proxy = 263/263.**
   [V5.0.1 performance hardening](#-v501-performance-hardening)
   for the full cache-strategy contract.
 - [x] v5.0.2 — **NVD rate-limit hardening + optional
-  server-only `NVD_API_KEY`** (this release) — without
-  a key, NVD chunks fetch serially (concurrency = 1) to
-  stay under the 5-req/30s anonymous limit; with a key,
+  server-only `NVD_API_KEY`** — without a key, NVD
+  chunks fetch serially (concurrency = 1) to stay
+  under the 5-req/30s anonymous limit; with a key,
   chunks fetch in parallel. The function returns a
-  single concise 429 reason instead of N repeated chunk
-  errors. The key is `process.env.NVD_API_KEY`,
-  server-side only, never sent to the browser. The app
-  works identically without the key. See
+  single concise 429 reason instead of N repeated
+  chunk errors. The key is `process.env.NVD_API_KEY`,
+  server-side only, never sent to the browser. The
+  app works identically without the key. See
   [V5.0.2 NVD rate-limit hardening](#-v502-nvd-rate-limit-hardening)
   for the full rate-limit story.
+- [x] v5.0.3 — **NVD API key transport fix** — the
+  optional `NVD_API_KEY` is now passed to NVD as
+  the `apiKey` request header per NVD's official
+  CVE 2.0 spec, not as a URL query parameter.
+  Same honesty contract as v5.0.2: server-side
+  only, never exposed to the browser.
+- [x] v5.1 — **Soft refresh with explicit user
+  consent (this release)** — silent 5-minute
+  background poll detects a newer upstream
+  dataset and surfaces a "New dataset available.
+  Updated 2 min ago." banner with an Apply
+  update button. Filters / search / sort /
+  selected detail view are preserved across
+  the apply. Drawer auto-closes only if the
+  selected CVE is no longer in the new dataset.
+  × dismisses the banner until the next newer
+  dataset. No new env vars, no scheduled
+  functions, no automatic data swap. See
+  [V5.1 soft refresh](#-v51-soft-refresh) for
+  the full UX contract.
 - [ ] v4.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
 - [ ] v4.5 — Per-vendor watchlists and email/Slack digest
 - [ ] v4.5 — CSV / JSON export of filtered results
