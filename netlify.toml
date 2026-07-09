@@ -8,22 +8,43 @@
 #        - `dataset.mjs` reads `latest-dataset` first.
 #        - `refresh-dataset-background.mjs` runs a manual refresh.
 #        - `refresh-dataset-scheduled.mjs` runs on a cron every 30 min.
-# All three functions are Node 20 ESM, plain `.mjs`, no esbuild
-# bundling. The Netlify runtime zips `node_modules/@netlify/blobs`
-# alongside the function on deploy.
+# v5.2.1: BUNDLING FIX — switch function bundling from
+#        `node_bundler = "none"` to `node_bundler = "esbuild"`.
+#        Under v5.2's "none" setting Netlify shipped only the
+#        entry `.mjs` files to `/var/task/`, so the relative
+#        imports `./_shared/{liveBuild,refresh,store}.mjs`
+#        inside the deployed functions failed with
+#        `Cannot find module '/var/task/_shared/liveBuild.mjs'`.
+#        With `esbuild` bundling, every local relative import
+#        is inlined into the function output, so the
+#        `_shared/` modules ship inside the bundle. External
+#        `node_modules` imports (e.g. `@netlify/blobs`) are
+#        left as runtime require()s — Netlify zips the
+#        `node_modules` folder alongside the function.
 
 [build]
   command = "npm run build"
   publish = "dist"
   functions = "netlify/functions"
 
-# v5.0 / v5.0.1 / v5.0.2 / v5.0.3 / v5.2 — read endpoint.
-# Reads `latest-dataset` blob first, falls back to the live
-# CISA → NVD → EPSS build on a cold deploy. Returns HTTP 200
-# with `dataSource: 'prebuilt-store' | 'live-build'` and a
-# `refreshInProgress` flag.
+# v5.2.1: function bundler set to esbuild globally so the
+# `_shared/{liveBuild,refresh,store}.mjs` modules get inlined
+# into each function's output bundle. This is the v5.2.1 fix
+# for the `_shared/liveBuild.mjs not found at /var/task/`
+# deploy-preview crash.
+[functions]
+  node_bundler = "esbuild"
+
+# v5.0 / v5.0.1 / v5.0.2 / v5.0.3 / v5.2 / v5.2.1 — read
+# endpoint. Reads `latest-dataset` blob first, falls back to
+# the live CISA → NVD → EPSS build on a cold deploy. Returns
+# HTTP 200 with `dataSource: 'prebuilt-store' | 'live-build'`
+# and a `refreshInProgress` flag.
+#
+# v5.2.1: removed the per-function `node_bundler = "none"`
+# override. The top-level `[functions] node_bundler =
+# "esbuild"` setting now applies.
 [functions.dataset]
-  node_bundler = "none"
 
 # v5.2 — manual-refresh background function. Triggered by the
 # dashboard's "Refresh live data" button. Netlify background
@@ -32,7 +53,6 @@
 # the actual build completes in the background via
 # `context.waitUntil`.
 [functions.refresh-dataset-background]
-  node_bundler = "none"
 
 # v5.2 — scheduled-refresh function. Runs on the cron schedule
 # below (every 30 min). Writes a fresh `latest-dataset` blob so
@@ -43,7 +63,6 @@
 #   default; we don't need wall-clock alignment, just
 #   "twice per hour".
 [functions.refresh-dataset-scheduled]
-  node_bundler = "none"
   schedule = "*/30 * * * *"
 
 # Standard security headers for static `dist/` assets.

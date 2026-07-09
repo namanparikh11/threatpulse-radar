@@ -349,16 +349,6 @@ section('netlify.toml configuration');
 const netlifyTomlPath = join(root, 'netlify.toml');
 const netlifyToml = readFileSync(netlifyTomlPath, 'utf8');
 
-assert('netlify.toml wires refresh-dataset-background with node_bundler = "none"',
-  /\[functions\.refresh-dataset-background\]/.test(netlifyToml) &&
-    /node_bundler\s*=\s*["']none["']/.test(netlifyToml.split('[functions.refresh-dataset-background]')[1].split('[')[0]),
-  'expected `[functions.refresh-dataset-background] node_bundler = "none"`');
-
-assert('netlify.toml wires refresh-dataset-scheduled with node_bundler = "none"',
-  /\[functions\.refresh-dataset-scheduled\]/.test(netlifyToml) &&
-    /node_bundler\s*=\s*["']none["']/.test(netlifyToml.split('[functions.refresh-dataset-scheduled]')[1].split('[')[0]),
-  'expected `[functions.refresh-dataset-scheduled] node_bundler = "none"`');
-
 assert('netlify.toml configures a cron schedule for refresh-dataset-scheduled',
   // The schedule can be on the same line as the function
   // header, OR in a separate block — both are valid TOML.
@@ -377,10 +367,72 @@ assert('netlify.toml cron is conservative (30 min or longer, NOT every minute)',
   /schedule\s*=\s*["']\*\/(?:[5-9]|[1-5][0-9]|[6-9][0-9])\s+\*\s+\*\s+\*\s+\*["']/.test(netlifyToml),
   'expected a conservative schedule (every 5+ minutes, not every minute)');
 
-assert('netlify.toml keeps the v5.0 dataset function on node_bundler = "none"',
-  /\[functions\.dataset\]/.test(netlifyToml) &&
-    /node_bundler\s*=\s*["']none["']/.test(netlifyToml.split('[functions.dataset]')[1].split('[')[0]),
-  'expected the dataset function to keep node_bundler = "none"');
+/* ------------------------------------------------------------------ */
+/* 7.5. v5.2.1 — runtime bundling fix for _shared/ modules             */
+/* ------------------------------------------------------------------ */
+
+section('v5.2.1 — runtime bundling (shared-module imports)');
+
+/**
+ * v5.2.1 regression guard.
+ *
+ * Under v5.2's `node_bundler = "none"` setting Netlify
+ * deployed only the entry `.mjs` files to `/var/task/`.
+ * The `_shared/` folder never made it into the artifact,
+ * so any `import './_shared/{liveBuild,refresh,store}.mjs'`
+ * failed at runtime with:
+ *
+ *   Cannot find module '/var/task/_shared/liveBuild.mjs'
+ *   imported from /var/task/dataset.mjs
+ *
+ * The fix is to bundle the functions with esbuild so
+ * local relative imports are inlined into the function
+ * output. `node_bundler = "esbuild"` can be set either
+ * globally (in `[functions]`) or per-function; both forms
+ * are accepted.
+ */
+
+assert('v5.2.1: netlify.toml does NOT use node_bundler = "none" anywhere (would break _shared/ imports)',
+  // With "none" the _shared/ folder is not shipped. This was
+  // the v5.2 deploy-preview crash. Reject any occurrence of
+  // node_bundler = "none" — including the per-function
+  // variants the v5.2 toml had. Strip TOML comments first
+  // so the explanatory `#` block at the top of netlify.toml
+  // (which references "none" historically) doesn't trip
+  // the test.
+  (() => {
+    const code = netlifyToml
+      .split('\n')
+      .map((l) => l.replace(/^\s*#.*$/, ''))
+      .join('\n');
+    return !/node_bundler\s*=\s*["']none["']/.test(code);
+  })(),
+  'expected no `node_bundler = "none"` in actual toml config (it breaks _shared/ module imports at runtime)');
+
+assert('v5.2.1: netlify.toml sets node_bundler = "esbuild" globally or per-function',
+  // Accept either:
+  //   [functions]
+  //     node_bundler = "esbuild"
+  // OR
+  //   [functions.dataset]
+  //     node_bundler = "esbuild"
+  // Both inline the local relative imports into the
+  // function output so /var/task/_shared/... isn't needed.
+  /node_bundler\s*=\s*["']esbuild["']/.test(netlifyToml),
+  'expected `node_bundler = "esbuild"` somewhere in netlify.toml');
+
+assert('v5.2.1: dataset function keeps its section header (even with default bundler)',
+  /\[functions\.dataset\]/.test(netlifyToml),
+  'expected `[functions.dataset]` to remain in netlify.toml');
+
+assert('v5.2.1: refresh-dataset-background keeps its section header',
+  /\[functions\.refresh-dataset-background\]/.test(netlifyToml),
+  'expected `[functions.refresh-dataset-background]` to remain in netlify.toml');
+
+assert('v5.2.1: refresh-dataset-scheduled keeps its section header with the schedule',
+  /\[functions\.refresh-dataset-scheduled\]/.test(netlifyToml) &&
+    /schedule\s*=\s*["']\*\/\d+\s+\*\s+\*\s+\*\s+\*["']/.test(netlifyToml),
+  'expected `[functions.refresh-dataset-scheduled]` with the cron schedule');
 
 /* ------------------------------------------------------------------ */
 /* 8. Dataset function — blob-first read, bootstrap path              */
