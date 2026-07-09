@@ -5,7 +5,7 @@
 > probability, and severity across your stack in a single, focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v5.1-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v5.2-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -154,6 +154,32 @@ allows 50 req / 30 s, the function parallelizes chunks,
   scheduled functions, no automatic data swap. See
   [V5.1 soft refresh](#-v51-soft-refresh) for the full
   UX contract.
+- **Prebuilt dataset store (v5.2)** — the live CISA →
+  NVD → EPSS build runs once on the server and the
+  result is written to a shared [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/)
+  entry named `latest-dataset`. Subsequent visitors read
+  the prebuilt blob on the first request and never wait
+  for a fresh upstream fetch — the dashboard renders the
+  latest successfully-built dataset immediately. A new
+  cyan "Dataset store: latest available" pill in the
+  header makes the storage layer visible. The build is
+  triggered by a Netlify scheduled function every 30
+  minutes (`*/30 * * * *` cron) and by a Netlify
+  Background Function at
+  `/.netlify/functions/refresh-dataset-background` that
+  the dashboard's "Refresh live data" button POSTs to.
+  Both writers use a shared `refresh-lock` blob (15-min
+  TTL) so concurrent refreshes are prevented. The
+  prebuilt blob is NEVER overwritten with a mock
+  fallback; only a successful live build writes to it.
+  The manual button keeps the current dataset on screen
+  and uses the v5.1 "New dataset available" banner when
+  the new blob is detected on the next poll tick — no
+  auto-reload, no auto-replace. The v5.1 + v5.2 UI
+  honesty contract is preserved end-to-end. See
+  [V5.2 prebuilt dataset store](#-v52-prebuilt-dataset-store)
+  for the full architecture, the lock semantics, the
+  scheduled cadence, and the manual-refresh UX.
 - **Service layer** designed to plug in additional real APIs (NVD,
   FIRST EPSS) without touching UI code.
 
@@ -173,12 +199,20 @@ allows 50 req / 30 s, the function parallelizes chunks,
 No login. No database. No payments. No exploit code.
 V5.0 adds a single read-only serverless function
 (`netlify/functions/dataset`) that aggregates the public
-feeds — it is not a backend in the traditional sense
-(no persistent state, no auth, no business logic, no
-credentials, no scheduled jobs).
+feeds. V5.2 layers a shared [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/)
+entry (`latest-dataset`) in front of it so visitors
+read a prebuilt envelope instead of paying the upstream
+pipeline on every page load. V5.2 also adds two more
+functions — `refresh-dataset-background.mjs` (manual
+refresh) and `refresh-dataset-scheduled.mjs` (cron,
+every 30 min) — plus a shared `refresh-lock` blob with
+a 15-minute TTL. None of these is a backend in the
+traditional sense (no persistent state, no auth, no
+business logic, no credentials, no scheduled jobs
+beyond the v5.2 cron).
 
 **Data sources:** the dashboard is **defensive-only**.
-V5.0 reads public vulnerability feeds via a single
+V5.2 reads public vulnerability feeds via a single
 serverless endpoint (`/.netlify/functions/dataset`) by
 default, with a transparent browser-direct fallback when
 the function is unreachable. The proxy aggregates the
@@ -187,12 +221,12 @@ browser (CISA KEV, NVD CVE 2.0, FIRST EPSS) — it does
 *not* add new sources, and it uses the same anonymous
 public endpoints. **No API keys, secrets, or tokens are
 ever embedded in the frontend bundle or in the
-function.** See [V5.0 live proxy mode](#-v50-live-proxy-mode)
+function.** See [V5.2 prebuilt dataset store](#-v52-prebuilt-dataset-store)
 for the full architecture and
 [V4.1 public-demo honesty](#-v41-public-demo-honesty) for
-the fallback / transparency contract that v5.0 inherits.
-No new data sources planned for v5.0 / v5.x — see the
-[Roadmap](#-roadmap).
+the fallback / transparency contract that v5.0 / v5.2
+inherits. No new data sources planned for v5.x — see
+the [Roadmap](#-roadmap).
 
 ---
 
@@ -214,7 +248,13 @@ threatpulse-radar/
 │   └── radar.svg
 ├── netlify/
 │   └── functions/
-│       └── dataset.mjs               # v5.0 serverless aggregator (CISA+NVD+EPSS)
+│       ├── dataset.mjs               # v5.0 read endpoint (v5.2: blob-first)
+│       ├── refresh-dataset-background.mjs   # v5.2 manual refresh (BG fn)
+│       ├── refresh-dataset-scheduled.mjs    # v5.2 cron refresh (every 30 min)
+│       └── _shared/
+│           ├── store.mjs             # v5.2 Netlify Blobs + lock helpers
+│           ├── refresh.mjs           # v5.2 lock + write orchestrator
+│           └── liveBuild.mjs         # v5.2 shared CISA→NVD→EPSS pipeline
 └── src/
     ├── main.tsx                       # entry
     ├── App.tsx                        # thin shell
@@ -240,6 +280,7 @@ threatpulse-radar/
     │   └── DashboardPage.tsx          # single-screen dashboard
     ├── services/
     │   ├── vulnerabilityService.ts    # v5.0: proxy-first orchestration
+    │   │                              # v5.2: + manualRefresh() + dataSource / refreshInProgress fields
     │   ├── datasetCache.ts            # v4 localStorage cache layer
     │   └── providers/
     │       ├── README.ts              # reserved for v4 providers
@@ -871,6 +912,167 @@ node scripts/acceptance-softrefresh.mjs
 
 ---
 
+## 🗄️ V5.2 prebuilt dataset store
+
+> The CISA → NVD → EPSS build now runs **once on the
+> server** and every visitor reads the prebuilt envelope
+> from Netlify Blobs. No more waiting for the upstream
+> pipeline on every page load.
+
+### Architecture
+
+```
+                            Netlify Blobs (store: tpr-dataset)
+                           ┌──────────────────────────────┐
+                           │ latest-dataset  (FetchResult)│  ← written only
+                           │ refresh-lock    (TTL 15 min) │    after a
+                           └──────────────────────────────┘    SUCCESSFUL
+                                      ▲              ▲          live build
+                                      │              │
+   Visitor request                     │              │
+   ─────────────────────────────────►  │              │
+                                       │              │
+   Browser ──► /.netlify/functions/dataset (READ)
+                  │ blob hit? ──► return latest-dataset  ◄──────┐
+                  │ blob miss? ──► build CISA→NVD→EPSS ───────┤
+                  │                  write blob (success only)  │
+                  │                  return envelope           │
+                                                           │
+   Scheduled tick (every 30 min) ──► refresh-dataset-scheduled
+                                                           │
+   User clicks "Refresh live data" ──► refresh-dataset-background
+```
+
+The browser calls **only** the read endpoint
+(`/.netlify/functions/dataset`) on every page load. The
+read endpoint checks `latest-dataset` first; if the
+blob exists, the visitor gets it immediately (with
+`dataSource: "prebuilt-store"`). If no blob exists yet
+(cold deploy, first visitor), the read endpoint runs the
+existing CISA → NVD → EPSS build on this request, writes
+the result to the blob, and returns it with
+`dataSource: "live-build"`. The next visitor hits the
+fast path.
+
+### Refresh lock — preventing duplicate builds
+
+A shared `refresh-lock` blob in the same store holds
+`{ startedAt, expiresAt }` with a 15-minute TTL. Every
+refresh attempts to acquire the lock:
+
+- Lock acquired → run the build, write the blob, release
+  the lock.
+- Lock already held (and not expired) → return
+  `{ status: "in-progress", refreshInProgress: true }`
+  without doing any work.
+
+The 15-minute TTL is long enough for the longest
+realistic build (no NVD API key → ~60 s of serial chunks)
+and short enough that a hung refresh doesn't block the
+next scheduled tick forever.
+
+### Scheduled refresh (every 30 min)
+
+The `refresh-dataset-scheduled.mjs` function is wired in
+`netlify.toml`:
+
+```toml
+[functions.refresh-dataset-scheduled]
+  node_bundler = "none"
+  schedule = "*/30 * * * *"
+```
+
+The schedule is conservative — every 30 minutes on the
+hour and half-hour. The function acquires the lock,
+runs the build, writes the blob, releases the lock.
+If the manual button has already kicked off a refresh,
+the scheduled tick returns `in-progress` without doing
+anything.
+
+### Manual refresh — keeping the user in control
+
+The dashboard's "Refresh live data" button no longer
+calls `fetchVulnerabilities({ forceRefresh: true })` on
+the read endpoint. Instead it POSTs to:
+
+```
+POST /.netlify/functions/refresh-dataset-background
+```
+
+This is a Netlify **Background Function** (filename
+suffix `-background.mjs`) with up to a 15-minute
+timeout. It returns a 202 immediately, runs the actual
+build via `context.waitUntil`, and updates the shared
+blob. The dashboard **does not** replace the visible
+dataset on this call — the existing v5.1 polling
+detects the new blob on the next tick and surfaces the
+"New dataset available" banner. The user clicks Apply.
+
+While the rebuild is in flight, the header shows:
+
+> **🔄 Refresh running in background** (cyan, pulsing)
+
+…and the dashboard's `RefreshInProgressBanner` appears
+above the cache banner. Both clear automatically when the
+next poll returns `refreshInProgress: false` (the
+server-side build is done).
+
+### UI honesty contract
+
+The v5.2 layer adds three honest signals and preserves
+the v5.0 / v5.0.1 / v5.0.3 contract:
+
+| Field / pill | When shown | Tells the user |
+| --- | --- | --- |
+| `dataSource: "prebuilt-store"` → "Dataset store: latest available" pill | The current FetchResult came from the shared blob | "You're reading from the prebuilt store; no live build ran on this request." |
+| `dataSource: "live-build"` → "Dataset store: bootstrapping" pill | This request ran the full pipeline because no blob existed | "No prebuilt dataset yet — the build ran live and was written to the store. Next visitor will hit the fast path." |
+| `refreshInProgress: true` → "Refresh running in background" pill | The `refresh-lock` blob is active | "A scheduled or manual refresh is rebuilding the shared dataset. Your current view is unchanged." |
+| `nvdStatus` / `epssStatus` from the blob | Always preserved through the blob envelope | "Provider-failure banners are still rendered on stored data — the store never hides failures." |
+| "Last refresh: <relative>" pill | The existing pill, unchanged | "Last dataset build: <absolute>" — the tooltip now uses the v5.2 wording. |
+
+The store is **never** overwritten with a mock fallback.
+If a refresh build fails, the existing blob is left
+intact and the failure reason is logged server-side.
+
+### Honesty guarantees (preserved)
+
+- **No new data sources.** OSV.dev / GHSA / other
+  aggregators remain a v5.3+ milestone.
+- **No login / auth.** **No database.** The Blobs store
+  is a managed key/value store, not a database.
+- **No auto-replace.** Manual refresh keeps the current
+  dataset on screen; the v5.1 banner is the only way the
+  data is swapped.
+- **No new API keys.** `NVD_API_KEY` remains server-side
+  only.
+- **The cache never hides provider failures.** A stored
+  envelope with `nvdStatus: "unavailable"` still surfaces
+  the `NvdUnavailableBanner` — the blob preserves the
+  full FetchResult verbatim.
+- **No new frontend env vars.** `VITE_REFRESH_ENDPOINT_URL`
+  is a public route, optional, with a default.
+- **No offensive / exploit functionality.**
+
+### Test count
+
+**98/98 v5.2 prebuilt-dataset tests.** 7 dependency /
+shared-module assertions, 7 blob-key / store-name
+assertions, 2 refresh-lock TTL assertions, 15 pure-JS
+lock + refresh-decision logic assertions, 8 background-
+function assertions, 6 scheduled-function assertions, 5
+`netlify.toml` configuration assertions, 13 dataset-
+function blob-first / bootstrap / no-overwrite assertions,
+11 frontend-service `manualRefresh` + new-types assertions,
+14 dashboard + Header UI honesty assertions, 5 contract
+honesty assertions, and 6 v5.1 regression assertions.
+Run with:
+
+```bash
+node scripts/acceptance-prebuilt.mjs
+```
+
+---
+
 ## 🛣️ Roadmap
 
 - [x] v1 — Polished frontend, mock data, full filtering & visualization
@@ -927,19 +1129,38 @@ node scripts/acceptance-softrefresh.mjs
   Same honesty contract as v5.0.2: server-side
   only, never exposed to the browser.
 - [x] v5.1 — **Soft refresh with explicit user
-  consent (this release)** — silent 5-minute
-  background poll detects a newer upstream
-  dataset and surfaces a "New dataset available.
-  Updated 2 min ago." banner with an Apply
-  update button. Filters / search / sort /
-  selected detail view are preserved across
-  the apply. Drawer auto-closes only if the
-  selected CVE is no longer in the new dataset.
-  × dismisses the banner until the next newer
-  dataset. No new env vars, no scheduled
-  functions, no automatic data swap. See
-  [V5.1 soft refresh](#-v51-soft-refresh) for
+  consent** — silent 5-minute background poll
+  detects a newer upstream dataset and surfaces
+  a "New dataset available. Updated 2 min ago."
+  banner with an Apply update button. Filters /
+  search / sort / selected detail view are
+  preserved across the apply. Drawer auto-closes
+  only if the selected CVE is no longer in the
+  new dataset. × dismisses the banner until the
+  next newer dataset. No new env vars, no
+  scheduled functions, no automatic data swap.
+  See [V5.1 soft refresh](#-v51-soft-refresh) for
   the full UX contract.
+- [x] v5.2 — **Prebuilt dataset store with
+  scheduled + manual refresh (this release)** —
+  the CISA → NVD → EPSS build now runs **once
+  on the server** and every visitor reads a
+  shared `latest-dataset` Netlify Blobs entry.
+  A scheduled function (`*/30 * * * *` cron,
+  every 30 min) and a Netlify Background
+  Function (manual refresh) share a 15-min
+  `refresh-lock` blob so concurrent rebuilds are
+  prevented. The dashboard's "Refresh live data"
+  button POSTs to the background endpoint; the
+  current dataset stays on screen; the v5.1
+  polling detects the new blob on the next tick
+  and surfaces the "New dataset available"
+  banner. New "Dataset store: latest available"
+  + "Refresh running in background" pills make
+  the storage + lock state visible. No new data
+  sources, no auth, no database, no auto-replace.
+  See [V5.2 prebuilt dataset store](#-v52-prebuilt-dataset-store)
+  for the full architecture.
 - [ ] v4.5 — Saved filter presets (e.g. _"Internet-facing + KEV"_)
 - [ ] v4.5 — Per-vendor watchlists and email/Slack digest
 - [ ] v4.5 — CSV / JSON export of filtered results

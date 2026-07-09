@@ -1,30 +1,71 @@
 # Netlify configuration for ThreatPulse Radar.
 #
-# v5.0 adds a single serverless function: `/.netlify/functions/dataset`.
-# It runs as a Node 20 ESM function (no build step required — the file
-# is plain `.mjs`) and is the only thing the browser hits to load the
-# vulnerability dataset. The three upstream providers (CISA KEV, NVD,
-# FIRST EPSS) are reached server-side from the function, so the public
-# demo no longer depends on browser-direct CORS, rate limits, or geo
-# restrictions for the third-party feeds.
-#
-# Browser-direct fetches to the upstream feeds are still kept in the
-# client as a fallback: if the function is unreachable, the client
-# tries the same CISA / NVD / EPSS endpoints directly from the
-# browser. If both layers fail, the dashboard falls back to the
-# local mock dataset and shows the existing "Fallback Mode" banner.
+# v5.0: single serverless function `/.netlify/functions/dataset`.
+# v5.0.1: CDN-cacheable function response.
+# v5.0.2 / v5.0.3: optional NVD_API_KEY (request header transport).
+# v5.1: client-side soft refresh (no server change).
+# v5.2: prebuilt dataset store backed by Netlify Blobs.
+#        - `dataset.mjs` reads `latest-dataset` first.
+#        - `refresh-dataset-background.mjs` runs a manual refresh.
+#        - `refresh-dataset-scheduled.mjs` runs on a cron every 30 min.
+# v5.2.1: BUNDLING FIX — switch function bundling from
+#        `node_bundler = "none"` to `node_bundler = "esbuild"`.
+#        Under v5.2's "none" setting Netlify shipped only the
+#        entry `.mjs` files to `/var/task/`, so the relative
+#        imports `./_shared/{liveBuild,refresh,store}.mjs`
+#        inside the deployed functions failed with
+#        `Cannot find module '/var/task/_shared/liveBuild.mjs'`.
+#        With `esbuild` bundling, every local relative import
+#        is inlined into the function output, so the
+#        `_shared/` modules ship inside the bundle. External
+#        `node_modules` imports (e.g. `@netlify/blobs`) are
+#        left as runtime require()s — Netlify zips the
+#        `node_modules` folder alongside the function.
 
 [build]
   command = "npm run build"
   publish = "dist"
   functions = "netlify/functions"
 
-# v5.0: the dataset function. Node 20 ESM, no bundling.
-[functions.dataset]
-  node_bundler = "none"
+# v5.2.1: function bundler set to esbuild globally so the
+# `_shared/{liveBuild,refresh,store}.mjs` modules get inlined
+# into each function's output bundle. This is the v5.2.1 fix
+# for the `_shared/liveBuild.mjs not found at /var/task/`
+# deploy-preview crash.
+[functions]
+  node_bundler = "esbuild"
 
-# Standard security headers. The function sets its own per-response
-# headers; these are for the static `dist/` assets.
+# v5.0 / v5.0.1 / v5.0.2 / v5.0.3 / v5.2 / v5.2.1 — read
+# endpoint. Reads `latest-dataset` blob first, falls back to
+# the live CISA → NVD → EPSS build on a cold deploy. Returns
+# HTTP 200 with `dataSource: 'prebuilt-store' | 'live-build'`
+# and a `refreshInProgress` flag.
+#
+# v5.2.1: removed the per-function `node_bundler = "none"`
+# override. The top-level `[functions] node_bundler =
+# "esbuild"` setting now applies.
+[functions.dataset]
+
+# v5.2 — manual-refresh background function. Triggered by the
+# dashboard's "Refresh live data" button. Netlify background
+# functions (filename suffix `-background.mjs`) run with up to
+# a 15-minute timeout and return their Response immediately;
+# the actual build completes in the background via
+# `context.waitUntil`.
+[functions.refresh-dataset-background]
+
+# v5.2 — scheduled-refresh function. Runs on the cron schedule
+# below (every 30 min). Writes a fresh `latest-dataset` blob so
+# the next visitor after the v5.0.1 CDN cache expires gets a
+# freshly-built dataset without paying the build cost.
+#   `schedule = "*/30 * * * *"` = every 30 minutes on the hour
+#   and half-hour. Netlify's scheduled-function TZ is UTC by
+#   default; we don't need wall-clock alignment, just
+#   "twice per hour".
+[functions.refresh-dataset-scheduled]
+  schedule = "*/30 * * * *"
+
+# Standard security headers for static `dist/` assets.
 [[headers]]
   for = "/*"
   [headers.values]
@@ -33,7 +74,7 @@
     Permissions-Policy = "geolocation=(), microphone=(), camera=()"
     X-Frame-Options = "DENY"
 
-# Cache the fingerprinted Vite assets aggressively; keep `index.html`
+# Long-cache the fingerprinted Vite assets; keep `index.html`
 # at zero so deploys are picked up immediately. (Mirrors the
 # Hostinger `.htaccess` rules from the v4 deployment guide.)
 [[headers]]

@@ -7,6 +7,7 @@ import {
   FlaskConical,
   Gauge,
   HardDrive,
+  Loader2,
   Radar,
   Satellite,
   ShieldCheck,
@@ -143,6 +144,18 @@ export default function Header({ meta }: HeaderProps) {
   // "what data is this?") — cacheStatus answers "where did this
   // particular result come from on this load?".
   const cacheStatus = meta?.cacheStatus;
+  // v5.2: where the data came from on the server. Drives the
+  // "Dataset store:" pill. Distinct from `proxyStatus` (which
+  // answers "which transport carried the live data, when there
+  // was any"). The Dataset store pill is the v5.2 honest signal
+  // that the visitor is reading from a shared blob, not paying
+  // a live build on this request.
+  const dataSource = meta?.dataSource;
+  // v5.2: refresh-lock state. Drives the "Refresh running in
+  // background" pill. Independent of the dataset envelope —
+  // even a successful cached read can have `refreshInProgress:
+  // true` if a background rebuild is underway.
+  const refreshInProgress = meta?.refreshInProgress === true;
 
   return (
     <header className="relative isolate overflow-hidden border-b border-radar-border bg-radar-bg/85 backdrop-blur-md">
@@ -167,7 +180,7 @@ export default function Header({ meta }: HeaderProps) {
               <span className="pointer-events-none absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-radar-accent shadow-[0_0_8px_rgba(34,211,238,0.7)] animate-pulseDot" />
             </div>
             <div className="min-w-0 flex-1">
-              <h1 className="text-[1.65rem] font-bold leading-[1.1] tracking-tight text-radar-text sm:text-3xl lg:text-[2.4rem]">
+              <h1 className="text-[1.65rem] font-bold leading-[1.1] tracking-tight text-radar-text sm:text-3xl lg lg:text-[2.4rem]">
                 ThreatPulse Radar
               </h1>
               <p className="mt-2 max-w-2xl text-sm leading-relaxed text-radar-muted sm:text-[0.95rem]">
@@ -288,13 +301,54 @@ export default function Header({ meta }: HeaderProps) {
                 title="Live data was aggregated server-side by the Netlify Function at /.netlify/functions/dataset — the browser never hit the upstream feeds directly."
               />
             )}
+            {/*
+              v5.2: Dataset-store pill. Surfaced whenever the
+              current FetchResult came from the shared Netlify
+              Blobs entry (the v5.2 fast path). Tells the user
+              they're reading from the prebuilt store, not paying
+              a live build on this request. Distinct from the
+              "Proxy: Netlify" pill which describes the transport
+              layer rather than the storage layer.
+            */}
+            {dataSource === 'prebuilt-store' && (
+              <StatusPill
+                icon={<Database className="h-3 w-3" />}
+                label="Dataset store: latest available"
+                tone="info"
+                title="This dataset was served from the shared Netlify Blobs store (v5.2 prebuilt dataset). A scheduled refresh rebuilds the store every 30 minutes; you can also click 'Refresh live data' to start one yourself."
+              />
+            )}
+            {dataSource === 'live-build' && (
+              <StatusPill
+                icon={<Database className="h-3 w-3" />}
+                label="Dataset store: bootstrapping"
+                tone="neutral"
+                title="No prebuilt dataset existed yet — this build ran live and was written to the shared store. Subsequent visitors will hit the fast path."
+              />
+            )}
+            {/*
+              v5.2: Refresh-in-progress pill. Surfaced when the
+              refresh-lock blob is active (non-expired). The user
+              knows a newer dataset is on the way; the existing
+              v5.1 polling will detect it and surface the
+              "New dataset available" banner.
+            */}
+            {refreshInProgress && (
+              <StatusPill
+                icon={<Loader2 className="h-3 w-3 animate-spin" />}
+                label="Refresh running in background"
+                tone="info"
+                pulse
+                title="A scheduled or manual refresh is currently rebuilding the shared dataset. Your current view is unchanged; the new dataset will appear via the 'New dataset available' banner."
+              />
+            )}
             <StatusPill
               icon={<Clock className="h-3 w-3" />}
               label={`Last refresh: ${fetchedAt}`}
               tone="neutral"
               title={
                 meta?.fetchedAt
-                  ? `Last successful upstream fetch: ${formatAbsolute(meta.fetchedAt)}`
+                  ? `Last dataset build: ${formatAbsolute(meta.fetchedAt)}`
                   : 'When the dataset was last fetched'
               }
             />

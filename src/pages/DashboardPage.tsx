@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CircleAlert, HardDrive, RefreshCw, Sparkles, X } from 'lucide-react';
+import { CircleAlert, HardDrive, Loader2, RefreshCw, Sparkles, X } from 'lucide-react';
 import Header from '../components/Header';
 import StatsCards from '../components/StatsCards';
 import FiltersPanel from '../components/FiltersPanel';
@@ -12,7 +12,12 @@ import SeverityChart, { EpssChart } from '../components/charts/SeverityChart';
 import TrendChart from '../components/charts/TrendChart';
 import KevChart from '../components/charts/KevChart';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
-import { fetchVulnerabilities, type FetchResult } from '../services/vulnerabilityService';
+import {
+  fetchVulnerabilities,
+  manualRefresh,
+  type FetchResult,
+  type RefreshResult,
+} from '../services/vulnerabilityService';
 import type {
   SortState,
   Vulnerability,
@@ -78,6 +83,15 @@ export default function DashboardPage() {
    * for the same `fetchedAt` won't be suppressed either.
    */
   const [dismissedFetchedAt, setDismissedFetchedAt] = useState<string | null>(null);
+  /**
+   * v5.2: Manual-refresh state. When non-null, the small
+   * "Refresh running in background" banner is rendered and
+   * the manual "Refresh live data" button shows an in-flight
+   * spinner. The state is reset when the next poll (or
+   * retry) returns a FetchResult with
+   * `refreshInProgress: false`.
+   */
+  const [refreshStatus, setRefreshStatus] = useState<RefreshResult | null>(null);
   /**
    * v5.1: Refs that mirror the latest `state.meta.fetchedAt`
    * and `dismissedFetchedAt` so the polling closure (started
@@ -155,25 +169,37 @@ export default function DashboardPage() {
   }
 
   /**
-   * v4: Force a fresh upstream fetch, bypassing the localStorage
-   * cache. Wired to the "Refresh live data" button in the cached-
-   * data banner. Goes through the same error path as handleRetry
-   * so a forced refresh that fails is treated like any other
-   * fetch failure (falls back to mock, never silently hides
-   * failures).
+   * v5.2: Manual-refresh button. POSTs to the Netlify
+   * Background Function and updates `refreshStatus` so the
+   * UI can show "Refresh running in background".
+   *
+   * Critically different from the v4 / v5.0 / v5.0.1 /
+   * v5.0.3 behavior: this does NOT replace the visible
+   * dataset, does NOT force a re-fetch via `?t=<ts>`, and
+   * does NOT block on the build. The currently-displayed
+   * dataset stays on screen; the v5.1 polling detects the
+   * new blob on the next tick and surfaces the
+   * "New dataset available" banner. The user must click
+   * "Apply update" to swap. Auto-reload and auto-replace
+   * are explicitly forbidden by the v5.2 contract.
+   *
+   * The local `refreshStatus` is reset on the next poll
+   * that returns `refreshInProgress: false` so the banner
+   * auto-clears once the server-side build completes (or
+   * is rejected).
    */
-  async function handleRefresh() {
-    setState({ kind: 'loading' });
+  async function handleManualRefresh() {
     try {
-      const meta = await fetchVulnerabilities({ forceRefresh: true });
-      setState({ kind: 'ready', meta });
+      const result = await manualRefresh();
+      setRefreshStatus(result);
     } catch (err) {
-      setState({
-        kind: 'error',
-        message:
+      setRefreshStatus({
+        status: 'failed',
+        reason:
           err instanceof Error
             ? err.message
-            : 'Failed to refresh vulnerability data.',
+            : 'Manual refresh failed (unknown error).',
+        refreshInProgress: false,
       });
     }
   }
@@ -187,6 +213,10 @@ export default function DashboardPage() {
    * displayed one. If newer (and the user hasn't already
    * dismissed that exact update), stores the result as
    * `pendingUpdate` so the UpdateAvailableBanner can render.
+   *
+   * v5.2: also clears `refreshStatus` when the polled result
+   * says `refreshInProgress: false` — that signals the
+   * server-side build has finished. The banner auto-clears.
    *
    * The closure reads the latest state / dismissedFetchedAt
    * via refs (stateRef / dismissedRef) so we don't restart the
@@ -214,6 +244,12 @@ export default function DashboardPage() {
       try {
         const result = await fetchVulnerabilities({ background: true });
         if (cancelled) return;
+        // v5.2: server-side refresh complete → clear the local
+        // "Refresh running in background" banner. Only applies
+        // when we previously set it via handleManualRefresh.
+        if (result.refreshInProgress === false) {
+          setRefreshStatus((prev) => (prev && prev.refreshInProgress ? null : prev));
+        }
         // Only a real live fetch is a "new dataset." A mock
         // fallback or stale-cache re-serve is the same data the
         // user is already looking at — not worth notifying.
@@ -258,6 +294,7 @@ export default function DashboardPage() {
       if (!current) return null;
       setState({ kind: 'ready', meta: current });
       setDismissedFetchedAt(null);
+      setRefreshStatus(null);
       setSelected((prev) => {
         if (!prev) return prev;
         const stillExists = current.data.find((v) => v.cveId === prev.cveId);
@@ -313,6 +350,22 @@ export default function DashboardPage() {
               />
             )}
 
+            {/* v5.2: refresh-in-progress banner. Surfaces
+                immediately when the user clicks "Refresh live
+                data" (the response from the background function
+                is 202 "started" / "in-progress"). Auto-clears on
+                the next poll that returns `refreshInProgress:
+                false` — i.e. when the server-side build
+                completes. Sits below the v5.1 banner so a
+                detected update takes priority over a manual
+                refresh in flight. */}
+            {refreshStatus && refreshStatus.refreshInProgress && (
+              <RefreshInProgressBanner
+                status={refreshStatus}
+                onDismiss={() => setRefreshStatus(null)}
+              />
+            )}
+
             {/* v4: cache banner sits above all provider banners. It
                 is the most fundamental "where did this data come
                 from on this load" question; the provider banners
@@ -322,7 +375,7 @@ export default function DashboardPage() {
               <CachedDataBanner
                 cacheStatus={state.meta.cacheStatus}
                 fetchedAt={state.meta.fetchedAt}
-                onRefresh={handleRefresh}
+                onRefresh={handleManualRefresh}
               />
             )}
 
@@ -536,8 +589,11 @@ function NvdUnavailableBanner({
  *
  * The banner always carries the original upstream `fetchedAt`
  * so the user can see the age of the data they're looking at,
- * and exposes a manual "Refresh live data" button that forces
- * a bypass-cache re-fetch.
+ * and exposes a manual "Refresh live data" button that calls
+ * the v5.2 manual-refresh endpoint (background function). The
+ * button no longer force-refreshes the dataset endpoint with
+ * `?t=<ts>` — it asks the server to start a background
+ * rebuild, and the v5.1 polling detects the new blob.
  *
  * Critically, the cached FetchResult's provider-status fields
  * (nvdStatus / epssStatus / fallbackReason) are preserved, so
@@ -676,6 +732,73 @@ function UpdateAvailableBanner({
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * v5.2: Banner shown when the user has triggered a manual
+ * refresh (or a scheduled refresh is already running). The
+ * banner is intentionally smaller and quieter than the
+ * UpdateAvailableBanner — it's a "the rebuild is in flight,
+ * your data is unchanged" notice rather than an actionable
+ * update. The user can dismiss it (it'll re-appear on the
+ * next poll if the build is still running), or wait for the
+ * v5.1 polling to detect the new blob and surface the
+ * "New dataset available" banner.
+ *
+ * Status copy:
+ *   - 'started'   → "Refresh started. A new dataset is being built…"
+ *   - 'in-progress' → "A refresh is already running."
+ *   - 'completed'  → would clear via the next poll; should not render.
+ *   - 'failed'    → "Refresh failed: <reason>." Surfaces only briefly
+ *                    before the next poll clears it.
+ */
+function RefreshInProgressBanner({
+  status,
+  onDismiss,
+}: {
+  status: RefreshResult;
+  onDismiss: () => void;
+}) {
+  const message =
+    status.status === 'in-progress'
+      ? 'A refresh is already running on the server. Your current view is unchanged.'
+      : status.status === 'failed'
+        ? `Refresh failed: ${status.reason ?? 'unknown error'}.`
+        : 'A new dataset is being built in the background. Your current view is unchanged; the new dataset will appear via the next “Apply update” banner.';
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="panel flex flex-col gap-2 border-radar-accent/30 bg-radar-accent/5 px-4 py-2.5 text-xs sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div className="flex items-start gap-2">
+        {status.status === 'failed' ? (
+          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-radar-warn" />
+        ) : (
+          <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-radar-accent" />
+        )}
+        <div>
+          <p className="font-medium text-radar-text">
+            {status.status === 'in-progress'
+              ? 'Refresh running in background'
+              : status.status === 'failed'
+                ? 'Refresh failed'
+                : 'Refresh running in background'}
+          </p>
+          <p className="mt-0.5 text-radar-muted">{message}</p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss refresh-status banner"
+        title="Dismiss"
+        className="focus-ring inline-flex h-7 w-7 items-center justify-center self-start rounded-md border border-radar-border bg-radar-panel2 text-radar-muted transition hover:border-radar-accent/40 hover:text-radar-text"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }

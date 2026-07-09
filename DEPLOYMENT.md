@@ -272,6 +272,174 @@ of spilling 200+ characters of repeated errors.
 
 ---
 
+## 0.9 V5.2 — prebuilt dataset store (Netlify Blobs)
+
+V5.2 layers a shared **Netlify Blobs** entry in front of
+the v5.0 / v5.0.1 / v5.0.2 / v5.0.3 read endpoint. The
+goal: normal visitors read the latest successfully-built
+dataset immediately, without waiting for CISA → NVD →
+EPSS to run on their request.
+
+### 0.9.1 What gets deployed (v5.2)
+
+```
+netlify/functions/
+├── dataset.mjs                          # read endpoint (v5.2: blob-first)
+├── refresh-dataset-background.mjs       # manual refresh (BG fn)
+├── refresh-dataset-scheduled.mjs        # cron refresh (every 30 min)
+└── _shared/
+    ├── store.mjs                        # Blobs + lock helpers
+    ├── refresh.mjs                      # lock + write orchestrator
+    └── liveBuild.mjs                    # shared CISA → NVD → EPSS
+
+node_modules/@netlify/blobs               # one new runtime dependency
+```
+
+All three functions are Node 20 ESM, plain `.mjs`,
+`node_bundler = "none"`. Netlify zips `node_modules/@netlify/blobs`
+alongside the functions on deploy.
+
+### 0.9.2 Blob keys + store name
+
+| Key | Type | Written by | Read by |
+| --- | --- | --- | --- |
+| `latest-dataset` | `FetchResult` JSON | `refresh-dataset-background.mjs`, `refresh-dataset-scheduled.mjs`, `dataset.mjs` (bootstrap path) | `dataset.mjs` (read endpoint) |
+| `refresh-lock` | `{ startedAt, expiresAt }` JSON | All three refresh paths | All three refresh paths |
+
+Store name: `tpr-dataset`. Strong consistency.
+
+The `latest-dataset` blob is **only** written after a
+successful live build. The CISA-failure 502 path in
+`dataset.mjs` does NOT touch the blob — a stale good
+blob beats a fresh mock fallback every time.
+
+### 0.9.3 Scheduled refresh (every 30 min)
+
+The `refresh-dataset-scheduled.mjs` function is wired in
+`netlify.toml`:
+
+```toml
+[functions.refresh-dataset-scheduled]
+  node_bundler = "none"
+  schedule = "*/30 * * * *"
+```
+
+Netlify's scheduled-function time zone is UTC by
+default — we don't need wall-clock alignment, just
+"twice per hour". On each tick the function:
+
+1. Reads the `refresh-lock` blob. If `expiresAt > now`,
+   returns `{ status: "in-progress" }` without doing
+   anything.
+2. Otherwise, acquires the lock (writes a fresh
+   `{ startedAt, expiresAt }` payload with a 15-min TTL).
+3. Runs `buildLiveDataset()` (the shared CISA → NVD →
+   EPSS pipeline).
+4. On success, writes the result to `latest-dataset` and
+   clears the lock.
+5. On failure, clears the lock and leaves the existing
+   blob intact.
+
+### 0.9.4 Manual refresh (background function)
+
+The dashboard's "Refresh live data" button POSTs to:
+
+```
+POST /.netlify/functions/refresh-dataset-background
+```
+
+This is a Netlify **Background Function** (filename
+suffix `-background.mjs`) — it has up to a 15-minute
+timeout and runs `context.waitUntil(...)` to keep the
+build alive after the response is sent. The function
+returns `202` immediately with one of:
+
+- `{ status: "started", refreshInProgress: true }` —
+  the lock was acquired and the build is running in the
+  background.
+- `{ status: "in-progress", refreshInProgress: true }` —
+  another refresh (manual or scheduled) already holds
+  the lock. The user's click was a no-op.
+- `{ status: "failed", reason, refreshInProgress: false }`
+  — Blobs unavailable (rare; the dashboard falls back to
+  showing the cached data).
+
+The dashboard sets a `refreshStatus` state slot on this
+response and renders the "Refresh running in background"
+banner + the cyan pill in the header. Both clear
+automatically when the next poll returns
+`refreshInProgress: false`.
+
+### 0.9.5 Refresh-lock TTL
+
+`REFRESH_LOCK_TTL_MS = 15 * 60 * 1000` (15 minutes).
+
+Long enough for the longest realistic build to complete:
+
+- Without `NVD_API_KEY`: serial NVD chunks can take
+  ~60 s for 10 chunks × 8 s each. 15 min leaves a
+  14-min safety margin.
+- With `NVD_API_KEY`: parallel NVD chunks + EPSS in
+  parallel, typically < 30 s. 15 min is plenty.
+
+Short enough that a hung refresh doesn't block the next
+scheduled tick forever. The lock is the safety net for
+stuck refreshes, not the primary correctness mechanism
+(the strongly-consistent Blob read/write is).
+
+### 0.9.6 Verifying the v5.2 deploy on Netlify
+
+After `netlify deploy --prod`:
+
+- [ ] Open DevTools → Network → `/.netlify/functions/dataset`
+      returns `200` with `dataSource: "prebuilt-store"`
+      (or `"live-build"` on the very first request after
+      deploy).
+- [ ] The header shows a cyan **"Dataset store: latest
+      available"** pill.
+- [ ] Click "Refresh live data" — the dashboard shows the
+      "Refresh running in background" pill immediately,
+      then a few seconds / minutes later (depending on
+      build time) the existing v5.1 "New dataset
+      available" banner appears.
+- [ ] Open DevTools → Application → Blobs → confirm the
+      `tpr-dataset` store exists with `latest-dataset`
+      and (briefly) `refresh-lock` entries.
+- [ ] In the Netlify Functions dashboard, confirm
+      `refresh-dataset-scheduled` has fired at least once
+      on the production cron.
+
+### 0.9.7 No new environment variables
+
+V5.2 does not add any new env vars to the Netlify site
+dashboard. The only server-side env var remains
+`NVD_API_KEY` (v5.0.2 / v5.0.3, optional, function
+scope). The frontend's `VITE_REFRESH_ENDPOINT_URL`
+client-side env var has a baked-in default of
+`/.netlify/functions/refresh-dataset-background` and is
+documented but not required.
+
+### 0.9.8 Netlify Blobs is auto-provisioned
+
+Netlify Blobs is available on every Netlify site — no
+extra setup, no `netlify.toml` config beyond declaring
+the function scope. The store is created on the first
+write. The Blobs dashboard in the Netlify site
+settings shows the `tpr-dataset` store with its
+`latest-dataset` and `refresh-lock` keys.
+
+### 0.9.9 Local dev
+
+`netlify dev` provides the Blobs emulator automatically
+(no extra config). On `npm run dev` (Vite only — no
+Netlify runtime), `dataset.mjs` falls back to the
+v5.0 / v5.0.1 bootstrap path: it runs the live build
+on every request because no Blob store is available.
+The dashboard still works; the `dataSource` field will
+be `"live-build"` instead of `"prebuilt-store"`.
+
+---
+
 ## 1. TL;DR (v1.0–v4.1 Hostinger static-hosting — fallback)
 
 1. `npm.cmd run build` — produces `dist/`.
