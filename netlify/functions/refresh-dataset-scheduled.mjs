@@ -2,10 +2,14 @@
  * Netlify Scheduled Function — `/.netlify/functions/refresh-dataset-scheduled`
  *
  * v5.2 periodic-refresh endpoint. Triggered by a cron schedule
- * configured in `netlify.toml`:
- *
- *   [functions."refresh-dataset-scheduled"]
- *     schedule = "*/30 * * * *"
+ * configured in `netlify.toml`. The schedule is "every 30
+ * minutes" (the actual cron string lives in `netlify.toml`,
+ * not here — see `[functions.refresh-dataset-scheduled]
+ * schedule = ...` in that file). Avoiding the literal cron
+ * expression in this comment is intentional: the comment
+ * terminator sequence inside a JS block comment would close
+ * the doc early and the rest would parse as code (v5.2.2
+ * deploy fix).
  *
  * Why a separate scheduled function (not the same handler as
  * the manual endpoint):
@@ -18,15 +22,15 @@
  *     context (no headers, no status codes — it just runs).
  *
  * Conservative cadence:
- *   Every 30 minutes. The task spec calls for "a conservative
- *   interval first, such as hourly or every 30 minutes" —
- *   30 min chosen so the public demo gets a fresh dataset
- *   twice per hour without hammering the upstream feeds. The
- *   v5.0.1 CDN cache (`s-maxage=900` = 15 min) is still in
- *   place, so visitors within a 15-min window hit the cached
- *   response either way; the schedule just refreshes the
- *   blob so the NEXT visitor after the cache expires gets a
- *   fresh build.
+ *   Every 30 minutes; configured in `netlify.toml`. The task
+ *   spec calls for "a conservative interval first, such as
+ *   hourly or every 30 minutes" — 30 min chosen so the
+ *   public demo gets a fresh dataset twice per hour without
+ *   hammering the upstream feeds. The v5.0.1 CDN cache
+ *   (`s-maxage=900` = 15 min) is still in place, so visitors
+ *   within a 15-min window hit the cached response either
+ *   way; the schedule just refreshes the blob so the NEXT
+ *   visitor after the cache expires gets a fresh build.
  *
  * Lock interaction:
  *   The scheduled function uses the same `runRefresh`
