@@ -76,11 +76,14 @@ export default async (request, context) => {
   //         is sent. The Response itself is sent as soon as
   //         the lock is acquired; the build completes in the
   //         background. ----
+  //         v5.2.6: `buildFn` forwards its opts (e.g. the
+  //         `skipNvd` flag from the cooldown short-circuit)
+  //         into `buildLiveDataset`. ----
   let buildPromise = null;
   if (context && typeof context.waitUntil === 'function') {
     buildPromise = runRefresh({
       store,
-      buildFn: () => buildLiveDataset(),
+      buildFn: (opts) => buildLiveDataset(opts),
     });
     context.waitUntil(buildPromise);
   } else {
@@ -90,7 +93,7 @@ export default async (request, context) => {
     // this branch is purely defensive.
     buildPromise = runRefresh({
       store,
-      buildFn: () => buildLiveDataset(),
+      buildFn: (opts) => buildLiveDataset(opts),
     });
   }
 

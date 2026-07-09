@@ -77,9 +77,17 @@ export const NVD_PARTIAL_META = Symbol.for('threatpulse.nvd.partialMeta');
  * @param {number} [opts.startTime] Override the function's clock
  *   (used by the bootstrap path to keep `fetchedAt` consistent
  *   with the request that started the bootstrap).
+ * @param {boolean} [opts.skipNvd] v5.2.6: short-circuit the NVD
+ *   fetch and return the envelope with `nvdStatus: 'unavailable'`.
+ *   Used by the refresh orchestrator when the NVD cooldown is
+ *   active but no existing good blob is present (e.g. a fresh
+ *   deploy that caught NVD mid-rate-limit). The CISA + EPSS
+ *   pipeline still runs so visitors still get fresh KEV
+ *   records and EPSS scores, just without CVSS scores.
  */
 export async function buildLiveDataset(opts = {}) {
   const overallStart = opts.startTime ?? Date.now();
+  const skipNvd = opts.skipNvd === true;
 
   // ---- 1. CISA KEV (gating) ----
   let cisaRecords;
@@ -100,8 +108,24 @@ export async function buildLiveDataset(opts = {}) {
   const budgetRemaining = () =>
     Math.max(1_000, OVERALL_BUDGET_MS - (Date.now() - overallStart));
 
+  // v5.2.6: when skipNvd is true, don't even attempt the NVD
+  // fetch — return a synthetic 'unavailable' result so the
+  // rest of the pipeline (EPSS enrichment + envelope shape)
+  // stays unchanged. The refresh orchestrator's quality guard
+  // sees the rate-limited envelope and preserves the existing
+  // better blob instead of writing this one.
+  const nvdFetchPromise = skipNvd
+    ? Promise.resolve({
+        map: new Map(),
+        status: 'unavailable',
+        reason:
+          'NVD enrichment skipped (cooldown active); CVSS scores ' +
+          'are unavailable for this refresh.',
+      })
+    : safeEnrich('NVD', () => fetchNvdForCves(cveIds), budgetRemaining());
+
   const [nvdResult, epssResult] = await Promise.all([
-    safeEnrich('NVD', () => fetchNvdForCves(cveIds), budgetRemaining()),
+    nvdFetchPromise,
     safeEnrich('EPSS', () => fetchEpssForCves(cveIds), budgetRemaining()),
   ]);
 
@@ -112,6 +136,10 @@ export async function buildLiveDataset(opts = {}) {
   // CVEs that exist in NVD — preserves the UI contract) and
   // upgrade `nvdReason` to a partial-failure summary so the
   // operator / dashboard can see how many CVEs were dropped.
+  //
+  // v5.2.6: when `skipNvd` is true, the synthetic result has
+  // no Symbol metadata — `readNvdPartialMeta` returns null —
+  // so the cooldown reason flows through unchanged.
   const nvdPartialMeta = readNvdPartialMeta(nvdResult.map);
   const nvdStatus = nvdResult.status;
   const nvdReason = nvdPartialMeta

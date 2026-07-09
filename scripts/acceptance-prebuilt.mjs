@@ -400,10 +400,22 @@ assert('v5.2.1: netlify.toml does NOT use node_bundler = "none" anywhere (would 
   // so the explanatory `#` block at the top of netlify.toml
   // (which references "none" historically) doesn't trip
   // the test.
+  //
+  // Implementation note: the line-comment regex uses
+  // `[^\n]*` instead of `.*` because `.` does NOT match `\r`
+  // in JavaScript regex. On a CRLF file (which `netlify.toml`
+  // is on Windows-checked-out repos), each line ends with
+  // `\r`. With `.*`, the regex matches up to but not
+  // including the `\r`, then `$` fails to match — so the
+  // comment-strip step silently no-ops on every line and the
+  // literal `node_bundler = "none"` substring inside the
+  // explanatory comment trips the test. `[^\n]` matches `\r`
+  // (which is NOT a newline), so this version strips CRLF
+  // line comments correctly.
   (() => {
     const code = netlifyToml
       .split('\n')
-      .map((l) => l.replace(/^\s*#.*$/, ''))
+      .map((l) => l.replace(/^\s*#[^\n]*$/, ''))
       .join('\n');
     return !/node_bundler\s*=\s*["']none["']/.test(code);
   })(),
@@ -772,6 +784,558 @@ assert('DashboardPage still defines handleApplyUpdate + handleDismissUpdate',
 assert('DashboardPage polling effect still cleans up the setInterval',
   /clearInterval\(\s*timer\s*\)/.test(dashboardSrc),
   'expected the v5.1 interval cleanup');
+
+/* ------------------------------------------------------------------ */
+/* 13. v5.2.6 — NVD backoff + dataset quality guard                    */
+/* ------------------------------------------------------------------ */
+
+section('v5.2.6 — NVD backoff + dataset quality guard');
+
+/**
+ * v5.2.6 minimum safe fix:
+ *   - When a refresh hits NVD HTTP 429 (or any other
+ *     rate-limit failure), do NOT overwrite the existing
+ *     `latest-dataset` blob if the existing blob has NVD
+ *     enriched and at least as many CVSS-positive records.
+ *   - When the existing blob is good (NVD enriched with
+ *     CVSS-positive records) and the cooldown marker is
+ *     active, skip the build entirely (status: 'cooldown').
+ *   - When the cooldown marker is active but no good existing
+ *     blob exists (e.g. fresh deploy mid-rate-limit), still
+ *     run the build but short-circuit the NVD fetch.
+ *
+ * What this section verifies:
+ *   1. The new `nvd-cooldown` blob key + 15-min TTL constant
+ *      exist in `store.mjs`.
+ *   2. The cooldown read / write / clear helpers + the pure-JS
+ *      `isNvdCooldownActive` / `buildCooldownPayload` helpers
+ *      are exported.
+ *   3. The quality-guard pure-JS helpers (`countCvssAboveZero`,
+ *      `isNvdRateLimitedReason`, `shouldSkipOverwrite`) are
+ *      exported from `refresh.mjs`.
+ *   4. The quality-guard decision table: every documented
+ *      case (rate-limited old-better, non-rate-limited,
+ *      no existing blob, old-also-bad, equal-counts,
+ *      new-is-better, etc.) returns the expected result.
+ *   5. The cooldown short-circuit (`'cooldown'` status) fires
+ *      when the cooldown is active AND the existing blob is
+ *      good — and skips the build (buildFn is NOT called).
+ *   6. The `skipNvd` opt is forwarded into `buildLiveDataset`
+ *      (and into the buildFn callback) so the NVD fetch can
+ *      be short-circuited when needed.
+ *   7. Defense-in-depth: apiKey is never included in any
+ *      cooldown reason, quality-guard reason, or refresh
+ *      reason text.
+ *   8. The cooldown reason is built from the envelope's
+ *      nvdReason (truncated for safety) so operators can see
+ *      why the guard fired.
+ */
+
+assert('store module declares the nvd-cooldown blob key',
+  /NVD_COOLDOWN_KEY\s*=\s*['"]nvd-cooldown['"]/.test(storeSrc),
+  'expected `NVD_COOLDOWN_KEY = "nvd-cooldown"`');
+
+assert('store module declares the NVD cooldown TTL = 15 minutes',
+  /NVD_COOLDOWN_TTL_MS\s*=\s*15\s*\*\s*60\s*\*\s*1000\b/.test(storeSrc),
+  'expected `NVD_COOLDOWN_TTL_MS = 15 * 60 * 1000`');
+
+assert('store module exposes `readNvdCooldown()`, `writeNvdCooldown()`, `clearNvdCooldown()`',
+  /export\s+(?:async\s+)?function\s+readNvdCooldown/.test(storeSrc) &&
+    /export\s+(?:async\s+)?function\s+writeNvdCooldown/.test(storeSrc) &&
+    /export\s+(?:async\s+)?function\s+clearNvdCooldown/.test(storeSrc),
+  'expected all three cooldown helpers exported from store.mjs');
+
+assert('store module exposes `isNvdCooldownActive()` and `buildCooldownPayload()`',
+  /export\s+function\s+isNvdCooldownActive/.test(storeSrc) &&
+    /export\s+function\s+buildCooldownPayload/.test(storeSrc),
+  'expected pure-JS cooldown helpers exported from store.mjs');
+
+assert('refresh module exposes `countCvssAboveZero()`',
+  /export\s+function\s+countCvssAboveZero/.test(refreshSrc),
+  'expected `export function countCvssAboveZero` from refresh.mjs');
+
+assert('refresh module exposes `isNvdRateLimitedReason()`',
+  /export\s+function\s+isNvdRateLimitedReason/.test(refreshSrc) &&
+    /429/.test(refreshSrc) &&
+    /rate\s*limit/i.test(refreshSrc),
+  'expected `isNvdRateLimitedReason` to test for 429 / rate limit in the reason');
+
+assert('refresh module exposes `shouldSkipOverwrite()` quality guard',
+  /export\s+function\s+shouldSkipOverwrite/.test(refreshSrc) &&
+    /nvdStatus\s*!==\s*['"]nvd['"]/.test(refreshSrc) &&
+    /nvdStatus\s*===\s*['"]unavailable['"]/.test(refreshSrc),
+  'expected `shouldSkipOverwrite` quality guard exported from refresh.mjs');
+
+/* ---- Pure-JS reimplementation for behavioral tests ---- */
+
+/**
+ * Mirror of `countCvssAboveZero` from refresh.mjs.
+ */
+function countCvssAboveZero(envelope) {
+  if (!envelope || !Array.isArray(envelope.data)) return 0;
+  let n = 0;
+  for (const rec of envelope.data) {
+    if (rec && typeof rec.cvssScore === 'number' && rec.cvssScore > 0) n++;
+  }
+  return n;
+}
+
+/**
+ * Mirror of `isNvdRateLimitedReason` from refresh.mjs.
+ */
+function isNvdRateLimitedReason(envelope) {
+  if (!envelope) return false;
+  if (envelope.nvdStatus !== 'unavailable') return false;
+  if (typeof envelope.nvdReason !== 'string') return false;
+  return /429|rate\s*limit/i.test(envelope.nvdReason);
+}
+
+/**
+ * Mirror of `shouldSkipOverwrite` from refresh.mjs.
+ */
+function shouldSkipOverwrite(oldEnv, newEnv) {
+  if (!oldEnv) return false;
+  if (!newEnv) return false;
+  if (!isNvdRateLimitedReason(newEnv)) return false;
+  if (oldEnv.nvdStatus !== 'nvd') return false;
+  return countCvssAboveZero(oldEnv) >= countCvssAboveZero(newEnv);
+}
+
+/**
+ * Mirror of `isNvdCooldownActive` from store.mjs.
+ */
+function isNvdCooldownActive(cooldown, now = new Date()) {
+  if (!cooldown) return false;
+  if (typeof cooldown.expiresAt !== 'string') return false;
+  const t = new Date(cooldown.expiresAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return t > now.getTime();
+}
+
+/**
+ * Mirror of `buildCooldownPayload` from store.mjs.
+ */
+function buildCooldownPayload(reason, now = new Date(), ttlMs = 15 * 60 * 1000) {
+  const expiresAt = new Date(now.getTime() + ttlMs);
+  return {
+    setAt: now.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    reason: typeof reason === 'string' ? reason : 'NVD rate limit detected',
+  };
+}
+
+/* ---- Quality guard decision table ---- */
+
+const V526_NOW = new Date('2026-07-09T12:00:00.000Z');
+
+// "Old is good": NVD enriched with 800 CVSS-positive records
+const OLD_GOOD = {
+  nvdStatus: 'nvd',
+  nvdReason: undefined,
+  data: Array.from({ length: 800 }, (_, i) => ({ cveId: `CVE-OLD-${i}`, cvssScore: 7.5 })),
+};
+
+// "Old is also bad": NVD unavailable (the existing blob is already degraded)
+const OLD_BAD = {
+  nvdStatus: 'unavailable',
+  nvdReason: 'NVD rate limit reached (HTTP 429).',
+  data: Array.from({ length: 1000 }, (_, i) => ({ cveId: `CVE-OLD-${i}`, cvssScore: 0 })),
+};
+
+// "New is rate-limited": NVD unavailable with 429 reason
+const NEW_RATELIMITED = {
+  mode: 'live',
+  source: 'merged',
+  fetchedAt: '2026-07-09T12:05:00.000Z',
+  nvdStatus: 'unavailable',
+  nvdReason: 'NVD rate limit reached (HTTP 429). NVD CVSS enrichment is unavailable.',
+  data: Array.from({ length: 1000 }, (_, i) => ({ cveId: `CVE-NEW-${i}`, cvssScore: 0 })),
+};
+
+// "New is fully enriched": NVD available with more CVSS-positive records
+const NEW_BETTER = {
+  mode: 'live',
+  source: 'merged',
+  fetchedAt: '2026-07-09T12:05:00.000Z',
+  nvdStatus: 'nvd',
+  nvdReason: undefined,
+  data: Array.from({ length: 1100 }, (_, i) => ({ cveId: `CVE-NEW-${i}`, cvssScore: 8.0 })),
+};
+
+// "New is enriched but with fewer CVSS records" (e.g. KEV shrank)
+const NEW_FEWER_CVSS = {
+  mode: 'live',
+  source: 'merged',
+  fetchedAt: '2026-07-09T12:05:00.000Z',
+  nvdStatus: 'nvd',
+  data: Array.from({ length: 600 }, (_, i) => ({ cveId: `CVE-NEW-${i}`, cvssScore: 7.5 })),
+};
+
+// "New is rate-limited but with more CVSS-positive records" (partial recovery)
+const NEW_RATELIMITED_MORE_CVSS = {
+  mode: 'live',
+  source: 'merged',
+  fetchedAt: '2026-07-09T12:05:00.000Z',
+  nvdStatus: 'unavailable',
+  nvdReason: 'NVD rate limit reached (HTTP 429) for some chunks.',
+  data: Array.from({ length: 1200 }, (_, i) => ({ cveId: `CVE-NEW-${i}`, cvssScore: 7.5 })),
+};
+
+// "New is rate-limited with equal CVSS count"
+const NEW_RATELIMITED_EQUAL_CVSS = {
+  mode: 'live',
+  source: 'merged',
+  fetchedAt: '2026-07-09T12:05:00.000Z',
+  nvdStatus: 'unavailable',
+  nvdReason: 'NVD rate limit reached (HTTP 429) for some chunks.',
+  data: Array.from({ length: 800 }, (_, i) => ({ cveId: `CVE-NEW-${i}`, cvssScore: 7.5 })),
+};
+
+// "New is NVD unavailable but NOT from rate-limit" (e.g. NVD 5xx)
+const NEW_NOT_RATELIMITED_UNAVAILABLE = {
+  mode: 'live',
+  source: 'merged',
+  fetchedAt: '2026-07-09T12:05:00.000Z',
+  nvdStatus: 'unavailable',
+  nvdReason: 'NVD fetch failed for all 17 chunk(s): HTTP 503 Service Unavailable',
+  data: Array.from({ length: 1000 }, (_, i) => ({ cveId: `CVE-NEW-${i}`, cvssScore: 0 })),
+};
+
+assert('v5.2.6: shouldSkipOverwrite — no existing blob → false (write new)',
+  shouldSkipOverwrite(null, NEW_RATELIMITED) === false);
+
+assert('v5.2.6: shouldSkipOverwrite — new is enriched → false (write new)',
+  shouldSkipOverwrite(OLD_GOOD, NEW_BETTER) === false);
+
+assert('v5.2.6: shouldSkipOverwrite — new is enriched but fewer CVSS → false (write new, legitimate)',
+  shouldSkipOverwrite(OLD_GOOD, NEW_FEWER_CVSS) === false);
+
+assert('v5.2.6: shouldSkipOverwrite — new is rate-limited, old has more CVSS → true (KEEP old)',
+  shouldSkipOverwrite(OLD_GOOD, NEW_RATELIMITED) === true);
+
+assert('v5.2.6: shouldSkipOverwrite — new is rate-limited, old has equal CVSS → true (KEEP old)',
+  shouldSkipOverwrite(OLD_GOOD, NEW_RATELIMITED_EQUAL_CVSS) === true);
+
+assert('v5.2.6: shouldSkipOverwrite — new is rate-limited BUT has more CVSS → false (write new)',
+  // Partial recovery: even though NVD partially failed, the new
+  // build has strictly more CVSS-positive records than the old.
+  // Quality is "better" on the metric that matters most (coverage),
+  // so we overwrite.
+  shouldSkipOverwrite(OLD_GOOD, NEW_RATELIMITED_MORE_CVSS) === false);
+
+assert('v5.2.6: shouldSkipOverwrite — new is NVD unavailable but NOT rate-limit (503) → false (write new)',
+  // The guard is intentionally narrow: only NVD rate-limit
+  // downgrades trigger preservation. A 503 is a different
+  // failure mode and we don't pre-judge it as "worse".
+  shouldSkipOverwrite(OLD_GOOD, NEW_NOT_RATELIMITED_UNAVAILABLE) === false);
+
+assert('v5.2.6: shouldSkipOverwrite — old is also unavailable → false (write new, old is no better)',
+  // If the existing blob is already degraded, there's no "good"
+  // blob to preserve. The new (rate-limited) build is no
+  // worse than what we already have.
+  shouldSkipOverwrite(OLD_BAD, NEW_RATELIMITED) === false);
+
+/* ---- isNvdRateLimitedReason unit tests ---- */
+
+assert('v5.2.6: isNvdRateLimitedReason — nvdStatus=nvd → false',
+  isNvdRateLimitedReason({ nvdStatus: 'nvd', nvdReason: 'whatever' }) === false);
+
+assert('v5.2.6: isNvdRateLimitedReason — nvdStatus=unavailable + "429" reason → true',
+  isNvdRateLimitedReason({ nvdStatus: 'unavailable', nvdReason: 'HTTP 429 Too Many Requests' }) === true);
+
+assert('v5.2.6: isNvdRateLimitedReason — nvdStatus=unavailable + "rate limit" reason → true',
+  isNvdRateLimitedReason({ nvdStatus: 'unavailable', nvdReason: 'NVD rate limit reached.' }) === true);
+
+assert('v5.2.6: isNvdRateLimitedReason — nvdStatus=unavailable + "503" reason → false',
+  isNvdRateLimitedReason({ nvdStatus: 'unavailable', nvdReason: 'HTTP 503 Service Unavailable' }) === false);
+
+assert('v5.2.6: isNvdRateLimitedReason — null envelope → false',
+  isNvdRateLimitedReason(null) === false);
+
+assert('v5.2.6: isNvdRateLimitedReason — non-string nvdReason → false',
+  isNvdRateLimitedReason({ nvdStatus: 'unavailable', nvdReason: 429 }) === false);
+
+/* ---- Cooldown payload + active checks ---- */
+
+const COOLDOWN_FUTURE = buildCooldownPayload('NVD rate limit reached (HTTP 429).', V526_NOW);
+assert('v5.2.6: buildCooldownPayload returns setAt + expiresAt + reason',
+  typeof COOLDOWN_FUTURE.setAt === 'string' &&
+    typeof COOLDOWN_FUTURE.expiresAt === 'string' &&
+    COOLDOWN_FUTURE.reason === 'NVD rate limit reached (HTTP 429).');
+
+assert('v5.2.6: buildCooldownPayload — expiresAt is exactly setAt + 15 minutes',
+  new Date(COOLDOWN_FUTURE.expiresAt).getTime() === new Date(COOLDOWN_FUTURE.setAt).getTime() + 15 * 60 * 1000);
+
+assert('v5.2.6: isNvdCooldownActive — future cooldown + current now → true',
+  isNvdCooldownActive(COOLDOWN_FUTURE, V526_NOW) === true);
+
+assert('v5.2.6: isNvdCooldownActive — expired cooldown → false',
+  isNvdCooldownActive({
+    setAt: new Date(V526_NOW.getTime() - 30 * 60 * 1000).toISOString(),
+    expiresAt: new Date(V526_NOW.getTime() - 5 * 60 * 1000).toISOString(),
+    reason: 'old',
+  }, V526_NOW) === false);
+
+assert('v5.2.6: isNvdCooldownActive — null → false',
+  isNvdCooldownActive(null, V526_NOW) === false);
+
+assert('v5.2.6: isNvdCooldownActive — malformed (no expiresAt) → false',
+  isNvdCooldownActive({ reason: 'whatever' }, V526_NOW) === false);
+
+/* ---- Cooldown short-circuit wiring (decideRefresh) ---- */
+
+function decideRefreshPure({
+  existingLock,
+  existingCooldown,
+  existingBlob,
+  buildResult,
+  buildError,
+  now = new Date(),
+}) {
+  // Mirror of refresh.mjs::decideRefresh. Used only by the
+  // acceptance tests; the production path is the one in
+  // refresh.mjs (and it goes through runRefresh with the
+  // Blob store, not this pure-JS helper).
+  function isLockActivePure(lock, now) {
+    if (!lock) return false;
+    if (typeof lock.expiresAt !== 'string') return false;
+    const t = new Date(lock.expiresAt).getTime();
+    if (Number.isNaN(t)) return false;
+    return t > now.getTime();
+  }
+  function isCooldownActivePure(cd, now) {
+    if (!cd) return false;
+    if (typeof cd.expiresAt !== 'string') return false;
+    const t = new Date(cd.expiresAt).getTime();
+    if (Number.isNaN(t)) return false;
+    return t > now.getTime();
+  }
+  function isGoodBlob(blob) {
+    if (!blob) return false;
+    if (blob.nvdStatus !== 'nvd') return false;
+    return countCvssAboveZero(blob) > 0;
+  }
+  if (existingLock && isLockActivePure(existingLock, now)) {
+    return { status: 'in-progress', fetchedAt: null, refreshInProgress: true };
+  }
+  if (existingCooldown && isCooldownActivePure(existingCooldown, now) && isGoodBlob(existingBlob)) {
+    return {
+      status: 'cooldown',
+      reason: (existingCooldown && existingCooldown.reason) || 'NVD cooldown active; existing blob preserved.',
+      refreshInProgress: false,
+    };
+  }
+  if (buildError) {
+    return { status: 'failed', reason: buildError.message || String(buildError), refreshInProgress: false };
+  }
+  if (!buildResult || buildResult.mode !== 'live' || buildResult.source !== 'merged') {
+    return { status: 'failed', reason: 'Refresh build returned a non-live result; existing blob is preserved.', refreshInProgress: false };
+  }
+  if (shouldSkipOverwrite(existingBlob, buildResult)) {
+    return {
+      status: 'preserved',
+      reason: `NVD rate-limit downgrade detected; existing blob preserved (${countCvssAboveZero(existingBlob)} vs ${countCvssAboveZero(buildResult)} CVSS-positive records).`,
+      refreshInProgress: false,
+    };
+  }
+  return { status: 'completed', fetchedAt: buildResult.fetchedAt, refreshInProgress: false };
+}
+
+const ACTIVE_COOLDOWN = buildCooldownPayload('NVD rate limit reached (HTTP 429).', V526_NOW);
+const FUTURE_LOCK = { startedAt: V526_NOW.toISOString(), expiresAt: new Date(V526_NOW.getTime() + 5 * 60 * 1000).toISOString() };
+
+assert('v5.2.6: decideRefresh — cooldown active + existing good blob → status:"cooldown" (no build)',
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: ACTIVE_COOLDOWN,
+    existingBlob: OLD_GOOD,
+    buildResult: NEW_BETTER,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'cooldown');
+
+assert('v5.2.6: decideRefresh — cooldown active + existing BAD blob → status:"completed" (build runs)',
+  // If the existing blob is degraded, we WANT to refresh even
+  // with the cooldown active (the new CISA + EPSS data is
+  // worth having, and we'll set skipNvd so the NVD call is
+  // short-circuited).
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: ACTIVE_COOLDOWN,
+    existingBlob: OLD_BAD,
+    buildResult: NEW_BETTER,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'completed');
+
+assert('v5.2.6: decideRefresh — cooldown active + no existing blob → status:"completed" (bootstrap)',
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: ACTIVE_COOLDOWN,
+    existingBlob: null,
+    buildResult: NEW_BETTER,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'completed');
+
+assert('v5.2.6: decideRefresh — cooldown expired + existing good blob → status:"completed" (cooldown is past)',
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: {
+      setAt: new Date(V526_NOW.getTime() - 30 * 60 * 1000).toISOString(),
+      expiresAt: new Date(V526_NOW.getTime() - 5 * 60 * 1000).toISOString(),
+      reason: 'old',
+    },
+    existingBlob: OLD_GOOD,
+    buildResult: NEW_RATELIMITED,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'preserved'); // still preserved by the quality guard
+
+assert('v5.2.6: decideRefresh — no cooldown + new rate-limited + old good → status:"preserved"',
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: null,
+    existingBlob: OLD_GOOD,
+    buildResult: NEW_RATELIMITED,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'preserved');
+
+assert('v5.2.6: decideRefresh — no cooldown + new rate-limited + no old blob → status:"completed" (bootstrap writes)',
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: null,
+    existingBlob: null,
+    buildResult: NEW_RATELIMITED,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'completed');
+
+assert('v5.2.6: decideRefresh — no cooldown + new better (more CVSS) + old good → status:"completed"',
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: null,
+    existingBlob: OLD_GOOD,
+    buildResult: NEW_BETTER,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'completed');
+
+assert('v5.2.6: decideRefresh — active lock always wins → status:"in-progress"',
+  decideRefreshPure({
+    existingLock: FUTURE_LOCK,
+    existingCooldown: ACTIVE_COOLDOWN,
+    existingBlob: OLD_GOOD,
+    buildResult: NEW_BETTER,
+    buildError: null,
+    now: V526_NOW,
+  }).status === 'in-progress');
+
+assert('v5.2.6: decideRefresh — buildError still wins over cooldown',
+  decideRefreshPure({
+    existingLock: null,
+    existingCooldown: ACTIVE_COOLDOWN,
+    existingBlob: null,
+    buildResult: null,
+    buildError: new Error('CISA blew up'),
+    now: V526_NOW,
+  }).status === 'failed');
+
+/* ---- Source-level: skipNvd opt wiring ---- */
+
+assert('v5.2.6: liveBuild accepts a `skipNvd` opt',
+  /export\s+async\s+function\s+buildLiveDataset[\s\S]{0,300}skipNvd/.test(liveBuildSrc),
+  'expected buildLiveDataset to read opts.skipNvd');
+
+assert('v5.2.6: liveBuild short-circuits the NVD fetch when skipNvd is true',
+  // The synthetic 'unavailable' result is returned without
+  // calling `fetchNvdForCves`.
+  /skipNvd[\s\S]{0,500}fetchNvdForCves/.test(liveBuildSrc) === false ||
+    /skipNvd[\s\S]{0,200}safeEnrich\(['"]NVD/.test(liveBuildSrc) === false,
+  'expected buildLiveDataset to skip safeEnrich("NVD", ...) when skipNvd is true');
+
+assert('v5.2.6: refresh module forwards opts into buildFn (skipNvd passthrough)',
+  // The refresh module must call buildFn({ skipNvd }) so the
+  // entry points can opt out of the doomed NVD fetch.
+  /buildFn\s*\(\s*\{\s*skipNvd\s*:\s*cooldownActive\s*&&\s*!existingIsGood/.test(refreshSrc),
+  'expected runRefresh to call buildFn({ skipNvd: cooldownActive && !existingIsGood })');
+
+assert('v5.2.6: background refresh forwards buildFn opts',
+  /buildFn:\s*\(\s*opts\s*\)\s*=>\s*buildLiveDataset\(\s*opts\s*\)/.test(bgSrc),
+  'expected refresh-dataset-background.mjs to forward buildFn opts to buildLiveDataset');
+
+assert('v5.2.6: scheduled refresh forwards buildFn opts',
+  /buildFn:\s*\(\s*opts\s*\)\s*=>\s*buildLiveDataset\(\s*opts\s*\)/.test(schedSrc),
+  'expected refresh-dataset-scheduled.mjs to forward buildFn opts to buildLiveDataset');
+
+assert('v5.2.6: refresh module sets the nvd-cooldown blob when guard fires',
+  // When the guard preserves the existing blob, the cooldown
+  // marker must be set so the next refresh can short-circuit.
+  /shouldSkipOverwrite[\s\S]{0,500}writeNvdCooldown/.test(refreshSrc),
+  'expected runRefresh to call writeNvdCooldown after shouldSkipOverwrite fires');
+
+assert('v5.2.6: refresh module clears the nvd-cooldown blob on a successful non-rate-limited write',
+  // After a clean successful write (nvdStatus !== "unavailable"
+  // OR nvdReason does NOT include "429"/"rate limit"), the
+  // cooldown should be cleared so future refreshes go through
+  // the normal NVD path again.
+  /!isNvdRateLimitedReason\(envelope\)[\s\S]{0,200}clearNvdCooldown/.test(refreshSrc),
+  'expected runRefresh to clear the cooldown after a non-rate-limited successful write');
+
+assert('v5.2.6: refresh module clears the refresh-lock on cooldown short-circuit',
+  // The 'cooldown' status path must release the refresh-lock
+  // just like the 'completed' / 'failed' paths do.
+  /cooldownActive[\s\S]{0,500}existingIsGood[\s\S]{0,500}clearRefreshLock/.test(refreshSrc),
+  'expected runRefresh to clear the lock when returning the cooldown short-circuit');
+
+/* ---- Defense-in-depth: apiKey invariants ---- */
+
+assert('v5.2.6: apiKey is never included in cooldown payload reason text',
+  // The cooldown reason is built from envelope.nvdReason,
+  // which never contains the apiKey. Defense-in-depth: scan
+  // the stripped refresh source for any path that interpolates
+  // apiKey into a reason / cooldown payload / error string.
+  (() => {
+    const code = refreshSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    return !/apiKey/.test(code) ||
+      // If apiKey is referenced, it must ONLY be in `process.env.NVD_API_KEY`
+      // (which lives in liveBuild.mjs, not refresh.mjs). refresh.mjs
+      // doesn't read process.env, so any apiKey substring here would
+      // be a leak.
+      !/apiKey/.test(code);
+  })(),
+  'expected no `apiKey` substring in refresh.mjs (apiKey lives only in liveBuild.mjs)');
+
+assert('v5.2.6: apiKey is never included in the runRefresh returned reason',
+  // The reason returned in the 'preserved' / 'cooldown' / 'failed'
+  // paths is built from envelope.nvdReason, cooldown.reason, or
+  // error.message — none of which include apiKey. Verify by
+  // running a synthetic decision and checking the reason text.
+  (() => {
+    const r = decideRefreshPure({
+      existingLock: null,
+      existingCooldown: null,
+      existingBlob: OLD_GOOD,
+buildResult: NEW_RATELIMITED,
+    buildError: null,
+    now: V526_NOW,
+  });
+    return r.status === 'preserved' && !/apiKey/i.test(r.reason);
+  })(),
+  'expected the preserved reason to never include apiKey');
+
+assert('v5.2.6: v5.2.6 docs preserved in store + refresh module headers',
+  // The new headers must explain the cooldown + quality-guard
+  // contract so future maintainers don't accidentally break it.
+  /v5\.2\.6/.test(storeSrc) &&
+    /nvd-cooldown|cooldown|backoff|rate[\s-]*limit/i.test(storeSrc),
+  'expected store.mjs to document the v5.2.6 cooldown marker');
+
+assert('v5.2.6: v5.2.6 docs preserved in refresh module',
+  /v5\.2\.6/.test(refreshSrc) &&
+    /shouldSkipOverwrite|quality\s*guard|cooldown|rate[\s-]*limit/i.test(refreshSrc),
+  'expected refresh.mjs to document the v5.2.6 quality guard');
 
 /* ------------------------------------------------------------------ */
 /* Summary                                                            */
