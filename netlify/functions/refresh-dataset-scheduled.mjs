@@ -79,7 +79,9 @@ export default async (event) => {
 
   const result = await runRefresh({
     store,
-    buildFn: () => buildLiveDataset(),
+    // v5.2.6: forward opts (e.g. skipNvd from the cooldown
+    // short-circuit) into `buildLiveDataset`.
+    buildFn: (opts) => buildLiveDataset(opts),
   });
 
   console.log(

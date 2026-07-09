@@ -12,12 +12,21 @@
  *   ├── latest-dataset   → full FetchResult envelope (JSON).
  *   │                       Written only after a SUCCESSFUL live build.
  *   │                       Never overwritten by a mock fallback.
- *   └── refresh-lock     → { startedAt, expiresAt }. Prevents
- *                           duplicate concurrent refreshes. TTL is
- *                           15 minutes — long enough for the longest
- *                           realistic refresh to complete (no NVD
- *                           API key → up to ~60 s of serial chunks;
- *                           15 min leaves a generous safety margin).
+ *   │                       Never overwritten by a worse-quality dataset
+ *   │                       when an NVD rate-limit downgrade is detected
+ *   │                       (v5.2.6 quality guard — see refresh.mjs).
+ *   ├── refresh-lock     → { startedAt, expiresAt }. Prevents
+ *   │                       duplicate concurrent refreshes. TTL is
+ *   │                       15 minutes — long enough for the longest
+ *   │                       realistic refresh to complete (no NVD
+ *   │                       API key → up to ~60 s of serial chunks;
+ *   │                       15 min leaves a generous safety margin).
+ *   └── nvd-cooldown     → v5.2.6 marker: { setAt, expiresAt, reason }.
+ *                           Set when an NVD refresh surfaces an HTTP 429
+ *                           (rate-limit) reason. TTL is 15 minutes — same
+ *                           window as the refresh lock. When active, the
+ *                           refresh orchestrator preserves the existing
+ *                           better blob instead of doing a doomed refresh.
  *
  * Local-dev note: `netlify dev` provides the Blobs emulator
  * automatically (via the Netlify CLI). For Vite-only `npm run dev`,
@@ -37,6 +46,9 @@ export const LATEST_DATASET_KEY = 'latest-dataset';
 /** Blob key for the refresh lock. */
 export const REFRESH_LOCK_KEY = 'refresh-lock';
 
+/** v5.2.6: Blob key for the NVD cooldown marker. */
+export const NVD_COOLDOWN_KEY = 'nvd-cooldown';
+
 /**
  * Refresh-lock TTL (ms). Long enough for the longest realistic
  * refresh to complete (serial NVD without API key can take ~60 s
@@ -46,6 +58,17 @@ export const REFRESH_LOCK_KEY = 'refresh-lock';
  * to start instead of being blocked forever.
  */
 export const REFRESH_LOCK_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * v5.2.6: NVD cooldown TTL (ms). 15 minutes — NVD's documented
+ * public-anonymous rate-limit window is "less than 5 req / 30 s"
+ * which recovers as soon as the burst window rolls over. 15 min
+ * is generous enough that even the slowest recovery is past by
+ * then, but short enough that we don't strand visitors with a
+ * permanently-degraded dataset if NVD recovered faster than
+ * we expected.
+ */
+export const NVD_COOLDOWN_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Resolve a Blobs store handle. In production (Netlify Functions
@@ -206,5 +229,98 @@ export function buildLockPayload(now = new Date(), ttlMs = REFRESH_LOCK_TTL_MS) 
   return {
     startedAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* v5.2.6: NVD cooldown marker                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * v5.2.6: Read the NVD cooldown blob. Returns `null` when no
+ * cooldown is set, OR when the stored payload is malformed
+ * (missing fields, bad ISO date). Defensive try/catch means a
+ * transient Blobs read error is treated as "no cooldown" —
+ * preferable to blocking refreshes indefinitely.
+ *
+ * The shape mirrors the refresh-lock payload:
+ *   { setAt: ISO string, expiresAt: ISO string, reason: string }
+ */
+export async function readNvdCooldown(store) {
+  try {
+    const blob = await store.get(NVD_COOLDOWN_KEY, { type: 'json' });
+    if (!blob) return null;
+    if (
+      typeof blob.setAt !== 'string' ||
+      typeof blob.expiresAt !== 'string' ||
+      typeof blob.reason !== 'string'
+    ) {
+      return null;
+    }
+    return blob;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * v5.2.6: Write the NVD cooldown marker. Silent on Blobs write
+ * errors — a transient Blobs outage on the cooldown write path
+ * doesn't propagate; the next refresh will simply re-derive
+ * the cooldown decision from the existing blob comparison.
+ */
+export async function writeNvdCooldown(store, payload) {
+  try {
+    await store.setJSON(NVD_COOLDOWN_KEY, payload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * v5.2.6: Clear the NVD cooldown marker. Best-effort: a Blobs
+ * write error means the cooldown will eventually expire on its
+ * own (15-min TTL). Never throws.
+ */
+export async function clearNvdCooldown(store) {
+  try {
+    await store.delete(NVD_COOLDOWN_KEY);
+  } catch {
+    // Intentionally swallowed.
+  }
+}
+
+/**
+ * v5.2.6: Pure-JS cooldown-active check. A cooldown is
+ * considered "active" only if `expiresAt` is still in the
+ * future. An expired cooldown is treated as "no cooldown" so
+ * a stuck marker doesn't block refreshes forever.
+ *
+ * Exported via `isNvdCooldownActive` for the acceptance suite.
+ */
+export function isNvdCooldownActive(cooldown, now = new Date()) {
+  if (!cooldown) return false;
+  if (typeof cooldown.expiresAt !== 'string') return false;
+  const t = new Date(cooldown.expiresAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return t > now.getTime();
+}
+
+/**
+ * v5.2.6: Pure-JS helper for the acceptance suite. Builds
+ * the cooldown payload to write to the blob. Exposed so the
+ * shape and TTL math can be verified without touching Blobs.
+ */
+export function buildCooldownPayload(
+  reason = 'NVD rate limit detected',
+  now = new Date(),
+  ttlMs = NVD_COOLDOWN_TTL_MS,
+) {
+  const expiresAt = new Date(now.getTime() + ttlMs);
+  return {
+    setAt: now.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    reason: typeof reason === 'string' ? reason : 'NVD rate limit detected',
   };
 }

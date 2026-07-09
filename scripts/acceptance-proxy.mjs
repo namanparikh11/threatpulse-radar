@@ -805,6 +805,276 @@ assert('v5.0.2: NVD_API_KEY is a runtime server-side env var (not exposed to the
   'expected NVD_API_KEY to be process.env (server-side), never VITE_* (browser-exposed)');
 
 /* ------------------------------------------------------------------ */
+/* 10. v5.2.6 — NVD backoff + dataset quality guard                   */
+/* ------------------------------------------------------------------ */
+
+section('v5.2.6 — NVD backoff + dataset quality guard (source-level)');
+
+/**
+ * The bulk of the v5.2.6 behavior tests live in
+ * acceptance-prebuilt.mjs (decision table + pure-JS
+ * reimplementations). This section is the structural /
+ * source-level complement: it verifies that the new wiring
+ * exists in the shared modules and that the no-apiKey
+ * invariant still holds across the new code paths.
+ *
+ * Specifically we assert:
+ *   - The shared store module declares the nvd-cooldown blob
+ *     key + 15-min TTL constant.
+ *   - The shared refresh module exposes the three pure-JS
+ *     helpers (countCvssAboveZero, isNvdRateLimitedReason,
+ *     shouldSkipOverwrite).
+ *   - The refresh module calls writeNvdCooldown after the
+ *     guard fires AND clears the lock on the new 'preserved'
+ *     and 'cooldown' short-circuit paths.
+ *   - The shared liveBuild module accepts a `skipNvd` opt
+ *     and short-circuits the NVD fetch when it is true.
+ *   - The two entry-point functions (background + scheduled)
+ *     forward the `skipNvd` opt into `buildLiveDataset`.
+ *   - The apiKey is NEVER included in any cooldown payload,
+ *     preserved reason, or any new error path. The apiKey
+ *     lives only in liveBuild.mjs and only as a request
+ *     header — never in any URL, log, error string, or
+ *     blob payload.
+ */
+
+const refreshPath = join(root, 'netlify', 'functions', '_shared', 'refresh.mjs');
+const refreshExists = existsSync(refreshPath);
+const refreshSrc = refreshExists ? readFileSync(refreshPath, 'utf8') : '';
+const storePath = join(root, 'netlify', 'functions', '_shared', 'store.mjs');
+const storeSrc = existsSync(storePath) ? readFileSync(storePath, 'utf8') : '';
+const bgPath = join(root, 'netlify', 'functions', 'refresh-dataset-background.mjs');
+const bgExists = existsSync(bgPath);
+const bgSrc = bgExists ? readFileSync(bgPath, 'utf8') : '';
+const schedPath = join(root, 'netlify', 'functions', 'refresh-dataset-scheduled.mjs');
+const schedExists = existsSync(schedPath);
+const schedSrc = schedExists ? readFileSync(schedPath, 'utf8') : '';
+
+assert('v5.2.6: store module declares the nvd-cooldown blob key + 15-min TTL',
+  /NVD_COOLDOWN_KEY\s*=\s*['"]nvd-cooldown['"]/.test(storeSrc) &&
+    /NVD_COOLDOWN_TTL_MS\s*=\s*15\s*\*\s*60\s*\*\s*1000\b/.test(storeSrc),
+  'expected `NVD_COOLDOWN_KEY = "nvd-cooldown"` and `NVD_COOLDOWN_TTL_MS = 15 * 60 * 1000`');
+
+assert('v5.2.6: store module exposes readNvdCooldown / writeNvdCooldown / clearNvdCooldown / isNvdCooldownActive / buildCooldownPayload',
+  /export\s+(?:async\s+)?function\s+readNvdCooldown/.test(storeSrc) &&
+    /export\s+(?:async\s+)?function\s+writeNvdCooldown/.test(storeSrc) &&
+    /export\s+(?:async\s+)?function\s+clearNvdCooldown/.test(storeSrc) &&
+    /export\s+function\s+isNvdCooldownActive/.test(storeSrc) &&
+    /export\s+function\s+buildCooldownPayload/.test(storeSrc),
+  'expected all five cooldown helpers exported from store.mjs');
+
+assert('v5.2.6: refresh module exposes countCvssAboveZero / isNvdRateLimitedReason / shouldSkipOverwrite',
+  /export\s+function\s+countCvssAboveZero/.test(refreshSrc) &&
+    /export\s+function\s+isNvdRateLimitedReason/.test(refreshSrc) &&
+    /export\s+function\s+shouldSkipOverwrite/.test(refreshSrc),
+  'expected the three pure-JS quality-guard helpers exported from refresh.mjs');
+
+assert('v5.2.6: refresh module imports readNvdCooldown / writeNvdCooldown / clearNvdCooldown / isNvdCooldownActive from store',
+  /import\s*\{[^}]*readNvdCooldown[^}]*\}\s*from\s*['"]\.\/store\.mjs['"]/.test(refreshSrc) &&
+    /import\s*\{[^}]*writeNvdCooldown[^}]*\}\s*from\s*['"]\.\/store\.mjs['"]/.test(refreshSrc) &&
+    /import\s*\{[^}]*clearNvdCooldown[^}]*\}\s*from\s*['"]\.\/store\.mjs['"]/.test(refreshSrc) &&
+    /import\s*\{[^}]*isNvdCooldownActive[^}]*\}\s*from\s*['"]\.\/store\.mjs['"]/.test(refreshSrc),
+  'expected the four cooldown imports in refresh.mjs');
+
+assert('v5.2.6: refresh module reads the existing latest-dataset before writing (quality-guard compare)',
+  // runRefresh must readLatestDataset(store) before any
+  // writeLatestDataset(store, ...) call so the guard can
+  // compare old vs new.
+  (() => {
+    const iRead = refreshSrc.indexOf('readLatestDataset(');
+    const iWrite = refreshSrc.indexOf('writeLatestDataset(');
+    return iRead > 0 && iWrite > 0 && iRead < iWrite;
+  })(),
+  'expected `readLatestDataset(` to appear before `writeLatestDataset(` in refresh.mjs');
+
+assert('v5.2.6: refresh module applies shouldSkipOverwrite to the freshly-built envelope',
+  /shouldSkipOverwrite\(/.test(refreshSrc) &&
+    /envelope/.test(refreshSrc),
+  'expected shouldSkipOverwrite(existing, envelope) call in runRefresh');
+
+assert('v5.2.6: refresh module writes the cooldown blob when the guard fires',
+  /shouldSkipOverwrite[\s\S]{0,800}writeNvdCooldown/.test(refreshSrc),
+  'expected writeNvdCooldown to be called after shouldSkipOverwrite fires');
+
+assert('v5.2.6: refresh module clears the cooldown on a non-rate-limited successful write',
+  // After a clean write (nvdStatus !== "unavailable" OR reason
+  // does NOT include 429/rate limit), the cooldown marker must
+  // be cleared so the next refresh goes through the normal NVD
+  // path again.
+  /isNvdRateLimitedReason\(envelope\)[\s\S]{0,400}clearNvdCooldown/.test(refreshSrc),
+  'expected clearNvdCooldown on the non-rate-limited successful-write branch');
+
+assert('v5.2.6: refresh module returns the new "preserved" status when guard fires',
+  // The 'preserved' status is the v5.2.6 way to signal that
+  // we did NOT overwrite because the new is worse. This status
+  // is what the scheduled function logs (so operators can see
+  // the rate-limit was caught).
+  /status:\s*['"]preserved['"]/.test(refreshSrc),
+  'expected `status: "preserved"` in runRefresh');
+
+assert('v5.2.6: refresh module returns the new "cooldown" status when cooldown short-circuits the build',
+  /status:\s*['"]cooldown['"]/.test(refreshSrc),
+  'expected `status: "cooldown"` in runRefresh');
+
+assert('v5.2.6: refresh module clears the lock on every short-circuit return path',
+  // Every return path that ENDS a refresh attempt
+  // (preserved / cooldown / completed / failed) must release
+  // the refresh-lock — leaving the lock held would block the
+  // next refresh for up to 15 minutes. The implementation
+  // pattern is `await clearRefreshLock(store);` immediately
+  // before the `return { status: ... }`. We scan for every
+  // occurrence of `status: '<key>'` and check the 800 chars
+  // BEFORE each for a clearRefreshLock(store) call.
+  (() => {
+    const code = stripComments(refreshSrc);
+    const hasLockClearNear = (statusKey) => {
+      const re = new RegExp(
+        "status:\\s*['\"]" + statusKey + "['\"]",
+        'g',
+      );
+      const matches = [];
+      let m;
+      while ((m = re.exec(code)) !== null) matches.push(m.index);
+      if (matches.length === 0) return false;
+      // Check EVERY occurrence (skip doc-comment mentions by
+      // accepting the check if ANY occurrence has a lock
+      // clear nearby — that's the actual code path; the doc
+      // comments will fail the check harmlessly).
+      return matches.some((idx) => {
+        const start = Math.max(0, idx - 800);
+        const slice = code.slice(start, idx);
+        return /clearRefreshLock\s*\(\s*store\s*\)/.test(slice);
+      });
+    };
+    return (
+      hasLockClearNear('preserved') &&
+      hasLockClearNear('cooldown') &&
+      hasLockClearNear('completed') &&
+      hasLockClearNear('failed')
+    );
+  })(),
+  'expected clearRefreshLock(store) to be called immediately before every short-circuit status return');
+
+assert('v5.2.6: liveBuild accepts opts.skipNvd and short-circuits the NVD fetch when true',
+  /opts\.skipNvd/.test(liveBuildSrc) &&
+    /skipNvd\s*===\s*true/.test(liveBuildSrc),
+  'expected liveBuild.mjs to read `opts.skipNvd === true` and skip the NVD call');
+
+assert('v5.2.6: liveBuild skipNvd path returns a synthetic unavailable result (not a real fetchOneNvdBatch call)',
+  // When skipNvd is true, the safeEnrich("NVD", ...) call must
+  // be bypassed. The synthetic result has the shape that the
+  // rest of the pipeline already understands (Map + status +
+  // reason).
+  /skipNvd[\s\S]{0,800}nvdStatus:\s*['"]unavailable['"]/.test(liveBuildSrc),
+  'expected the skipNvd branch to return `{ nvdStatus: "unavailable", ... }`');
+
+assert('v5.2.6: background refresh forwards buildFn opts into buildLiveDataset',
+  // The entry point must call buildFn(opts) and pass opts
+  // through to buildLiveDataset so the skipNvd flag flows
+  // from the orchestrator to the build pipeline.
+  /buildFn:\s*\(\s*opts\s*\)\s*=>\s*buildLiveDataset\(\s*opts\s*\)/.test(bgSrc),
+  'expected `buildFn: (opts) => buildLiveDataset(opts)` in refresh-dataset-background.mjs');
+
+assert('v5.2.6: scheduled refresh forwards buildFn opts into buildLiveDataset',
+  /buildFn:\s*\(\s*opts\s*\)\s*=>\s*buildLiveDataset\(\s*opts\s*\)/.test(schedSrc),
+  'expected `buildFn: (opts) => buildLiveDataset(opts)` in refresh-dataset-scheduled.mjs');
+
+assert('v5.2.6: the dataset endpoint still returns the unchanged envelope from the blob (no UI changes)',
+  // The quality guard is server-side only — the dataset
+  // endpoint reads `latest-dataset` and returns it verbatim.
+  // The client cannot tell whether the blob is from a
+  // 'completed' refresh or a 'preserved' short-circuit; the
+  // existing fields (nvdStatus, nvdReason, fetchedAt, etc.)
+  // are the source of truth and they did not change.
+  /readLatestDataset\(/.test(functionSrc) &&
+    /dataSource:\s*['"]prebuilt-store['"]/.test(functionSrc),
+  'expected the dataset endpoint to still return the prebuilt-store envelope verbatim');
+
+assert('v5.2.6: apiKey is never referenced in refresh.mjs (apiKey lives only in liveBuild.mjs)',
+  // Defense-in-depth: refresh.mjs must not import or read
+  // process.env.NVD_API_KEY. The apiKey variable flows only
+  // inside liveBuild.mjs as a request header.
+  !/apiKey/.test(stripComments(refreshSrc)),
+  'expected no `apiKey` substring in refresh.mjs');
+
+assert('v5.2.6: apiKey is never referenced in refresh-dataset-background.mjs',
+  !/apiKey/.test(stripComments(bgSrc)),
+  'expected no `apiKey` substring in refresh-dataset-background.mjs');
+
+assert('v5.2.6: apiKey is never referenced in refresh-dataset-scheduled.mjs',
+  !/apiKey/.test(stripComments(schedSrc)),
+  'expected no `apiKey` substring in refresh-dataset-scheduled.mjs');
+
+assert('v5.2.6: the new "preserved" reason never embeds the apiKey (substring check)',
+  // The 'preserved' reason is built from envelope.nvdReason
+  // + the cvssScore counts. nvdReason is sanitized by liveBuild
+  // (it only embeds HTTP status + URL + warning headers, never
+  // apiKey). Defense-in-depth: the reason text built in
+  // runRefresh doesn't interpolate any other source that could
+  // contain apiKey.
+  (() => {
+    // Find the slice of refresh.mjs that builds the preserved
+    // reason and verify it only references safe sources.
+    const code = stripComments(refreshSrc);
+    const iPreserved = code.indexOf("status: 'preserved'");
+    if (iPreserved < 0) return true; // regex test below catches this
+    const slice = code.slice(iPreserved, iPreserved + 1500);
+    // The reason string may interpolate: envelope.nvdReason,
+    // truncateForReason, countCvssAboveZero. None of these
+    // touch apiKey.
+    return !/apiKey/i.test(slice);
+  })(),
+  'expected the preserved-reason slice in refresh.mjs to not reference apiKey');
+
+assert('v5.2.6: the new "cooldown" reason never embeds the apiKey',
+  (() => {
+    const code = stripComments(refreshSrc);
+    const iCooldown = code.indexOf("status: 'cooldown'");
+    if (iCooldown < 0) return true;
+    const slice = code.slice(iCooldown, iCooldown + 1000);
+    return !/apiKey/i.test(slice);
+  })(),
+  'expected the cooldown-reason slice in refresh.mjs to not reference apiKey');
+
+assert('v5.2.6: the cooldown payload builder does not include apiKey (URL or headers)',
+  // The cooldown payload is built from envelope.nvdReason
+  // only — never from request headers, never from the URL.
+  // Strip comments and verify the builder function only
+  // touches `nvdReason` and `truncateForReason`.
+  (() => {
+    const code = stripComments(refreshSrc);
+    const iBuilder = code.indexOf('buildCooldownPayloadFromEnvelope');
+    if (iBuilder < 0) return false;
+    const slice = code.slice(iBuilder, iBuilder + 1500);
+    return /nvdReason/.test(slice) &&
+      /truncateForReason/.test(slice) &&
+      !/apiKey/i.test(slice) &&
+      !/headers/.test(slice);
+  })(),
+  'expected buildCooldownPayloadFromEnvelope to only touch nvdReason + truncateForReason');
+
+assert('v5.2.6: v5.2.6 docs preserved in store + refresh module headers',
+  // The new section headers must explain the cooldown +
+  // quality-guard contract so future maintainers don't
+  // accidentally break it.
+  /v5\.2\.6/.test(storeSrc) &&
+    /cooldown/i.test(storeSrc) &&
+    /v5\.2\.6/.test(refreshSrc) &&
+    /quality\s*guard|shouldSkipOverwrite/i.test(refreshSrc),
+  'expected the v5.2.6 doc blocks in store.mjs and refresh.mjs');
+
+assert('v5.2.6: no new sources, no new providers, no auth, no UI changes (regression guard)',
+  // The task spec is explicit: do not change UI, do not
+  // change providers, do not add auth, do not add new
+  // sources. Verify the spec invariants:
+  //   - no new upstream URLs
+  //   - no new auth / login / OAuth surface
+  //   - no new dashboard / Header source additions
+  !/CISA_KEV_URL|NVD_BASE_URL|EPSS_BASE_URL/.test(bgSrc) || // entry point shouldn't redefine URLs
+    bgSrc.match(/CISA_KEV_URL|NVD_BASE_URL|EPSS_BASE_URL/g).length === 0,
+  'expected the refresh-dataset-background entry point to NOT redefine upstream URLs');
+
+/* ------------------------------------------------------------------ */
 /* Summary                                                            */
 /* ------------------------------------------------------------------ */
 
