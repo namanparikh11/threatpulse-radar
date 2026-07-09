@@ -617,6 +617,143 @@ assert('v5.0.2: v5.0.1 no-store removal is preserved',
   'expected no-store to remain removed in v5.0.2');
 
 /* ------------------------------------------------------------------ */
+/* 8.6. v5.2.5 — NVD partial-fallback hardening (404 → split)          */
+/* ------------------------------------------------------------------ */
+
+section('v5.2.5 — NVD partial-fallback hardening (404 → split, individual 404 = missing)');
+
+assert('v5.2.5: liveBuild defines a tryBatchWithSplit helper',
+  // The v5.2.5 partial-fallback is implemented as a recursive
+  // wrapper around the existing batch fetch. Look for the
+  // function definition in the shared module.
+  /async\s+function\s+tryBatchWithSplit\s*\(/.test(liveBuildSrc) ||
+    /function\s+tryBatchWithSplit\s*\(/.test(liveBuildSrc),
+  'expected tryBatchWithSplit helper in netlify/functions/_shared/liveBuild.mjs');
+
+assert('v5.2.5: tryBatchWithSplit is recursive (calls itself with depth+1)',
+  // Binary-search splitting: when a batch 404s, the function
+  // must recurse on `chunk.slice(0, mid)` and `chunk.slice(mid)`
+  // with depth incremented. Verify both branches exist.
+  /tryBatchWithSplit\s*\(\s*chunk\.slice\(0\s*,\s*mid\)/.test(liveBuildSrc) &&
+    /tryBatchWithSplit\s*\(\s*chunk\.slice\(mid\)/.test(liveBuildSrc),
+  'expected tryBatchWithSplit to recurse on chunk.slice(0, mid) AND chunk.slice(mid)');
+
+assert('v5.2.5: single-CVE 404 is treated as "missing", not provider failure',
+  // When the recursion bottoms out at chunk.length === 1, the
+  // single-CVE 404 should be reported as `missing: chunk.slice()`
+  // (a soft skip), not re-thrown.
+  /chunk\.length\s*===\s*1[\s\S]{0,400}missing:\s*chunk\.slice\(\)/.test(liveBuildSrc) ||
+    /chunk\.length\s*<=\s*1[\s\S]{0,400}missing:\s*chunk\.slice\(\)/.test(liveBuildSrc),
+  'expected single-CVE 404 path to push into the `missing` array');
+
+assert('v5.2.5: only HTTP 404 triggers split; other statuses bubble up',
+  // 429 / 5xx / network / shape errors must NOT trigger the
+  // recursive split (recursing wouldn't help for upstream-side
+  // failures). The split-on-404 check must extract the status
+  // from the error message.
+  /status\s*===\s*404/.test(liveBuildSrc) &&
+    /extractHttpStatus\s*\(/.test(liveBuildSrc),
+  'expected status === 404 to gate the split branch and extractHttpStatus helper to exist');
+
+assert('v5.2.5: error message includes the safe URL (no apiKey)',
+  // The apiKey is a request HEADER per NVD's official spec —
+  // it must never appear in any URL. The error message must
+  // include the request URL for diagnostics, and that URL
+  // must be the `cveIds=` form (no `apiKey=` query parameter).
+  /url=\$\{url\}/.test(liveBuildSrc) &&
+    !/\?apiKey=/.test(stripComments(liveBuildSrc)) &&
+    !/&apiKey=/.test(stripComments(liveBuildSrc)),
+  'expected error messages to embed url=... and never include apiKey in URL');
+
+assert('v5.2.5: error message includes the HTTP status code',
+  // Look for the `HTTP ${res.status} ${res.statusText}` pattern
+  // in the error throw path. Without this, operators have no
+  // way to tell a 404 from a 503 from a network error.
+  /HTTP\s+\$\{res\.status\}\s+\$\{res\.statusText\}/.test(liveBuildSrc),
+  'expected NVD error to include "HTTP ${res.status} ${res.statusText}"');
+
+assert('v5.2.5: error message captures NVD Warning header if present',
+  // NVD sometimes returns a `Warning` HTTP header on soft
+  // failures. The diagnostic must surface it.
+  /res\.headers\.get\(['"]Warning['"]\)/.test(liveBuildSrc),
+  'expected NVD error to read the Warning response header');
+
+assert('v5.2.5: error message captures NVD body snippet (truncated to 200 chars)',
+  // Body snippet helps operators see what NVD actually said.
+  // It must be truncated so a pathological response can't blow
+  // up the envelope.
+  /bodySnippet/.test(liveBuildSrc) &&
+    /200/.test(liveBuildSrc) &&
+    /res\.text\(\)/.test(liveBuildSrc),
+  'expected NVD error to capture a truncated body snippet via res.text()');
+
+assert('v5.2.5: NVD_PARTIAL_META Symbol is exported from liveBuild',
+  // The partial-failure metadata travels on the Map via a
+  // Symbol property. The Symbol itself must be exported so
+  // the call site in buildLiveDataset and the acceptance
+  // tests can read the metadata consistently.
+  /export\s+const\s+NVD_PARTIAL_META\s*=/.test(liveBuildSrc) &&
+    /Symbol\.for\(/.test(liveBuildSrc),
+  'expected export const NVD_PARTIAL_META = Symbol.for(...) in liveBuild.mjs');
+
+assert('v5.2.5: readNvdPartialMeta helper is exported and reads the Symbol property',
+  // The buildLiveDataset call site uses readNvdPartialMeta to
+  // safely extract partial-failure metadata from the Map
+  // returned by fetchNvdForCves.
+  /export\s+function\s+readNvdPartialMeta\s*\(/.test(liveBuildSrc) &&
+    /map\s*\[\s*NVD_PARTIAL_META\s*\]/.test(liveBuildSrc),
+  'expected readNvdPartialMeta to be exported and to read map[NVD_PARTIAL_META]');
+
+assert('v5.2.5: partial metadata is attached via non-enumerable Object.defineProperty',
+  // The metadata MUST be non-enumerable so it doesn't leak
+  // through JSON.stringify, Object.keys, or Map iteration.
+  /Object\.defineProperty\(\s*merged\s*,\s*NVD_PARTIAL_META/.test(liveBuildSrc) &&
+    /enumerable:\s*false/.test(liveBuildSrc),
+  'expected partial metadata to be attached via Object.defineProperty with enumerable: false');
+
+assert('v5.2.5: buildLiveDataset promotes partial metadata to nvdReason',
+  // When partial metadata is present, the envelope's
+  // `nvdReason` must be replaced with a partial-failure
+  // summary (count of missing + count of batch errors +
+  // first error message). nvdStatus must remain 'nvd' so
+  // the UI contract is preserved (the data IS enriched).
+  /readNvdPartialMeta\s*\(/.test(liveBuildSrc) &&
+    /formatPartialNvdReason\s*\(/.test(liveBuildSrc) &&
+    /nvdStatus\s*=\s*nvdResult\.status/.test(liveBuildSrc),
+  'expected buildLiveDataset to read partial metadata and format it into nvdReason');
+
+assert('v5.2.5: apiKey is never included in any error message or URL',
+  // Defense-in-depth: the apiKey variable must not appear in
+  // any throw-new-Error string, template literal that flows
+  // into a thrown error, or URL. The apiKey is allowed to
+  // appear in:
+  //   - `const apiKey = process.env.NVD_API_KEY`
+  //   - function parameters and call sites (`(chunk, apiKey, depth)`)
+  //   - the headers write (`headers.apiKey = apiKey`)
+  //   - the `concurrency = apiKey ? ... : 1` line
+  // We scan the stripped source for any `apiKey` substring
+  // inside a `new Error(...)` call or inside a template literal
+  // that contains the keyword "url" (which is where the URL
+  // is interpolated into error messages).
+  (() => {
+    const code = stripComments(liveBuildSrc);
+    // 1. No `new Error(...)` call whose string contains apiKey.
+    const errorMatches = code.match(/new\s+Error\([^)]*apiKey[^)]*\)/g) || [];
+    // 2. No `throw new Error(...)` form (rare, but possible).
+    const throwMatches = code.match(/throw\s+new\s+Error\([^)]*apiKey[^)]*\)/g) || [];
+    // 3. No template literal of the form `...${...apiKey...}...`
+    //    (we already check for `?apiKey=` separately).
+    const tmplMatches = code.match(/`[^`]*\$\{[^}]*apiKey[^}]*\}[^`]*`/g) || [];
+    // 4. No URL containing apiKey= query parameter.
+    const urlApiKeyMatches = code.match(/[?&]apiKey=/g) || [];
+    return errorMatches.length === 0 &&
+      throwMatches.length === 0 &&
+      tmplMatches.length === 0 &&
+      urlApiKeyMatches.length === 0;
+  })(),
+  'expected apiKey to never appear inside any Error string, template literal, or URL query');
+
+/* ------------------------------------------------------------------ */
 /* 9. Cache / fallback invariants are preserved through v5            */
 /* ------------------------------------------------------------------ */
 

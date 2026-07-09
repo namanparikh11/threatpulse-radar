@@ -706,7 +706,12 @@ assert('RefreshInProgressBanner dismisses on × click (no auto-dismiss timer)',
 section('Honesty contract — provider failures + dataSource tagging');
 
 assert('the liveBuild module still returns nvdStatus on success',
-  /nvdStatus:/.test(liveBuildSrc) && /epssStatus:/.test(liveBuildSrc),
+  // v5.2.5: the liveBuild envelope uses shorthand `nvdStatus,`
+  // (no explicit `: nvdResult.status`) because `nvdStatus` is
+  // already assigned to a local variable in the partial-failure
+  // branch. Accept either the explicit-colon form or the
+  // shorthand form so future refactors don't regress.
+  /nvdStatus[\s,:]/.test(liveBuildSrc) && /epssStatus[\s,:]/.test(liveBuildSrc),
   'expected the liveBuild module to return nvdStatus and epssStatus');
 
 assert('the liveBuild module preserves the concise 429 reason (v5.0.2)',

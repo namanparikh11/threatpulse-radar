@@ -37,6 +37,24 @@ export const CHUNK_SIZE = 100;
 export const PER_REQUEST_TIMEOUT_MS = 8_000;
 export const OVERALL_BUDGET_MS = 24_000;
 
+/**
+ * v5.2.5: Non-enumerable Symbol used to attach partial-failure
+ * metadata to the Map returned by `fetchNvdForCves`. The Map
+ * itself is still iterated / serialized normally; the Symbol
+ * property survives property access (`map[SYMBOL]`) but is
+ * hidden from JSON.stringify (so it never ships to the
+ * browser) and from Map iteration (so it never mixes with
+ * the CVE→score entries).
+ *
+ * The shape of the attached value:
+ *   {
+ *     missingCount: number,   // CVEs that 404'd as individual lookups
+ *     errorCount:   number,   // chunks that hit a non-404 NVD error
+ *     firstReason:  string|null, // first error message (truncated)
+ *   }
+ */
+export const NVD_PARTIAL_META = Symbol.for('threatpulse.nvd.partialMeta');
+
 // ---------------------------------------------------------------------------
 // Upstream payload shapes (only the fields we read).
 // ---------------------------------------------------------------------------
@@ -87,6 +105,19 @@ export async function buildLiveDataset(opts = {}) {
     safeEnrich('EPSS', () => fetchEpssForCves(cveIds), budgetRemaining()),
   ]);
 
+  // v5.2.5: detect partial-failure metadata attached to the
+  // NVD Map by `fetchNvdForCves` (Symbol-keyed property; never
+  // serialized, never sent to the client). When present, we
+  // keep `nvdStatus` as 'nvd' (the data IS enriched for the
+  // CVEs that exist in NVD — preserves the UI contract) and
+  // upgrade `nvdReason` to a partial-failure summary so the
+  // operator / dashboard can see how many CVEs were dropped.
+  const nvdPartialMeta = readNvdPartialMeta(nvdResult.map);
+  const nvdStatus = nvdResult.status;
+  const nvdReason = nvdPartialMeta
+    ? formatPartialNvdReason(nvdPartialMeta)
+    : nvdResult.reason;
+
   // ---- 3. Enrich in the same order as the browser-side code (NVD then EPSS) ----
   const enriched = enrichWithEpss(
     enrichWithNvd(cisaRecords, nvdResult.map),
@@ -98,11 +129,43 @@ export async function buildLiveDataset(opts = {}) {
     source: 'merged',
     fetchedAt: new Date().toISOString(),
     mode: 'live',
-    nvdStatus: nvdResult.status,
-    nvdReason: nvdResult.reason,
+    nvdStatus,
+    nvdReason,
     epssStatus: epssResult.status,
     epssReason: epssResult.reason,
   };
+}
+
+/**
+ * v5.2.5: Build a user-facing partial-failure reason for the
+ * NVD enrichment step. Kept concise (≤ ~280 chars) because
+ * `nvdReason` is shipped in the response body. Includes:
+ *   - count of CVEs that 404'd as individual lookups
+ *     ("missing from NVD")
+ *   - count of batches that hit a non-404 NVD error
+ *   - the first truncated error message (status code + URL +
+ *     body snippet — never the apiKey)
+ */
+function formatPartialNvdReason(meta) {
+  const parts = [];
+  if (meta.missingCount > 0) {
+    parts.push(
+      `${meta.missingCount} CVE${meta.missingCount === 1 ? '' : 's'} ` +
+      `missing from NVD`,
+    );
+  }
+  if (meta.errorCount > 0) {
+    parts.push(
+      `${meta.errorCount} batch error${meta.errorCount === 1 ? '' : 's'}`,
+    );
+  }
+  let reason = `NVD partial enrichment: ${parts.join('; ')}.`;
+  if (meta.firstReason) {
+    reason += ` First issue: ${meta.firstReason}`;
+  }
+  // Hard cap so a pathological error string can't blow up the
+  // response envelope.
+  return reason.length > 320 ? reason.slice(0, 319) + '…' : reason;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,24 +332,43 @@ async function fetchNvdForCves(cveIds) {
     : undefined;
   const concurrency = apiKey ? chunks.length : 1;
 
+  // v5.2.5: each chunk is processed by `tryBatchWithSplit`,
+  // which recursively halves a failing batch on HTTP 404 to
+  // isolate the offending CVE(s). Per-chunk partial failures
+  // return a `{ found, missing, errors }` envelope instead
+  // of throwing.
   const results = await settledAll(
-    chunks.map((chunk) => () => fetchOneNvdChunk(chunk, apiKey)),
+    chunks.map((chunk) => () => tryBatchWithSplit(chunk, apiKey, 0)),
     concurrency,
   );
 
   const merged = new Map();
-  let allOk = true;
+  let totalOk = true;
+  let totalMissing = 0;
+  const reasons = [];
+
   for (const r of results) {
     if (r.status === 'rejected') {
-      allOk = false;
+      totalOk = false;
+      reasons.push(
+        r.reason instanceof Error ? r.reason.message : String(r.reason),
+      );
       continue;
     }
-    for (const [cve, score] of r.value) merged.set(cve, score);
+    const v = r.value;
+    for (const [cve, score] of v.found) merged.set(cve, score);
+    totalMissing += v.missing.length;
+    if (v.errors.length > 0) {
+      totalOk = false;
+      reasons.push(...v.errors);
+    }
   }
-  if (!allOk && merged.size === 0) {
-    const reasons = results
-      .filter((r) => r.status === 'rejected')
-      .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)));
+
+  // All-failure path: nothing came back AND at least one chunk
+  // surfaced an error. Preserve the v5.0.2 429-detection and
+  // de-duplication behavior so existing diagnostics and tests
+  // still match.
+  if (!totalOk && merged.size === 0) {
     const allRateLimited = reasons.length > 0 && reasons.every(
       (msg) => /HTTP 429/.test(msg) || /\b429\b/.test(msg),
     );
@@ -302,10 +384,133 @@ async function fetchNvdForCves(cveIds) {
       `NVD fetch failed for all ${chunks.length} chunk(s): ${uniqueReasons.join('; ')}`,
     );
   }
+
+  // Partial-failure path: we DID get some data back. Mark the
+  // returned Map with the NVD_PARTIAL_META Symbol so the
+  // caller (`safeEnrich`) can attach a partial-failure reason
+  // to the envelope without breaking the existing "nvd status
+  // means enriched" UI contract.
+  if (!totalOk || totalMissing > 0) {
+    const uniqueReasons = Array.from(new Set(reasons));
+    const firstReason = uniqueReasons[0]
+      ? truncateForReason(uniqueReasons[0], 240)
+      : null;
+    Object.defineProperty(merged, NVD_PARTIAL_META, {
+      value: {
+        missingCount: totalMissing,
+        errorCount: uniqueReasons.length,
+        firstReason,
+      },
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
+
   return merged;
 }
 
-async function fetchOneNvdChunk(cveChunk, apiKey) {
+/**
+ * v5.2.5: Recursive partial-fallback wrapper around
+ * `fetchOneNvdBatch`. Returns a structured envelope:
+ *
+ *   { found: Map<cveId, NvdScore>,
+ *     missing: string[],       // CVEs that 404'd as individuals
+ *     errors:  string[] }      // non-404 batch failures
+ *
+ * On the happy path (no error), `found` holds the enrichment
+ * map and `missing` / `errors` are empty.
+ *
+ * On a non-2xx response:
+ *   - HTTP 404 + chunk.length > 1  → split in half and recurse.
+ *     NVD's batch endpoint sometimes rejects a whole batch
+ *     when even one CVE ID is unrecognized. Binary-searching
+ *     isolates the bad CVE(s); a single-CVE 404 is treated as
+ *     "this CVE isn't in NVD" and silently skipped (it stays
+ *     at CISA-derived severity).
+ *   - HTTP 404 + chunk.length == 1 → treat as `missing`.
+ *   - Any other status (429 / 5xx / network) → record the
+ *     diagnostic message and do NOT recurse; the parent chunk
+ *     loop surfaces the error in the partial-failure metadata
+ *     or, if EVERY chunk failed, in the all-failure throw.
+ *
+ * No recursion depth limit is required: the tree depth is
+ * bounded by `Math.ceil(log2(chunk.length))` (≈ 7 for a
+ * 100-CVE chunk), so worst-case work is one request per CVE.
+ */
+async function tryBatchWithSplit(chunk, apiKey, depth) {
+  try {
+    const map = await fetchOneNvdBatch(chunk, apiKey);
+    return { found: map, missing: [], errors: [], depth };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const status = extractHttpStatus(msg);
+
+    // Only split on 404 — every other failure mode (429 rate
+    // limit, 5xx transient, network error, shape mismatch) is
+    // upstream-side and recursing wouldn't help.
+    if (status === 404) {
+      if (chunk.length === 1) {
+        // Single-CVE 404 = this CVE isn't in NVD. Just skip it.
+        return { found: new Map(), missing: chunk.slice(), errors: [], depth };
+      }
+      const mid = Math.ceil(chunk.length / 2);
+      const left = await tryBatchWithSplit(chunk.slice(0, mid), apiKey, depth + 1);
+      const right = await tryBatchWithSplit(chunk.slice(mid), apiKey, depth + 1);
+      return {
+        found: mergeMaps(left.found, right.found),
+        missing: [...left.missing, ...right.missing],
+        errors: [...left.errors, ...right.errors],
+        depth: Math.max(left.depth, right.depth),
+      };
+    }
+
+    // Non-404 failure. Record the diagnostic and bubble up so
+    // the parent chunk loop can decide whether this is the
+    // "all chunks failed" case or a partial one.
+    throw err;
+  }
+}
+
+function mergeMaps(a, b) {
+  const merged = new Map(a);
+  for (const [k, v] of b) merged.set(k, v);
+  return merged;
+}
+
+function extractHttpStatus(msg) {
+  if (typeof msg !== 'string') return null;
+  const m = /HTTP\s+(\d{3})\b/.exec(msg);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function truncateForReason(s, max) {
+  if (typeof s !== 'string') return null;
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + '…';
+}
+
+/**
+ * v5.2.5: Read the partial-failure metadata that
+ * `fetchNvdForCves` attaches via the NVD_PARTIAL_META Symbol.
+ * Returns `null` if no partial-failure metadata is present
+ * (i.e. either full success or full failure — the latter
+ * path throws and never returns a Map to inspect).
+ *
+ * Kept as a small standalone helper so the safeEnrich call
+ * site reads top-down and so the acceptance suite can verify
+ * the metadata is reachable without going through fetch.
+ */
+export function readNvdPartialMeta(map) {
+  if (!map) return null;
+  const meta = map[NVD_PARTIAL_META];
+  if (!meta || typeof meta !== 'object') return null;
+  return meta;
+}
+
+async function fetchOneNvdBatch(cveChunk, apiKey) {
   // v5.2.3: NVD CVE 2.0 uses `cveIds=` (plural) for a
   // comma-separated list of CVE IDs in a single request,
   // max 100 per request. The older `cveId=` (singular)
@@ -314,21 +519,86 @@ async function fetchOneNvdChunk(cveChunk, apiKey) {
   // prebuilt-dataset deploy preview caught this — every
   // chunk was returning "HTTP 404 Not Found".
   //
+  // v5.2.5: even with the correct `?cveIds=` parameter,
+  // NVD can still return HTTP 404 for a batch when one of
+  // the CVE IDs is unknown to NVD (e.g. a CVE that CISA
+  // added to KEV before NVD published the record). The
+  // outer `tryBatchWithSplit` handles that by recursively
+  // halving the failing chunk and isolating the bad CVE(s)
+  // as individual lookups; individual 404s become "missing
+  // from NVD", not provider failure.
+  //
   // v5.0.3 (unchanged): the optional `apiKey` is passed as
   // a request HEADER per NVD's official CVE 2.0 spec, NOT
-  // as a URL query parameter. Server-side only.
+  // as a URL query parameter. Server-side only. The apiKey
+  // is never included in the request URL, the response body,
+  // logs, or the error message returned to the caller.
   const url = `${NVD_BASE_URL}?cveIds=${encodeURIComponent(cveChunk.join(','))}`;
   const headers = { Accept: 'application/json' };
   if (apiKey) headers.apiKey = apiKey;
-  const res = await withTimeout(
-    fetch(url, { headers, cache: 'no-store' }),
-    PER_REQUEST_TIMEOUT_MS,
-    `NVD chunk fetch (${cveChunk.length} CVEs)`,
-  );
-  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+
+  let res;
+  try {
+    res = await withTimeout(
+      fetch(url, { headers, cache: 'no-store' }),
+      PER_REQUEST_TIMEOUT_MS,
+      `NVD chunk fetch (${cveChunk.length} CVEs)`,
+    );
+  } catch (err) {
+    // Network / timeout / abort. Include the safe URL (no
+    // apiKey; apiKey is a header, not a URL param) so the
+    // caller can reproduce the request from the error.
+    throw new Error(
+      `NVD chunk fetch (${cveChunk.length} CVEs) failed: ` +
+      `${err instanceof Error ? err.message : String(err)} | url=${url}`,
+    );
+  }
+
+  if (!res.ok) {
+    // Capture safe diagnostics: HTTP status, NVD's `Warning`
+    // header, the JSON `message` field if present, and a
+    // truncated body snippet. The URL is always safe to log
+    // (it contains only the public CVE IDs).
+    const warning = res.headers.get('Warning') || '';
+    const headerMsg = res.headers.get('X-Error-Message') || '';
+    let bodySnippet = '';
+    try {
+      const text = await res.text();
+      const trimmed = text.replace(/\s+/g, ' ').trim();
+      bodySnippet = trimmed.length > 200
+        ? trimmed.slice(0, 199) + '…'
+        : trimmed;
+    } catch {
+      // Body unreadable — leave empty.
+    }
+    let jsonMessage = '';
+    try {
+      // Some NVD error responses include a JSON `message` field.
+      // Try to extract it without leaking the whole body twice.
+      const parsed = JSON.parse(bodySnippet);
+      if (parsed && typeof parsed.message === 'string') {
+        jsonMessage = parsed.message;
+      }
+    } catch {
+      // Not JSON — ignore.
+    }
+    const parts = [`HTTP ${res.status} ${res.statusText}`];
+    parts.push(`url=${url}`);
+    if (warning) parts.push(`warning=${warning}`);
+    if (headerMsg) parts.push(`header_message=${headerMsg}`);
+    if (jsonMessage) parts.push(`nvd_message=${jsonMessage}`);
+    if (bodySnippet) parts.push(`body=${bodySnippet}`);
+    throw new Error(
+      `NVD chunk fetch (${cveChunk.length} CVEs) failed: ${parts.join(' | ')}`,
+    );
+  }
+
   const body = await res.json();
   if (!body || !Array.isArray(body.vulnerabilities)) {
-    throw new Error('NVD response has unexpected shape (no vulnerabilities array)');
+    throw new Error(
+      `NVD chunk fetch (${cveChunk.length} CVEs) returned unexpected shape ` +
+      `(no vulnerabilities array) | url=${url}`,
+    );
   }
   return body.vulnerabilities
     .map(parseNvdItem)
