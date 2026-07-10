@@ -733,8 +733,15 @@ assert('the liveBuild module preserves the concise 429 reason (v5.0.2)',
 assert('the dataset function preserves FetchResult fields through the blob envelope',
   // The blob-hit response spreads the prebuilt envelope —
   // nvdStatus / epssStatus / fetchedAt / mode all survive.
-  /\.\.\.\s*prebuilt/.test(datasetSrc),
-  'expected `...prebuilt` to spread the cached envelope');
+  // v5.4.2: the spread goes through a `publicEnvelope()`
+  // helper that strips the internal `lastRefreshAttemptAt` /
+  // `lastRefreshFailure` fields before sending the response
+  // to the visitor. Accept either pattern (with or without
+  // the publicEnvelope wrapper) so this test survives the
+  // v5.4.2 metadata-strip addition.
+  /\.\.\.\s*prebuilt/.test(datasetSrc) ||
+    /publicEnvelope\(\s*prebuilt\s*\)/.test(datasetSrc),
+  'expected `...prebuilt` to spread the cached envelope (or `publicEnvelope(prebuilt)` for the v5.4.2 metadata-strip variant)');
 
 assert('the dashboard never claims NVD enriched if the stored dataset has NVD unavailable',
   // The NvdUnavailableBanner only renders when

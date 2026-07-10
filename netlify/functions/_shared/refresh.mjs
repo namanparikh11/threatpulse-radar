@@ -62,18 +62,52 @@
  *                    discard). `reason` explains why.
  *     'in-progress'— another refresh already holds the lock.
  *     'failed'     — build threw or returned a non-live result.
+ *
+ * v5.4.2 — Last-known-good dataset serving:
+ *   The v5.2.6 quality guard was narrow — it fired only on
+ *   rate-limit downgrades. A real production incident
+ *   showed this is not enough: a scheduled refresh
+ *   timed out against NVD, and the guard let the
+ *   timeout-degraded envelope overwrite the existing
+ *   NVD-enriched blob. Visitors saw CVSS scores drop to 0
+ *   and a timeout banner appear.
+ *
+ *   Broader rule: any NVD-unavailable refresh with a good
+ *   existing blob is preserved. The new envelope is
+ *   discarded, the existing blob continues to serve, and
+ *   the public UI keeps showing "NVD: enriched" until a
+ *   genuinely better (NVD-enriched) build arrives. The
+ *   internal `lastRefreshFailure` metadata records the
+ *   precise reason (timeout / 429 / 5xx / network /
+ *   cooldown-skip) so operators can see why a refresh
+ *   didn't update the blob, but that field is stripped
+ *   from the public response.
+ *
+ *   The guard still preserves the v5.2.6 contracts:
+ *     - the bootstrap path (no existing blob) still writes
+ *       the (possibly degraded) envelope, so visitors on a
+ *       fresh deploy have something to look at;
+ *     - the 'completed' / 'preserved' / 'cooldown' /
+ *       'in-progress' / 'failed' status set is unchanged;
+ *     - the refresh-lock + cooldown short-circuits are
+ *       unchanged;
+ *     - `forceRefresh: true` and `manualRefresh()` still
+ *       call this orchestrator, so the guard fires on
+ *       both the manual and scheduled paths.
  */
 import {
   clearNvdCooldown,
   clearRefreshLock,
   isNvdCooldownActive,
   isRefreshLocked,
+  LATEST_DATASET_KEY,
   readLatestDataset,
   readNvdCooldown,
   REFRESH_LOCK_TTL_MS,
   writeLatestDataset,
   writeNvdCooldown,
 } from './store.mjs';
+import { readNvdOutcome } from './liveBuild.mjs';
 
 /**
  * Default envelope shape written to the latest-dataset blob on
@@ -117,6 +151,11 @@ export function countCvssAboveZero(envelope) {
  *
  * Exported so the acceptance suite can verify the predicate
  * without going through `runRefresh`.
+ *
+ * v5.4.2: retained for backwards compatibility (the
+ * acceptance-prebuilt suite still tests the narrow
+ * rate-limit-only check). The broader rule that drives the
+ * production guard is `isNvdTransientOrSkipped` below.
  */
 export function isNvdRateLimitedReason(envelope) {
   if (!envelope) return false;
@@ -126,31 +165,147 @@ export function isNvdRateLimitedReason(envelope) {
 }
 
 /**
- * v5.2.6: Decide whether to skip overwriting the existing
- * `latest-dataset` blob with a freshly-built one. The guard is
- * intentionally narrow — it only fires when:
+ * v5.4.2: Broader predicate — returns `true` iff the
+ * envelope's NVD enrichment failed in a way that should
+ * NOT overwrite a good existing blob. Covers every
+ * transient failure mode the live-build pipeline can
+ * produce:
+ *
+ *   - rate-limited  (HTTP 429 from NVD)
+ *   - timed-out     (per-request or overall budget exhausted)
+ *   - http-error    (HTTP 5xx or other non-2xx upstream)
+ *   - network-error (DNS / connection refused / TLS / etc.)
+ *   - cooldown-skipped (orchestrator asked us to skip the
+ *                       NVD fetch because the cooldown is
+ *                       active and no good existing blob is
+ *                       present — the synthetic 'cooldown
+ *                       active' envelope should still be
+ *                       discarded if a good blob exists)
+ *
+ * The check is name-based for rate-limit / timeout / http-
+ * error (matching the stable reason strings produced by
+ * `liveBuild.mjs`) and Symbol-based for cooldown-skipped
+ * (the outcome attached via `NVD_OUTCOME`).
+ *
+ * Exported for the acceptance suite.
+ */
+export function isNvdTransientOrSkipped(envelope) {
+  if (!envelope) return false;
+  if (envelope.nvdStatus !== 'unavailable') return false;
+  const outcome = readNvdOutcome(envelope);
+  if (outcome === 'cooldown-skipped') return true;
+  if (typeof envelope.nvdReason !== 'string') return false;
+  if (/429|rate\s*limit/i.test(envelope.nvdReason)) return true;
+  if (/timed\s*out|after\s+\d+\s*ms/i.test(envelope.nvdReason)) return true;
+  if (/HTTP\s+5\d\d/i.test(envelope.nvdReason)) return true;
+  if (/fetch\s*failed|fetch\s*error|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN/i.test(envelope.nvdReason)) {
+    return true;
+  }
+  // Unknown failure type — still treat as transient to be
+  // safe (don't overwrite a good blob with an unknown-bad
+  // blob). The orchestrator logs the raw reason via
+  // lastRefreshFailure so the operator can investigate.
+  return true;
+}
+
+/**
+ * v5.4.2: Decide whether to skip overwriting the existing
+ * `latest-dataset` blob with a freshly-built one. The guard
+ * is intentionally simple — it fires whenever:
  *
  *   1. An existing blob IS present (nothing to preserve
  *      against on a fresh deploy).
- *   2. The new envelope is NVD-rate-limited (per
- *      `isNvdRateLimitedReason`).
+ *   2. The new envelope's NVD status is 'unavailable' (i.e.
+ *      the new build lost NVD enrichment for any reason —
+ *      timeout, 429, 5xx, network, or cooldown-skip).
  *   3. The existing blob has NVD enriched (`nvdStatus: 'nvd'`)
- *      AND has at least as many CVSS-positive records as the
- *      new one. "At least as many" (>=, not >) is intentional:
- *      an equal or higher count means we'd be replacing a
- *      good-or-better blob with a worse one.
+ *      AND has at least one CVSS-positive record.
  *
- * In all other cases (no existing blob, new is fine, new is
- * enriched, new has more records, etc.) the guard returns
- * false and the write proceeds.
+ * In all other cases (no existing blob, new is enriched,
+ * old is also degraded, etc.) the guard returns false and
+ * the write proceeds.
+ *
+ * The v5.2.6 guard additionally required the new to be
+ * rate-limit-classified AND the old to have at least as
+ * many CVSS-positive records as the new. v5.4.2 broadens
+ * both conditions: any NVD-unavailable new is a downgrade
+ * when a good old exists, and a single CVSS-positive record
+ * in the old is enough to count as "good" (the rest are
+ * CISA-derived severity, which is preserved either way).
  */
 export function shouldSkipOverwrite(oldEnvelope, newEnvelope) {
   if (!oldEnvelope) return false;
   if (!newEnvelope) return false;
-  if (!isNvdRateLimitedReason(newEnvelope)) return false;
+  if (newEnvelope.nvdStatus !== 'unavailable') return false;
   if (oldEnvelope.nvdStatus !== 'nvd') return false;
-  return countCvssAboveZero(oldEnvelope) >= countCvssAboveZero(newEnvelope);
+  if (countCvssAboveZero(oldEnvelope) === 0) return false;
+  return true;
 }
+
+/**
+ * v5.4.2: Build the internal `lastRefreshFailure` payload
+ * to merge into the blob. Exported so the acceptance suite
+ * can verify the shape and the truncation rules without
+ * going through the orchestrator.
+ *
+ * Shape:
+ *   {
+ *     type: 'rate-limited' | 'timed-out' | 'http-error' |
+ *           'network-error' | 'cooldown-skipped' |
+ *           'preserved' | 'build-error' | 'unknown',
+ *     reason: string,  // truncated to ~200 chars
+ *     at: ISO string,  // when the failure was recorded
+ *   }
+ *
+ * `type` is derived from the envelope's NVD outcome (via
+ * `readNvdOutcome`) when one is present, otherwise from a
+ * short keyword check on the reason. `reason` is the
+ * envelope's `nvdReason` truncated for safety.
+ */
+export function buildRefreshFailurePayload(envelope, now = new Date()) {
+  const rawReason =
+    envelope && typeof envelope.nvdReason === 'string'
+      ? envelope.nvdReason
+      : 'unknown reason';
+  const outcome = readNvdOutcome(envelope);
+  let type = outcome;
+  if (!type || type === 'enriched') {
+    // Fall back to keyword classification for envelopes
+    // produced before v5.4.2 (no NVD_OUTCOME attached).
+    if (/429|rate\s*limit/i.test(rawReason)) type = 'rate-limited';
+    else if (/timed\s*out|after\s+\d+\s*ms/i.test(rawReason)) type = 'timed-out';
+    else if (/HTTP\s+5\d\d/i.test(rawReason)) type = 'http-error';
+    else if (/cooldown\s*active/i.test(rawReason)) type = 'cooldown-skipped';
+    else if (/fetch\s*failed|fetch\s*error|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN/i.test(rawReason)) {
+      type = 'network-error';
+    } else {
+      type = 'unknown';
+    }
+  }
+  return {
+    type,
+    reason: truncateForFailureReason(rawReason, 200),
+    at: now.toISOString(),
+  };
+}
+
+function truncateForFailureReason(s, max) {
+  if (typeof s !== 'string') return 'unknown reason';
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + '\u2026';
+}
+
+/**
+ * v5.4.2: Internal fields that the orchestrator writes to
+ * the blob alongside the public envelope, and that
+ * `dataset.mjs` strips before sending the response to the
+ * visitor. Exposed as a single Set so the strip logic in
+ * `dataset.mjs` can iterate the same source of truth.
+ */
+export const INTERNAL_BLOB_FIELDS = new Set([
+  'lastRefreshAttemptAt',
+  'lastRefreshFailure',
+]);
 
 /**
  * Run a refresh: acquire the lock, run the build (via
@@ -231,7 +386,24 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
   //   in doing work (CISA + NVD + EPSS) that the quality guard
   //   would discard. The existing blob continues to serve
   //   visitors. ----
+  //
+  //   v5.4.2: still update the internal `lastRefreshAttemptAt`
+  //   / `lastRefreshFailure` metadata on the existing blob so
+  //   operators can see why the latest attempt was a no-op.
   if (cooldownActive && existingIsGood) {
+    await writeInternalMetadata(
+      store,
+      buildRefreshFailurePayload(
+        {
+          nvdStatus: 'unavailable',
+          nvdReason:
+            (cooldown && cooldown.reason) ||
+            'NVD cooldown active; existing blob preserved.',
+        },
+        now,
+      ),
+      now,
+    );
     await clearRefreshLock(store);
     return {
       status: 'cooldown',
@@ -266,7 +438,19 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
   }
 
   // ---- 6. Build failure → release lock, leave existing blob ----
+  //
+  //   v5.4.2: still update the internal metadata so operators
+  //   can see that a refresh was attempted and what failed.
   if (buildError) {
+    await writeInternalMetadata(
+      store,
+      {
+        type: 'build-error',
+        reason: truncateForFailureReason(buildError.message, 200),
+        at: now.toISOString(),
+      },
+      now,
+    );
     await clearRefreshLock(store);
     return {
       status: 'failed',
@@ -277,12 +461,11 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
 
   const envelope = envelopeFor(result);
 
-  // ---- 7. v5.2.6: Quality guard — refuse to overwrite a better
-  //   existing blob with a rate-limited downgrade. The guard
-  //   intentionally only fires on NVD-rate-limit downgrades;
-  //   legitimate growth (new has more cvssScore>0 records,
-  //   new is NVD-enriched, no existing blob, etc.) falls
-  //   through to the write. ----
+  // ---- 7. v5.4.2: Quality guard — refuse to overwrite a good
+  //   existing blob with any NVD-unavailable downgrade. The
+  //   guard fires for every transient NVD failure mode
+  //   (rate-limit, timeout, 5xx, network, cooldown-skip) —
+  //   see `shouldSkipOverwrite` for the predicate. ----
   if (shouldSkipOverwrite(existing, envelope)) {
     // Mark the cooldown so the next refresh short-circuits
     // the doomed NVD fetch and goes straight to 'cooldown'.
@@ -290,11 +473,20 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
       store,
       buildCooldownPayloadFromEnvelope(envelope, now),
     );
+    // v5.4.2: update the internal metadata on the existing
+    // blob so operators can see why the latest refresh
+    // didn't update the public dataset.
+    await writeInternalMetadata(
+      store,
+      buildRefreshFailurePayload(envelope, now),
+      now,
+    );
+    const outcome = readNvdOutcome(envelope) || 'unavailable';
     await clearRefreshLock(store);
     return {
       status: 'preserved',
       reason:
-        `NVD rate-limit downgrade detected (${truncateForReason(
+        `NVD ${outcome} downgrade detected (${truncateForReason(
           envelope.nvdReason || 'unknown',
           160,
         )}); ` +
@@ -308,7 +500,16 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
   // ---- 8. Write the envelope. Clear the cooldown marker on
   //   a non-rate-limited success so the next refresh goes
   //   through the normal NVD path again. ----
-  await writeLatestDataset(store, envelope);
+  //
+  //   v5.4.2: stamp `lastRefreshAttemptAt` and clear
+  //   `lastRefreshFailure` on the written envelope. The
+  //   metadata is internal — `dataset.mjs` strips it from
+  //   the public response.
+  await writeLatestDataset(store, {
+    ...envelope,
+    lastRefreshAttemptAt: now.toISOString(),
+    lastRefreshFailure: null,
+  });
   if (!isNvdRateLimitedReason(envelope)) {
     await clearNvdCooldown(store);
   } else {
@@ -328,6 +529,38 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
     fetchedAt: envelope.fetchedAt,
     refreshInProgress: false,
   };
+}
+
+/**
+ * v5.4.2: Update the internal metadata fields on the
+ * existing `latest-dataset` blob without touching the
+ * public envelope. Used by the 'cooldown', 'failed', and
+ * 'preserved' paths so operators can see when the latest
+ * refresh was attempted and what blocked the write.
+ *
+ * No-op when there's no existing blob (nothing to attach
+ * the metadata to — the first refresh failure on a fresh
+ * deploy simply has no record).
+ */
+async function writeInternalMetadata(store, failurePayload, now) {
+  if (!store) return false;
+  let existing;
+  try {
+    existing = await readLatestDataset(store);
+  } catch {
+    return false;
+  }
+  if (!existing) return false;
+  try {
+    await store.setJSON(LATEST_DATASET_KEY, {
+      ...existing,
+      lastRefreshAttemptAt: now.toISOString(),
+      lastRefreshFailure: failurePayload || null,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -382,8 +615,9 @@ function truncateForReason(s, max) {
  *   - If `build` returns a non-live result or throws, returns
  *     `{ status: 'failed', ... }`.
  *   - If the freshly-built envelope should NOT overwrite the
- *     existing blob per the v5.2.6 quality guard, returns
- *     `{ status: 'preserved', reason }`.
+ *     existing blob per the v5.4.2 quality guard (any
+ *     NVD-unavailable downgrade against a good existing
+ *     blob), returns `{ status: 'preserved', reason }`.
  *   - Otherwise returns `{ status: 'completed', fetchedAt }`.
  *
  * `writeResult` is a callback `(envelope) => void` so the
@@ -436,10 +670,11 @@ export function decideRefresh({
   if (shouldSkipOverwrite(existingBlob, buildResult)) {
     const oldCount = countCvssAboveZero(existingBlob);
     const newCount = countCvssAboveZero(buildResult);
+    const outcome = readNvdOutcome(buildResult) || 'unavailable';
     return {
       status: 'preserved',
       reason:
-        `NVD rate-limit downgrade detected; ` +
+        `NVD ${outcome} downgrade detected; ` +
         `existing blob preserved (${oldCount} vs ${newCount} CVSS-positive records).`,
       refreshInProgress: false,
     };

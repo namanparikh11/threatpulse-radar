@@ -34,9 +34,6 @@
  *      No auto-reload, no auto-replace — the v5.1 UX contract is
  *      preserved end-to-end.
  *
- * Response shape (200 — refresh completed in the same invocation):
- *   { status: 'completed', fetchedAt: string (ISO), refreshInProgress: false }
- *
  * Response shape (202 — refresh started, will complete in the background):
  *   { status: 'started', fetchedAt: null, refreshInProgress: true }
  *
@@ -45,6 +42,25 @@
  *
  * Response shape (500 — orchestrator failed to start):
  *   { status: 'failed', reason: string, refreshInProgress: false }
+ *
+ * v5.4.2 — Last-known-good dataset serving:
+ *   The fire-and-forget pattern is preserved (the visitor's
+ *   browser has a 15-second fetch timeout, but the build
+ *   can take 30–60 s, so we cannot block on the build in
+ *   the response). The orchestrator's outcome is recorded
+ *   in two operator-facing places:
+ *     - console.log of the final result (visible in the
+ *       Netlify function logs, alongside the scheduled
+ *       function's existing log line);
+ *     - the internal `lastRefreshAttemptAt` /
+ *       `lastRefreshFailure` metadata on the existing blob
+ *       (visible to any operator who inspects the Blobs
+ *       store directly).
+ *   The visitor never sees transient NVD failure details —
+ *   the public `nvdStatus` stays "nvd" as long as a good
+ *   blob exists, and the only new dataset banner they
+ *   see is the existing v5.1 "New dataset available" one
+ *   (which only fires when the build wrote a new blob).
  */
 
 import {
@@ -69,39 +85,10 @@ export default async (request, context) => {
     });
   }
 
-  // ---- 2. Use `context.waitUntil` to keep the function alive
-  //         beyond the response when the build is going to
-  //         take a while. This is the documented Netlify
-  //         pattern for fire-and-forget work after a Response
-  //         is sent. The Response itself is sent as soon as
-  //         the lock is acquired; the build completes in the
-  //         background. ----
-  //         v5.2.6: `buildFn` forwards its opts (e.g. the
-  //         `skipNvd` flag from the cooldown short-circuit)
-  //         into `buildLiveDataset`. ----
-  let buildPromise = null;
-  if (context && typeof context.waitUntil === 'function') {
-    buildPromise = runRefresh({
-      store,
-      buildFn: (opts) => buildLiveDataset(opts),
-    });
-    context.waitUntil(buildPromise);
-  } else {
-    // No `context.waitUntil` available (older runtime or
-    // unit-test harness). Run synchronously. Netlify's
-    // background-function runtime always provides context;
-    // this branch is purely defensive.
-    buildPromise = runRefresh({
-      store,
-      buildFn: (opts) => buildLiveDataset(opts),
-    });
-  }
-
-  // Peek at the lock decision synchronously so we can return
-  // a useful status immediately. If the lock was NOT
-  // acquirable (another refresh is in progress), `runRefresh`
-  // will return `{ status: 'in-progress' }` without running
-  // the build.
+  // ---- 2. Peek at the lock decision synchronously so we can
+  //         return a useful status immediately. If the lock
+  //         is already held by another refresh, return 202
+  //         'in-progress' without starting a duplicate build. ----
   const earlyResult = await peekLockDecision(store);
   if (earlyResult.refreshInProgress) {
     return jsonResponse(202, {
@@ -111,12 +98,41 @@ export default async (request, context) => {
     });
   }
 
-  // We expect the build to be quick enough that the
-  // background invocation will complete before the next
-  // visitor hits the dataset endpoint, but we don't BLOCK
-  // on it — the user gets an immediate 202 "started"
-  // response and the dashboard polls for the new dataset
-  // via the v5.1 mechanism.
+  // ---- 3. Kick off the build via `runRefresh` and keep the
+  //         function alive beyond the response when the
+  //         runtime supports `context.waitUntil`. This is the
+  //         documented Netlify pattern for fire-and-forget
+  //         work after a Response is sent. The Response itself
+  //         is sent as soon as the lock is acquired; the
+  //         build completes in the background. ----
+  //         v5.2.6: `buildFn` forwards its opts (e.g. the
+  //         `skipNvd` flag from the cooldown short-circuit)
+  //         into `buildLiveDataset`. ----
+  //         v5.4.2: the build's final result is logged to
+  //         console (visible in Netlify function logs) so
+  //         operators can see preserved / cooldown / failed
+  //         outcomes without polling the dataset endpoint. ----
+  const buildPromise = runRefresh({
+    store,
+    buildFn: (opts) => buildLiveDataset(opts),
+  }).then((result) => {
+    console.log(
+      `[v5.4.2 background refresh] status=${result.status}` +
+      (result.fetchedAt ? ` fetchedAt=${result.fetchedAt}` : '') +
+      (result.reason ? ` reason=${truncate(result.reason, 240)}` : ''),
+    );
+    return result;
+  }).catch((err) => {
+    console.error(
+      '[v5.4.2 background refresh] unexpected error:',
+      err instanceof Error ? err.message : err,
+    );
+  });
+
+  if (context && typeof context.waitUntil === 'function') {
+    context.waitUntil(buildPromise);
+  }
+
   return jsonResponse(202, {
     status: 'started',
     fetchedAt: null,
@@ -133,6 +149,12 @@ function jsonResponse(status, body) {
       'X-Content-Type-Options': 'nosniff',
     },
   });
+}
+
+function truncate(s, max) {
+  if (typeof s !== 'string') return '';
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + '\u2026';
 }
 
 /**

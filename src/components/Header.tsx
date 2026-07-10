@@ -1,5 +1,4 @@
 import {
-  Briefcase,
   CircleAlert,
   Clock,
   Cloud,
@@ -188,11 +187,6 @@ export default function Header({ meta }: HeaderProps) {
                 exploitation signals, and remediation priorities.
               </p>
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <MetaBadge
-                  icon={<Briefcase className="h-3 w-3" />}
-                  label="Portfolio Project"
-                  tone="accent"
-                />
                 {isLive && (
                   <MetaBadge
                     icon={<Satellite className="h-3 w-3" />}

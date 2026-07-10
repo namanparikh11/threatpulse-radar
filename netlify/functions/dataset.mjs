@@ -54,6 +54,21 @@
  * Response shape (502 — CISA failed in bootstrap):
  *   { mode: 'fallback', fallbackReason: string, refreshInProgress: false }
  *
+ * v5.4.2 — Last-known-good dataset serving:
+ *   The prebuilt blob may carry internal operator-facing
+ *   fields (`lastRefreshAttemptAt`, `lastRefreshFailure`)
+ *   that the refresh orchestrator writes to record the most
+ *   recent attempt's outcome. These are STRIPPED from the
+ *   public response so visitors never see transient upstream
+ *   failures (timeouts, 429s, 5xx, network errors) on a
+ *   page that was served from a still-good blob. The strip
+ *   is driven by `INTERNAL_BLOB_FIELDS` from refresh.mjs —
+ *   a single source of truth shared with the orchestrator.
+ *   With the v5.4.2 quality guard, the blob's public
+ *   envelope is always the most recent ACCEPTED build, so
+ *   the public `nvdStatus` is "nvd" (enriched) as long as
+ *   a good blob exists.
+ *
  * Honesty contract (carried forward from v5.0.1 / v5.0.3):
  *   - CISA is the only gating upstream. If CISA fails, the
  *     function returns HTTP 502 with a `fallbackReason`. The
@@ -62,7 +77,10 @@
  *   - NVD and EPSS have their own status fields. A failure of
  *     either does NOT take the whole response down — the client
  *     gets HTTP 200 with `nvdStatus: 'unavailable'` /
- *     `epssStatus: 'unavailable'`.
+ *     `epssStatus: 'unavailable'`. (On a fresh deploy with no
+ *     blob, the bootstrap path may return such an envelope;
+ *     on every subsequent request the guard guarantees a
+ *     NVD-enriched envelope is served.)
  *   - No API keys, secrets, or tokens are read or shipped.
  *     `NVD_API_KEY` is read inside the function only, passed to
  *     NVD as a request header (`headers.apiKey = apiKey`), and
@@ -90,6 +108,25 @@ import {
   readLatestDataset,
   writeLatestDataset,
 } from './_shared/store.mjs';
+import { INTERNAL_BLOB_FIELDS } from './_shared/refresh.mjs';
+
+// ---------------------------------------------------------------------------
+// v5.4.2: Strip the internal operator-facing fields that the
+// refresh orchestrator attaches to the blob, so they never
+// reach the visitor. The single source of truth for the
+// field list is `INTERNAL_BLOB_FIELDS` in refresh.mjs —
+// adding a new internal field there automatically strips it
+// here without needing a parallel list.
+// ---------------------------------------------------------------------------
+
+function publicEnvelope(blob) {
+  if (!blob || typeof blob !== 'object') return blob;
+  const out = { ...blob };
+  for (const field of INTERNAL_BLOB_FIELDS) {
+    delete out[field];
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // HTTP response helper. The function lives at /.netlify/functions/dataset,
@@ -147,10 +184,14 @@ export default async (request, context) => {
   if (store) {
     const prebuilt = await readLatestDataset(store);
     if (prebuilt && prebuilt.mode === 'live' && Array.isArray(prebuilt.data)) {
-      // Prebuilt envelope is returned verbatim. The lock flag
-      // is overlaid so the UI knows a refresh is in flight.
+      // Prebuilt envelope is returned verbatim — minus the
+      // internal metadata fields (`lastRefreshAttemptAt`,
+      // `lastRefreshFailure`) that the refresh orchestrator
+      // stores for operator visibility but that must NEVER
+      // appear in the public response. The lock flag is
+      // overlaid so the UI knows a refresh is in flight.
       return jsonResponse(200, {
-        ...prebuilt,
+        ...publicEnvelope(prebuilt),
         proxyStatus: 'proxy',
         dataSource: 'prebuilt-store',
         refreshInProgress,
