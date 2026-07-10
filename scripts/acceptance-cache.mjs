@@ -398,28 +398,40 @@ assert('Dashboard defines a CachedDataBanner component',
   /function\s+CachedDataBanner/.test(dashboardSrc),
   'expected function CachedDataBanner');
 
-assert('CachedDataBanner accepts cacheStatus, fetchedAt, onRefresh props',
-  /cacheStatus[\s\S]{0,200}fetchedAt[\s\S]{0,200}onRefresh/.test(
+assert('CachedDataBanner accepts cacheStatus, fetchedAt props (no onRefresh in v5.4.2)',
+  // v5.4.2: the manual "Refresh live data" button was
+  // removed from the public UI, so the CachedDataBanner
+  // no longer takes an onRefresh prop. Just cacheStatus
+  // and fetchedAt remain.
+  /cacheStatus[\s\S]{0,200}fetchedAt/.test(
     dashboardSrc.slice(dashboardSrc.indexOf('function CachedDataBanner'))
-  ),
-  'expected props destructured in CachedDataBanner');
+  ) &&
+    !/onRefresh/.test(
+      dashboardSrc.slice(
+        dashboardSrc.indexOf('function CachedDataBanner'),
+        dashboardSrc.indexOf('function CachedDataBanner') + 500,
+      )
+    ),
+  'expected CachedDataBanner to take only cacheStatus + fetchedAt (no onRefresh)');
 
-assert('Dashboard wires the cached-data banner refresh to a manual-refresh path (v5.2)',
-  // v5.2: the "Refresh live data" button on the cached-data
-  // banner now POSTs to the Netlify Background Function
-  // (calls `manualRefresh()`), not `forceRefresh: true` on
-  // the dataset endpoint. This is the v5.2 contract — manual
-  // refresh must NOT trigger every visitor to rebuild the
-  // full dataset. The forceRefresh path is still wired into
-  // the service for internal use; the manual button is not.
-  /manualRefresh\(/.test(dashboardSrc) ||
-    /onRefresh=\{handleManualRefresh\}/.test(dashboardSrc) ||
-    /onRefresh=\{handleRefresh\}/.test(dashboardSrc),
-  'expected the cached-data banner refresh to call manualRefresh (v5.2 background path)');
+assert('Dashboard does NOT wire a manual refresh path from the cached-data banner (v5.4.2)',
+  // v5.2 originally required the cached-data banner
+  // refresh to POST to the Netlify Background Function
+  // (not `forceRefresh: true`). v5.4.2 removes the button
+  // entirely: refreshes are asynchronous, the button
+  // appeared nonfunctional, and the body copy now tells
+  // the user that data refreshes automatically.
+  !/onRefresh=\{handleManualRefresh\}/.test(dashboardSrc) &&
+    !/onRefresh=\{handleRefresh\}/.test(dashboardSrc) &&
+    !/onRefresh=\{manualRefresh\}/.test(dashboardSrc),
+  'expected the cached-data banner to NOT wire any manual refresh handler');
 
-assert('CachedDataBanner exposes a "Refresh live data" button',
-  /Refresh live data/.test(dashboardSrc),
-  'expected "Refresh live data" button label');
+assert('CachedDataBanner does NOT expose a "Refresh live data" button (v5.4.2)',
+  // The button was removed because refreshes are async
+  // and the button appeared nonfunctional. The body copy
+  // now explains that refreshes happen automatically.
+  !/Refresh live data/.test(dashboardSrc),
+  'expected no "Refresh live data" button in the dashboard source');
 
 assert('Cached-data banner distinguishes "fresh" and "stale" copy',
   /Cached data \(stale\)/.test(dashboardSrc) &&

@@ -284,7 +284,7 @@ export default function Header({ meta }: HeaderProps) {
                 icon={<HardDrive className="h-3 w-3" />}
                 label="Cache: stale"
                 tone="warn"
-                title="Served from expired local cache because the live fetch failed. Use the Refresh live data button to retry."
+                title="Served from expired local cache because the live fetch failed. Data refreshes automatically in the background; the latest successfully enriched dataset remains available during provider delays."
               />
             )}
             {meta?.proxyStatus === 'proxy' && (
@@ -309,7 +309,7 @@ export default function Header({ meta }: HeaderProps) {
                 icon={<Database className="h-3 w-3" />}
                 label="Dataset store: latest available"
                 tone="info"
-                title="This dataset was served from the shared Netlify Blobs store (v5.2 prebuilt dataset). A scheduled refresh rebuilds the store every 30 minutes; you can also click 'Refresh live data' to start one yourself."
+                title="This dataset was served from the shared Netlify Blobs store (v5.2 prebuilt dataset). A scheduled refresh rebuilds the store every 30 minutes. Data refreshes automatically in the background; the latest successfully enriched dataset remains available during provider delays."
               />
             )}
             {dataSource === 'live-build' && (

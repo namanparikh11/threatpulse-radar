@@ -14,7 +14,6 @@ import KevChart from '../components/charts/KevChart';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
 import {
   fetchVulnerabilities,
-  manualRefresh,
   type FetchResult,
   type RefreshResult,
 } from '../services/vulnerabilityService';
@@ -84,12 +83,12 @@ export default function DashboardPage() {
    */
   const [dismissedFetchedAt, setDismissedFetchedAt] = useState<string | null>(null);
   /**
-   * v5.2: Manual-refresh state. When non-null, the small
-   * "Refresh running in background" banner is rendered and
-   * the manual "Refresh live data" button shows an in-flight
-   * spinner. The state is reset when the next poll (or
-   * retry) returns a FetchResult with
-   * `refreshInProgress: false`.
+   * v5.2: Refresh-in-progress state. When non-null, the small
+   * "Refresh running in background" banner is rendered. The
+   * state is set by the polling effect when the server reports
+   * `refreshInProgress: true` (a scheduled or manual refresh
+   * is currently rebuilding the shared dataset) and cleared
+   * when the next poll returns `refreshInProgress: false`.
    */
   const [refreshStatus, setRefreshStatus] = useState<RefreshResult | null>(null);
   /**
@@ -169,42 +168,6 @@ export default function DashboardPage() {
   }
 
   /**
-   * v5.2: Manual-refresh button. POSTs to the Netlify
-   * Background Function and updates `refreshStatus` so the
-   * UI can show "Refresh running in background".
-   *
-   * Critically different from the v4 / v5.0 / v5.0.1 /
-   * v5.0.3 behavior: this does NOT replace the visible
-   * dataset, does NOT force a re-fetch via `?t=<ts>`, and
-   * does NOT block on the build. The currently-displayed
-   * dataset stays on screen; the v5.1 polling detects the
-   * new blob on the next tick and surfaces the
-   * "New dataset available" banner. The user must click
-   * "Apply update" to swap. Auto-reload and auto-replace
-   * are explicitly forbidden by the v5.2 contract.
-   *
-   * The local `refreshStatus` is reset on the next poll
-   * that returns `refreshInProgress: false` so the banner
-   * auto-clears once the server-side build completes (or
-   * is rejected).
-   */
-  async function handleManualRefresh() {
-    try {
-      const result = await manualRefresh();
-      setRefreshStatus(result);
-    } catch (err) {
-      setRefreshStatus({
-        status: 'failed',
-        reason:
-          err instanceof Error
-            ? err.message
-            : 'Manual refresh failed (unknown error).',
-        refreshInProgress: false,
-      });
-    }
-  }
-
-  /**
    * v5.1: Background poll effect. Starts a setInterval when the
    * initial load reaches 'ready'. Each tick calls
    * `fetchVulnerabilities({ background: true })` — which bypasses
@@ -222,8 +185,7 @@ export default function DashboardPage() {
    * via refs (stateRef / dismissedRef) so we don't restart the
    * interval on every render. The interval is torn down on
    * unmount and re-created if the page leaves 'ready' and
-   * returns (e.g. an explicit manual refresh goes 'loading'
-   * then 'ready' again).
+   * returns (e.g. a navigation causes a fresh initial load).
    */
   useEffect(() => {
     if (state.kind !== 'ready') return;
@@ -375,7 +337,6 @@ export default function DashboardPage() {
               <CachedDataBanner
                 cacheStatus={state.meta.cacheStatus}
                 fetchedAt={state.meta.fetchedAt}
-                onRefresh={handleManualRefresh}
               />
             )}
 
@@ -588,27 +549,27 @@ function NvdUnavailableBanner({
  *     user can still use it, but it's older than the TTL.
  *
  * The banner always carries the original upstream `fetchedAt`
- * so the user can see the age of the data they're looking at,
- * and exposes a manual "Refresh live data" button that calls
- * the v5.2 manual-refresh endpoint (background function). The
- * button no longer force-refreshes the dataset endpoint with
- * `?t=<ts>` — it asks the server to start a background
- * rebuild, and the v5.1 polling detects the new blob.
- *
- * Critically, the cached FetchResult's provider-status fields
+ * so the user can see the age of the data they're looking at.
+ * The cached FetchResult's provider-status fields
  * (nvdStatus / epssStatus / fallbackReason) are preserved, so
  * if the original live fetch had NVD or EPSS unavailable, those
  * banners are still rendered alongside this one. The cache
  * never hides provider failures.
+ *
+ * v5.4.2: The public manual-refresh control was removed
+ * from the cached-data banner because refreshes are
+ * asynchronous and automatically scheduled. The button
+ * no longer exists in the public UI; the body copy tells
+ * the user that data refreshes automatically in the
+ * background and the latest successfully enriched dataset
+ * remains available during provider delays.
  */
 function CachedDataBanner({
   cacheStatus,
   fetchedAt,
-  onRefresh,
 }: {
   cacheStatus: 'fresh' | 'stale';
   fetchedAt: string;
-  onRefresh: () => void;
 }) {
   const isStale = cacheStatus === 'stale';
   const relative = formatRelative(fetchedAt);
@@ -641,25 +602,12 @@ function CachedDataBanner({
               ? 'The 1-hour cache TTL has expired and the live fetch just failed. Showing last-known real data from '
               : 'Showing data from local cache (within the 1-hour TTL). Data was last fetched at '}
             <span className="text-radar-text">{absolute}</span>.
-            {isStale
-              ? ' Provider-status banners above reflect the original fetch.'
-              : ' Click refresh to fetch the latest upstream data.'}
+            {' '}Data refreshes automatically in the background. The
+            latest successfully enriched dataset remains available
+            during provider delays.
           </p>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={onRefresh}
-        className={[
-          'focus-ring inline-flex items-center gap-1.5 self-start rounded-md border px-2.5 py-1.5 text-xs text-radar-text transition',
-          isStale
-            ? 'border-radar-warn/40 bg-radar-panel2 hover:border-radar-warn'
-            : 'border-radar-accent/40 bg-radar-panel2 hover:border-radar-accent',
-        ].join(' ')}
-      >
-        <RefreshCw className="h-3 w-3" />
-        Refresh live data
-      </button>
     </div>
   );
 }
