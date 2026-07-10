@@ -3,6 +3,9 @@
 > Pre-release audit notes for **ThreatPulse Radar**. This file
 > captures the v5.4 public-readiness audit findings and the manual
 > steps to take before the private repo is made public on GitHub.
+> The v5.4.1 follow-up removed the two internal handover files
+> from the working tree (section 6 below); the remaining
+> pre-release steps in this checklist are still manual.
 > The audit only — no public-publishing actions are taken from
 > this branch.
 
@@ -80,23 +83,26 @@
 - ✅ `PORTFOLIO_WRITEUP.md` (299 lines) is a clean recruiter-
   facing narrative with no internal-only markers.
 
-### 6. Internal handover docs — **need pre-release action**
+### 6. Internal handover docs — **resolved in v5.4.1**
 
-These two files are internal-only and contain markers that
+These two files were internal-only and contained markers that
 would look unprofessional in a public repo (session numbers,
 "uncommitted source changes", AI-agent prompts, push-policy
 notes). They are **not** linked from `README.md`, so they
-won't appear in casual browsing — but they will appear in
-the repo's file listing.
+won't appear in casual browsing — but they would have appeared
+in the repo's file listing.
 
-- ⚠️ `NEXT_AGENT_PROMPT.md` (423 lines) — "drop this into a
-  fresh AI session" prompt. Internal-only.
-- ⚠️ `PROJECT_HANDOFF.md` (2226 lines) — session-by-session
-  handover log. Internal-only.
+- ✅ `NEXT_AGENT_PROMPT.md` — removed from the working tree
+  in v5.4.1.
+- ✅ `PROJECT_HANDOFF.md` — removed from the working tree
+  in v5.4.1.
 
-The GitHub history will still contain these files unless the
-history is rewritten at release time. Two clean options are
-listed in the "Pre-release steps" section below.
+Note: the git history still contains these files in earlier
+commits. If the maintainer wants the file listing *and* the
+history to be fully clean, rewrite history with
+`git filter-repo` (nuclear option) before the visibility flip.
+For most public-release cases the working-tree-only removal
+done in v5.4.1 is sufficient.
 
 ---
 
@@ -105,30 +111,11 @@ listed in the "Pre-release steps" section below.
 The following steps assume the maintainer is the only one
 running them, immediately before the GitHub visibility change.
 
-### A. Decide what to do with the internal docs
+Step A from earlier versions of this checklist (decide what to
+do with the internal handover docs) was resolved in v5.4.1:
+both files were deleted from the working tree.
 
-Pick **one** of:
-
-1. **Move to a clearly-marked internal folder** (keeps git
-   history intact):
-   ```bash
-   mkdir -p docs/internal
-   git mv NEXT_AGENT_PROMPT.md docs/internal/
-   git mv PROJECT_HANDOFF.md docs/internal/
-   # Optional: add a README that says "Internal-only
-   # handover notes — not for public consumption."
-   ```
-2. **Delete from the working tree** (history still has the
-   files; the public file listing will be clean):
-   ```bash
-   git rm NEXT_AGENT_PROMPT.md
-   git rm PROJECT_HANDOFF.md
-   ```
-   To also rewrite git history (nuclear option), use
-   `git filter-repo` or `git rebase --interactive` and
-   squash before the public release.
-
-### B. Verify `.gitignore` is honored
+### A. Verify `.gitignore` is honored
 
 ```bash
 git check-ignore -v .env .env.local node_modules dist
@@ -138,7 +125,7 @@ git check-ignore -v .env .env.local node_modules dist
 If `.env` is ever accidentally created on a developer
 machine, it must not be tracked.
 
-### C. Run the build + acceptance suite one more time
+### B. Run the build + acceptance suite one more time
 
 ```bash
 node node_modules/typescript/bin/tsc -b
@@ -154,7 +141,7 @@ node scripts/acceptance-cache.mjs
 
 All seven scripts must report `PASSED (N/N)` with no failures.
 
-### D. Verify the production deploy is honest
+### C. Verify the production deploy is honest
 
 On the live demo at
 [`https://threatpulse-radar.netlify.app`](https://threatpulse-radar.netlify.app):
@@ -173,7 +160,7 @@ On the live demo at
   `nvdStatus: "nvd"`, `epssStatus: "first"` and no
   `NVD_API_KEY` substring anywhere.
 
-### E. GitHub-side preparation (after pushing the release commit)
+### D. GitHub-side preparation (after pushing the release commit)
 
 On the GitHub repo settings page (before flipping visibility):
 
@@ -202,7 +189,7 @@ On the GitHub repo settings page (before flipping visibility):
    "Change repository visibility"). Confirm the audit checklist
    above is green first.
 
-### F. Post-release sanity (after the flip)
+### E. Post-release sanity (after the flip)
 
 - Visit the public URL on a fresh browser profile (no
   `localStorage` from the private deploy). Verify the
@@ -217,18 +204,23 @@ On the GitHub repo settings page (before flipping visibility):
 
 ## What this checklist does NOT do
 
-This is an **audit-only** branch. It does **not**:
+The v5.4 + v5.4.1 audit branches together do **not**:
 
 - Flip the GitHub repository to public.
 - Rewrite git history.
-- Delete or move any files.
 - Change any code, tests, or UI.
 - Push to remote.
 
-The maintainer runs the pre-release steps in the
+(v5.4.1 *did* delete two internal markdown files from the
+working tree as the documented pre-release action; the audit
+itself still did not flip visibility, rewrite history, or
+push.)
+
+The maintainer runs the remaining pre-release steps in the
 "Pre-release steps" section when ready, by hand, in their own
 time.
 
 ---
 
-_Last audited: v5.4 public-readiness branch._
+_Last updated: v5.4.1 public-surface-cleanup branch (handover
+docs removed from working tree)._

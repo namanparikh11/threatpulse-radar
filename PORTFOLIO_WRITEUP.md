@@ -3,8 +3,7 @@
 > Short narrative for recruiters, technical interviewers, and
 > anyone skimming the GitHub README. Talks about *what* it is,
 > *why* it exists, and *how* it was built. For the technical
-> details (file tree, API endpoints, test counts), see `README.md`
-> + `PROJECT_HANDOFF.md`.
+> details (file tree, API endpoints, test counts), see `README.md`.
 
 ---
 
@@ -260,9 +259,8 @@ A short list of honest trade-offs:
   frontend bundle is not on the table — a static `dist/` is
   a public artifact, and shipping a key is shipping a public
   credential.
-- **No "save filter preset" or "watchlist" features.** Listed
-  in the v4.5 milestone in `PROJECT_HANDOFF.md`. Would be the
-  next pass if I had more time. (Note: any new `localStorage`
+- **No "save filter preset" or "watchlist" features.** Would be
+  the next pass if I had more time. (Note: any new `localStorage`
   key should follow the v4 cache module's pattern — versioned
   suffix, schema-validated reads, defensive try/catch.)
 - **Recharts 2 is deprecated.** The deprecation warning is
@@ -285,10 +283,11 @@ A short list of honest trade-offs:
   under `src/services/providers/`. That's the entire data
   + cache layer. Then read the five acceptance scripts and
   follow the test flow backward into the production code.
-- **30 minutes**: read `PROJECT_HANDOFF.md` end-to-end. It walks
-  through every pass, every fix, and every decision in
-  chronological order — it's the "story" of the project, not
-  just the spec.
+- **30 minutes**: skim the git history (or run
+  `git log --oneline --graph`). The version-by-version commit
+  messages tell the same "story" — what shipped, what was
+  fixed, what was audited — without needing a separate
+  internal doc.
 
 If you're a hiring manager or a technical interviewer and you
 read this far — thank you. I'd love to walk you through any
