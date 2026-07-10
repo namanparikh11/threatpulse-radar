@@ -14,8 +14,12 @@
  *     existing failure banners keep showing correctly on cached
  *     data. The cache never hides provider failures.
  *   - Cache age is shown prominently (header pill + freshness
- *     banner). The user can always force a re-fetch with the
- *     manual "Refresh live data" button.
+ *     banner). The dashboard re-fetches automatically via the
+ *     v5.1 background polling + v5.2 scheduled refresh — no
+ *     manual "Refresh live data" button is exposed to the
+ *     visitor (the v5.4.2 cleanup removed it because
+ *     refreshes are asynchronous and the button appeared
+ *     nonfunctional).
  *   - All localStorage access is wrapped in try/catch. Private
  *     mode, quota exceeded, disabled storage, SSR — none of
  *     these crash the app. The cache is an optimization, not

@@ -669,18 +669,24 @@ assert('Last refresh tooltip now reads "Last dataset build: <time>"',
   /Last dataset build/.test(headerSrc),
   'expected the Last refresh tooltip to use the v5.2 wording');
 
-assert('DashboardPage imports `manualRefresh` from vulnerabilityService',
-  /import\s*\{[\s\S]*?manualRefresh[\s\S]*?\}\s*from\s*['"]\.\.\/services\/vulnerabilityService['"]/.test(dashboardSrc),
-  'expected `manualRefresh` import in DashboardPage');
+assert('DashboardPage does NOT import `manualRefresh` (v5.4.2: button removed from public UI)',
+  // The service's `manualRefresh()` is kept for internal
+  // callers (the cron + the background-function path), but
+  // the dashboard no longer imports it — the public
+  // "Refresh live data" button was removed in v5.4.2.
+  !/import\s*\{[\s\S]*?manualRefresh[\s\S]*?\}\s*from\s*['"]\.\.\/services\/vulnerabilityService['"]/.test(dashboardSrc),
+  'expected the dashboard to NOT import manualRefresh (the public button was removed)');
 
 assert('DashboardPage declares a `refreshStatus` state slot',
   /const\s+\[refreshStatus,\s*setRefreshStatus\]\s*=\s*useState/.test(dashboardSrc),
   'expected `refreshStatus` state in DashboardPage');
 
-assert('DashboardPage defines `handleManualRefresh` wired to `manualRefresh()`',
-  /function\s+handleManualRefresh|const\s+handleManualRefresh\s*=\s*useCallback/.test(dashboardSrc) &&
-    /manualRefresh\(/.test(dashboardSrc),
-  'expected a handleManualRefresh handler that calls manualRefresh()');
+assert('DashboardPage does NOT define `handleManualRefresh` (v5.4.2: button removed)',
+  // The handler that POSTed to the background function is
+  // no longer needed — refreshes are async, the scheduled
+  // cron + the background endpoint run without UI action.
+  !/function\s+handleManualRefresh|const\s+handleManualRefresh\s*=\s*useCallback/.test(dashboardSrc),
+  'expected DashboardPage to NOT define handleManualRefresh (button removed)');
 
 assert('DashboardPage renders a RefreshInProgressBanner when refreshStatus is in-flight',
   /RefreshInProgressBanner/.test(dashboardSrc),
@@ -691,9 +697,14 @@ assert('DashboardPage polls clear `refreshStatus` when server says refreshInProg
     /result\.refreshInProgress\s*===\s*false/.test(dashboardSrc),
   'expected the polling effect to clear `refreshStatus` when the server reports the refresh is done');
 
-assert('CachedDataBanner is wired to handleManualRefresh (v5.2 background path)',
-  /onRefresh=\{handleManualRefresh\}/.test(dashboardSrc),
-  'expected the cached-data banner refresh button to call handleManualRefresh (not forceRefresh)');
+assert('CachedDataBanner is NOT wired to a manual refresh handler (v5.4.2: button removed)',
+  // v5.4.2: the CachedDataBanner no longer renders a
+  // "Refresh live data" button, so it doesn't take an
+  // onRefresh prop. The body copy tells the user that
+  // refreshes happen automatically.
+  !/onRefresh=\{handleManualRefresh\}/.test(dashboardSrc) &&
+    !/onRefresh=\{handleRefresh\}/.test(dashboardSrc),
+  'expected the cached-data banner to NOT be wired to a manual refresh handler');
 
 assert('RefreshInProgressBanner accepts `status` and `onDismiss` props',
   /function\s+RefreshInProgressBanner[\s\S]{0,400}status[\s\S]{0,200}RefreshResult/.test(dashboardSrc) &&
@@ -752,13 +763,16 @@ assert('the dashboard never claims NVD enriched if the stored dataset has NVD un
     /NvdUnavailableBanner/.test(dashboardSrc),
   'expected NvdUnavailableBanner to render on nvdStatus="unavailable"');
 
-assert('the dashboard never overwrites the visible data on a manual refresh (v5.2 contract)',
-  // handleManualRefresh only calls manualRefresh() — it does
-  // NOT setState({ kind: "ready", ... }). The visible data
-  // is replaced only via the v5.1 handleApplyUpdate path.
-  /function\s+handleManualRefresh|const\s+handleManualRefresh/.test(dashboardSrc) &&
-    !/handleManualRefresh[\s\S]{0,500}setState\(\s*\{\s*kind:\s*['"]ready['"]/.test(dashboardSrc),
-  'expected handleManualRefresh to NOT setState({ kind: "ready", ... })');
+assert('the dashboard has no manual-refresh setState path (v5.4.2: button removed)',
+  // v5.2 originally checked that handleManualRefresh did
+  // NOT auto-replace the visible data. With the v5.4.2
+  // removal of the manual button, the relevant invariant
+  // is even stronger: there is no manual refresh path at
+  // all, so no setState({ kind: "ready", ... }) call is
+  // possible from user-initiated refresh action. The
+  // v5.1 handleApplyUpdate path is preserved.
+  !/handleManualRefresh[\s\S]{0,500}setState\(\s*\{\s*kind:\s*['"]ready['"]/.test(dashboardSrc),
+  'expected no manual-refresh setState path in DashboardPage');
 
 /* ------------------------------------------------------------------ */
 /* 12. v5.1 regression — soft refresh path unchanged                  */

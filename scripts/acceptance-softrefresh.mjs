@@ -394,17 +394,17 @@ assert('DashboardPage still has NvdUnavailableBanner',
 assert('DashboardPage still has EpssUnavailableBanner',
   /function\s+EpssUnavailableBanner/.test(dashboardSrc));
 
-assert('DashboardPage no longer wires the manual button to forceRefresh: true (v5.2)',
-  // v5.2: the manual "Refresh live data" button now POSTs to
-  // the Netlify Background Function via `manualRefresh()`,
-  // NOT to the dataset endpoint with `forceRefresh: true`.
-  // This is the v5.2 contract — manual refresh must NOT
-  // force every visitor to rebuild the full dataset. The
-  // `forceRefresh: true` path is still alive in the service
-  // (used by `tryProxyFetch` to bust the CDN cache on the
-  // internal polling path), but the user-visible manual
-  // button uses the background-refresh endpoint instead.
-  /manualRefresh\(/.test(dashboardSrc));
+assert('DashboardPage has no manual-refresh button (v5.4.2)',
+  // v5.2 originally checked that the manual "Refresh live
+  // data" button POSTed to the Background Function via
+  // `manualRefresh()` (not `forceRefresh: true` on the
+  // dataset endpoint). v5.4.2 removes the button entirely
+  // — refreshes are async and the button appeared
+  // nonfunctional. The v5.1 background polling and
+  // Apply-update flow are unchanged.
+  !/onRefresh=\{handleManualRefresh\}/.test(dashboardSrc) &&
+    !/Refresh live data/.test(dashboardSrc),
+  'expected no manual-refresh button in DashboardPage');
 
 /* ------------------------------------------------------------------ */
 /* Summary                                                            */
