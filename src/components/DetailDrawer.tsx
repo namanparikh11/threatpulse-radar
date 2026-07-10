@@ -1,8 +1,13 @@
-import { ExternalLink, ShieldCheck, X } from 'lucide-react';
+import { ClipboardList, ExternalLink, ShieldCheck, X } from 'lucide-react';
 import { useEffect } from 'react';
-import type { Vulnerability } from '../types/vulnerability';
+import type {
+  SsvcAutomatable,
+  SsvcExploitation,
+  SsvcTechnicalImpact,
+  Vulnerability,
+} from '../types/vulnerability';
 import { SEVERITY_BADGE } from '../utils/severity';
-import { formatCvss, formatDate, formatEpss, formatRelative } from '../utils/format';
+import { formatAbsolute, formatCvss, formatDate, formatEpss, formatRelative } from '../utils/format';
 
 interface DetailDrawerProps {
   vuln: Vulnerability | null;
@@ -103,6 +108,13 @@ function DrawerBody({ vuln, onClose }: { vuln: Vulnerability; onClose: () => voi
           </p>
         </Section>
 
+        <Section
+          title="CISA decision context"
+          icon={<ClipboardList className="h-3.5 w-3.5 text-radar-accent" />}
+        >
+          <SsvcContext vuln={vuln} />
+        </Section>
+
         <Section title="External references">
           <ul className="space-y-1.5">
             {vuln.externalLinks.map((l) => (
@@ -161,4 +173,139 @@ function Metric({
       {hint && <div className="text-[11px] text-radar-dim">{hint}</div>}
     </div>
   );
+}
+
+/**
+ * v5.5: Compact "CISA decision context" panel for the
+ * vulnerability detail drawer. Shows the three SSVC
+ * decision options (Exploitation, Automatable, Technical
+ * Impact) plus the assessment timestamp and the source
+ * label ("CISA Vulnrichment"). Rendered only when at
+ * least one of the SSVC fields is present; otherwise
+ * surfaces the honest "No CISA Vulnrichment assessment
+ * available." message.
+ *
+ * The three decisions are styled with intent-coded tones
+ * so the operator can scan them at a glance:
+ *   - Exploitation = active  → warn (red)
+ *   - Exploitation = poc     → warn (amber)
+ *   - Exploitation = none    → info (cyan, neutral)
+ *   - Automatable = yes      → warn (amber)
+ *   - Automatable = no       → info (cyan)
+ *   - Technical Impact = total    → warn (red)
+ *   - Technical Impact = partial  → info (cyan)
+ *
+ * The styling is purely visual aid — the literal value is
+ * always rendered so screen readers and copy-paste work
+ * cleanly.
+ */
+function SsvcContext({ vuln }: { vuln: Vulnerability }) {
+  const hasSsvc =
+    !!vuln.ssvcExploitation ||
+    !!vuln.ssvcAutomatable ||
+    !!vuln.ssvcTechnicalImpact;
+
+  if (!hasSsvc) {
+    return (
+      <p className="rounded-md border border-radar-border bg-radar-panel2/60 p-3 text-xs text-radar-muted">
+        No CISA Vulnrichment assessment available.
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-radar-border bg-radar-panel2/60 p-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <SsvcMetric
+          label="Exploitation"
+          display={formatSsvcExploitation(vuln.ssvcExploitation)}
+        />
+        <SsvcMetric
+          label="Automatable"
+          display={formatSsvcAutomatable(vuln.ssvcAutomatable)}
+        />
+        <SsvcMetric
+          label="Technical impact"
+          display={formatSsvcTechnicalImpact(vuln.ssvcTechnicalImpact)}
+        />
+      </div>
+      <dl className="mt-3 grid grid-cols-1 gap-2 text-[11px] text-radar-dim sm:grid-cols-2">
+        <div>
+          <dt className="font-medium uppercase tracking-wider text-radar-muted">
+            Assessed
+          </dt>
+          <dd className="mt-0.5 text-radar-text">
+            {vuln.ssvcAssessedAt
+              ? formatAbsolute(vuln.ssvcAssessedAt)
+              : 'Unknown'}
+            {vuln.ssvcVersion ? (
+              <span className="ml-1 text-radar-dim">
+                (SSVC {vuln.ssvcVersion})
+              </span>
+            ) : null}
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium uppercase tracking-wider text-radar-muted">
+            Source
+          </dt>
+          <dd className="mt-0.5 text-radar-text">
+            {vuln.ssvcSource ?? 'CISA Vulnrichment'}
+          </dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+function SsvcMetric({
+  label,
+  display,
+}: {
+  label: string;
+  display: { label: string; tone: string };
+}) {
+  return (
+    <div>
+      <div className="stat-label">{label}</div>
+      <div className={`mt-1 text-sm font-medium ${display.tone}`}>
+        {display.label}
+      </div>
+    </div>
+  );
+}
+
+function formatSsvcExploitation(value: SsvcExploitation | undefined) {
+  switch (value) {
+    case 'active':
+      return { label: 'Active', tone: 'text-radar-warn' };
+    case 'poc':
+      return { label: 'Proof of concept', tone: 'text-radar-warn' };
+    case 'none':
+      return { label: 'None', tone: 'text-radar-accent' };
+    default:
+      return { label: 'Unknown', tone: 'text-radar-muted' };
+  }
+}
+
+function formatSsvcAutomatable(value: SsvcAutomatable | undefined) {
+  switch (value) {
+    case 'yes':
+      return { label: 'Yes', tone: 'text-radar-warn' };
+    case 'no':
+      return { label: 'No', tone: 'text-radar-accent' };
+    default:
+      return { label: 'Unknown', tone: 'text-radar-muted' };
+  }
+}
+
+function formatSsvcTechnicalImpact(value: SsvcTechnicalImpact | undefined) {
+  switch (value) {
+    case 'total':
+      return { label: 'Total', tone: 'text-radar-warn' };
+    case 'partial':
+      return { label: 'Partial', tone: 'text-radar-accent' };
+    default:
+      return { label: 'Unknown', tone: 'text-radar-muted' };
+  }
 }

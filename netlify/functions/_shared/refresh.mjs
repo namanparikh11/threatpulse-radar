@@ -94,10 +94,39 @@
  *     - `forceRefresh: true` and `manualRefresh()` still
  *       call this orchestrator, so the guard fires on
  *       both the manual and scheduled paths.
+ *
+ * v5.5 — CISA Vulnrichment / SSVC enrichment:
+ *   After a successful 'completed' write, the orchestrator
+ *   also runs the Vulnrichment enrichment pass (see
+ *   `vulnrichmentRefresh.mjs`). The pass reads the new
+ *   envelope's CVE list and enriches the SSVC cache
+ *   incrementally:
+ *     - missing or stale (≥ 7 d) CVEs only;
+ *     - max 50 per cycle;
+ *     - concurrency 5;
+ *     - KEV-newest first.
+ *   The Vulnrichment pass shares the same lock as the main
+ *   build (no double-refresh risk) and the outcome is
+ *   recorded on the existing `latest-dataset` blob as an
+ *   internal `lastVulnrichmentRefresh` field. The field is
+ *   stripped from the public response by `dataset.mjs`
+ *   (via the `INTERNAL_BLOB_FIELDS` set below) — visitors
+ *   only see the derived `vulnrichmentStatus` /
+ *   `vulnrichmentCoverage` envelope metadata, computed at
+ *   read-time in `dataset.mjs`.
+ *
+ *   The Vulnrichment pass is best-effort. A failure or
+ *   partial completion of the Vulnrichment cycle does NOT
+ *   downgrade the main build's status — the 'completed'
+ *   / 'preserved' / 'cooldown' / 'in-progress' / 'failed'
+ *   set is unchanged. The public `vulnrichmentStatus`
+ *   honestly reflects the cache state (available / partial
+ *   / unavailable).
  */
 import {
   clearNvdCooldown,
   clearRefreshLock,
+  getVulnrichmentStore,
   isNvdCooldownActive,
   isRefreshLocked,
   LATEST_DATASET_KEY,
@@ -108,6 +137,7 @@ import {
   writeNvdCooldown,
 } from './store.mjs';
 import { readNvdOutcome } from './liveBuild.mjs';
+import { runVulnrichmentRefresh } from './vulnrichmentRefresh.mjs';
 
 /**
  * Default envelope shape written to the latest-dataset blob on
@@ -301,10 +331,20 @@ function truncateForFailureReason(s, max) {
  * `dataset.mjs` strips before sending the response to the
  * visitor. Exposed as a single Set so the strip logic in
  * `dataset.mjs` can iterate the same source of truth.
+ *
+ * v5.5: added `lastVulnrichmentRefresh` — the per-cycle
+ * outcome of the Vulnrichment enrichment pass (status,
+ * enriched/total counts, last attempt time). Operators see
+ * it via the blob inspector; visitors never see the raw
+ * operator metadata. The derived public fields
+ * (`vulnrichmentStatus` / `vulnrichmentCoverage`) are
+ * computed at read-time in `dataset.mjs` and are NOT on
+ * this strip list because they ARE public.
  */
 export const INTERNAL_BLOB_FIELDS = new Set([
   'lastRefreshAttemptAt',
   'lastRefreshFailure',
+  'lastVulnrichmentRefresh',
 ]);
 
 /**
@@ -505,10 +545,52 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
   //   `lastRefreshFailure` on the written envelope. The
   //   metadata is internal — `dataset.mjs` strips it from
   //   the public response.
+  //
+  //   v5.5: also run the Vulnrichment enrichment pass and
+  //   record its outcome in the internal `lastVulnrichmentRefresh`
+  //   field on the same blob. The pass shares the same lock as
+  //   the main build — no double-refresh risk. Failures of
+  //   the Vulnrichment pass do NOT downgrade the main build's
+  //   status; the field is purely informational.
+  let vulnrichmentOutcome = null;
+  try {
+    const vulnStore = getVulnrichmentStore();
+    const cveList = (envelope.data || []).map((r) => ({
+      cveId: r.cveId,
+      dateAdded: r.publishedDate || null,
+    }));
+    vulnrichmentOutcome = await runVulnrichmentRefresh({
+      store: vulnStore,
+      cveList,
+      now,
+    });
+  } catch (err) {
+    // Defensive: a thrown Vulnrichment cycle must never
+    // break the main refresh. The `runVulnrichmentRefresh`
+    // contract is to NEVER throw, but a defensive catch
+    // here keeps the main refresh's 'completed' status
+    // honest even if a future regression introduces a
+    // throw.
+    vulnrichmentOutcome = {
+      status: 'failed',
+      enriched: 0,
+      total: 0,
+      attempted: 0,
+      missing: 0,
+      transient: 0,
+      reason:
+        err instanceof Error
+          ? `Vulnrichment pass threw: ${err.message}`
+          : 'Vulnrichment pass threw an unknown error.',
+      lastAttemptAt: now.toISOString(),
+    };
+  }
+
   await writeLatestDataset(store, {
     ...envelope,
     lastRefreshAttemptAt: now.toISOString(),
     lastRefreshFailure: null,
+    lastVulnrichmentRefresh: vulnrichmentOutcome,
   });
   if (!isNvdRateLimitedReason(envelope)) {
     await clearNvdCooldown(store);

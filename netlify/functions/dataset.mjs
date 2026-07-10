@@ -30,9 +30,30 @@
  *      surfaces this as a small "Refresh running in background"
  *      pill so the user knows a newer dataset is on the way.
  *
+ * v5.5: CISA Vulnrichment / SSVC enrichment (read-time merge).
+ *   The prebuilt `latest-dataset` blob holds the CISA → NVD
+ *   → EPSS records only. The SSVC decisions are stored
+ *   separately in the `tpr-vulnrichment` blob store (key
+ *   `cache`), and are merged into the public response at
+ *   serve time:
+ *     - records carrying a cached SSVC entry gain the
+ *       `ssvcExploitation` / `ssvcAutomatable` /
+ *       `ssvcTechnicalImpact` / `ssvcVersion` /
+ *       `ssvcAssessedAt` / `ssvcSource` fields;
+ *     - the response envelope gains
+ *       `vulnrichmentStatus: 'available' | 'partial' | 'unavailable'`
+ *       and `vulnrichmentCoverage: { enriched, total }`.
+ *   The merge is read-time only — the visitor's request
+ *   never mutates the cache, and the cache is never
+ *   rewritten when SSVC is merged. A Vulnrichment outage
+ *   (timeout / 429 / 5xx) leaves the existing dataset
+ *   envelope completely intact; the public envelope just
+ *   reports `vulnrichmentStatus: 'unavailable'` with the
+ *   existing counts.
+ *
  * Response shape (200 — prebuilt store hit):
  *   {
- *     data: Vulnerability[],
+ *     data: Vulnerability[],         // SSVC fields merged in
  *     source: 'merged',
  *     fetchedAt: string (ISO),
  *     mode: 'live',
@@ -43,31 +64,39 @@
  *     proxyStatus: 'proxy',
  *     dataSource: 'prebuilt-store',
  *     refreshInProgress: boolean,
+ *     vulnrichmentStatus: 'available' | 'partial' | 'unavailable',
+ *     vulnrichmentCoverage: { enriched: number, total: number },
  *   }
  *
  * Response shape (200 — bootstrap path):
  *   Same as above but `dataSource: 'live-build'` so the client
  *   can distinguish "this is the freshly-built dataset" from
  *   "this came from the shared blob". `refreshInProgress` is
- *   `false` (we just finished building it).
+ *   `false` (we just finished building it). The Vulnrichment
+ *   merge is still applied so the bootstrap response carries
+ *   whatever SSVC enrichment is already in the cache (often
+ *   empty on a fresh deploy).
  *
  * Response shape (502 — CISA failed in bootstrap):
  *   { mode: 'fallback', fallbackReason: string, refreshInProgress: false }
+ *   No `vulnrichmentStatus` / `vulnrichmentCoverage` — there's
+ *   no live data to enrich.
  *
  * v5.4.2 — Last-known-good dataset serving:
  *   The prebuilt blob may carry internal operator-facing
- *   fields (`lastRefreshAttemptAt`, `lastRefreshFailure`)
- *   that the refresh orchestrator writes to record the most
- *   recent attempt's outcome. These are STRIPPED from the
- *   public response so visitors never see transient upstream
- *   failures (timeouts, 429s, 5xx, network errors) on a
- *   page that was served from a still-good blob. The strip
- *   is driven by `INTERNAL_BLOB_FIELDS` from refresh.mjs —
- *   a single source of truth shared with the orchestrator.
- *   With the v5.4.2 quality guard, the blob's public
- *   envelope is always the most recent ACCEPTED build, so
- *   the public `nvdStatus` is "nvd" (enriched) as long as
- *   a good blob exists.
+ *   fields (`lastRefreshAttemptAt`, `lastRefreshFailure`,
+ *   `lastVulnrichmentRefresh`) that the refresh orchestrator
+ *   writes to record the most recent attempt's outcome.
+ *   These are STRIPPED from the public response so visitors
+ *   never see transient upstream failures (timeouts, 429s,
+ *   5xx, network errors) on a page that was served from a
+ *   still-good blob. The strip is driven by
+ *   `INTERNAL_BLOB_FIELDS` from refresh.mjs — a single
+ *   source of truth shared with the orchestrator. With the
+ *   v5.4.2 quality guard, the blob's public envelope is
+ *   always the most recent ACCEPTED build, so the public
+ *   `nvdStatus` is "nvd" (enriched) as long as a good
+ *   blob exists.
  *
  * Honesty contract (carried forward from v5.0.1 / v5.0.3):
  *   - CISA is the only gating upstream. If CISA fails, the
@@ -87,6 +116,10 @@
  *     never included in the response body or logs.
  *   - The prebuilt blob is NEVER overwritten with a mock
  *     fallback. Only a successful live build writes to it.
+ *   - Raw Vulnrichment errors (timeouts, 429s, 5xx, JSON
+ *     parse failures) NEVER reach the visitor. The public
+ *     envelope carries only the derived
+ *     `vulnrichmentStatus` / `vulnrichmentCoverage` fields.
  *
  * Refresh interaction:
  *   - This endpoint does NOT trigger refreshes. The scheduled
@@ -97,6 +130,9 @@
  *   - On every read, the endpoint checks the refresh-lock blob
  *     and sets `refreshInProgress` in the response. The UI uses
  *     this to show "Refresh running in background".
+ *   - The Vulnrichment enrichment cache is written only by
+ *     the refresh orchestrator. This endpoint reads it but
+ *     never writes to it.
  */
 
 import {
@@ -104,11 +140,17 @@ import {
 } from './_shared/liveBuild.mjs';
 import {
   getDatasetStore,
+  getVulnrichmentStore,
   isRefreshLocked,
   readLatestDataset,
+  readVulnrichmentCache,
   writeLatestDataset,
 } from './_shared/store.mjs';
 import { INTERNAL_BLOB_FIELDS } from './_shared/refresh.mjs';
+import {
+  mergeSsvcIntoRecords,
+  vulnrichmentStatusForCoverage,
+} from './_shared/vulnrichment.mjs';
 
 // ---------------------------------------------------------------------------
 // v5.4.2: Strip the internal operator-facing fields that the
@@ -126,6 +168,63 @@ function publicEnvelope(blob) {
     delete out[field];
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// v5.5: Read-time SSVC merge. Reads the Vulnrichment cache
+// (defensive — a Blobs read error becomes "no SSVC yet" so
+// the visitor still gets a fast response), merges the SSVC
+// fields into each record, and computes the public
+// `vulnrichmentStatus` / `vulnrichmentCoverage` envelope
+// metadata.
+//
+// The merge is in-memory only — the `latest-dataset` blob
+// is NOT rewritten. A Vulnrichment outage is therefore
+// transparent to the visitor: the existing dataset is
+// served, the public envelope just reports
+// `vulnrichmentStatus: 'unavailable'`.
+// ---------------------------------------------------------------------------
+
+async function attachVulnrichment(envelope, vulnStore) {
+  const base = publicEnvelope(envelope);
+  if (!Array.isArray(base.data)) {
+    return {
+      ...base,
+      vulnrichmentStatus: 'unavailable',
+      vulnrichmentCoverage: { enriched: 0, total: 0 },
+    };
+  }
+  if (!vulnStore) {
+    // No store (local dev without env vars) — still
+    // report the honest metadata so the UI doesn't show a
+    // stale state.
+    return {
+      ...base,
+      vulnrichmentStatus: 'unavailable',
+      vulnrichmentCoverage: { enriched: 0, total: base.data.length },
+    };
+  }
+  const cache = await readVulnrichmentCache(vulnStore);
+  const recordsByCve = (cache && cache.records) || {};
+
+  // Build the per-CVE SSVC lookup the merge function expects.
+  const ssvcByCve = {};
+  let enriched = 0;
+  for (const rec of base.data) {
+    if (!rec || typeof rec.cveId !== 'string') continue;
+    const cached = recordsByCve[rec.cveId];
+    if (cached && cached.ssvc && cached.ssvc.ssvcExploitation) {
+      ssvcByCve[rec.cveId] = cached.ssvc;
+      enriched++;
+    }
+  }
+  const merged = mergeSsvcIntoRecords(base.data, ssvcByCve);
+  return {
+    ...base,
+    data: merged,
+    vulnrichmentStatus: vulnrichmentStatusForCoverage(enriched, base.data.length),
+    vulnrichmentCoverage: { enriched, total: base.data.length },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +268,19 @@ export default async (request, context) => {
     store = null;
   }
 
+  // v5.5: Resolve the Vulnrichment store up-front so the
+  // SSVC merge is consistent across all three response
+  // paths (prebuilt store hit, bootstrap with blob, and
+  // bootstrap without blob). A missing store (e.g. Vite
+  // dev without env vars) is handled by the merge helper
+  // (it returns the honest 'unavailable' metadata).
+  let vulnStore = null;
+  try {
+    vulnStore = getVulnrichmentStore();
+  } catch {
+    vulnStore = null;
+  }
+
   // Lock state is computed for the response shape regardless
   // of whether the blob is present — the UI shows the
   // "Refresh running in background" pill from this flag.
@@ -186,12 +298,24 @@ export default async (request, context) => {
     if (prebuilt && prebuilt.mode === 'live' && Array.isArray(prebuilt.data)) {
       // Prebuilt envelope is returned verbatim — minus the
       // internal metadata fields (`lastRefreshAttemptAt`,
-      // `lastRefreshFailure`) that the refresh orchestrator
-      // stores for operator visibility but that must NEVER
-      // appear in the public response. The lock flag is
-      // overlaid so the UI knows a refresh is in flight.
+      // `lastRefreshFailure`, `lastVulnrichmentRefresh`) that
+      // the refresh orchestrator stores for operator
+      // visibility but that must NEVER appear in the public
+      // response. The lock flag is overlaid so the UI knows
+      // a refresh is in flight.
+      const base = publicEnvelope(prebuilt);
+      // v5.5: read-time SSVC merge. The prebuilt blob's
+      // records don't carry SSVC fields — the cache lives
+      // in a separate store. We merge the cache into the
+      // response here, and add the public
+      // `vulnrichmentStatus` / `vulnrichmentCoverage`
+      // envelope metadata. A Vulnrichment Blobs read error
+      // is contained by `attachVulnrichment` and degrades
+      // to `vulnrichmentStatus: 'unavailable'` with the
+      // existing data still served.
+      const enriched = await attachVulnrichment(base, vulnStore);
       return jsonResponse(200, {
-        ...publicEnvelope(prebuilt),
+        ...enriched,
         proxyStatus: 'proxy',
         dataSource: 'prebuilt-store',
         refreshInProgress,
@@ -221,9 +345,18 @@ export default async (request, context) => {
   //         here does not affect the current visitor — they
   //         still get the freshly-built dataset, and the next
   //         refresh will retry the write. ----
+  //
+  //   v5.5: the Vulnrichment merge is applied on the
+  //   bootstrap path too, so the first visitor on a fresh
+  //   deploy still gets the (typically empty)
+  //   `vulnrichmentStatus` / `vulnrichmentCoverage` envelope
+  //   metadata. The next scheduled refresh will populate
+  //   the cache and the next visitor after that sees the
+  //   enriched coverage. ----
+  const liveEnvelope = await attachVulnrichment(live, vulnStore);
   if (store) {
     const envelope = {
-      ...live,
+      ...liveEnvelope,
       proxyStatus: 'proxy',
       dataSource: 'live-build',
       refreshInProgress: false,
@@ -237,7 +370,7 @@ export default async (request, context) => {
   // proxyStatus tag and no dataSource so the client doesn't
   // think a shared blob exists.
   return jsonResponse(200, {
-    ...live,
+    ...liveEnvelope,
     proxyStatus: 'proxy',
     refreshInProgress: false,
   });

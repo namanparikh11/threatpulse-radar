@@ -1,12 +1,13 @@
 /**
- * Shared store + lock helpers for the v5.2 prebuilt dataset.
+ * Shared store + lock helpers for the v5.2 prebuilt dataset
+ * and the v5.5 Vulnrichment SSVC cache.
  *
  * Used by:
  *   - netlify/functions/dataset.mjs              (read: try-blob-first, else bootstrap)
  *   - netlify/functions/refresh-dataset-background.mjs (write: build + write + lock)
  *   - netlify/functions/refresh-dataset-scheduled.mjs  (write: same, on cron)
  *
- * Architecture (v5.2):
+ * Architecture (v5.2 / v5.5):
  *
  *   Netlify Blobs (store name: "tpr-dataset")
  *   ├── latest-dataset   → full FetchResult envelope (JSON).
@@ -28,6 +29,31 @@
  *                           refresh orchestrator preserves the existing
  *                           better blob instead of doing a doomed refresh.
  *
+ *   Netlify Blobs (store name: "tpr-vulnrichment")
+ *   └── cache            → { records: { [cveId]: { ssvc, cachedAt } |
+ *   │                                   { ssvc: null, status: 'missing',
+ *   │                                     cachedAt, checkedAt } },
+ *   │                        updatedAt: ISO string }.
+ *   │                        SSVC enrichment cache. Written only by the
+ *   │                        refresh orchestrator after the main CISA →
+ *   │                        NVD → EPSS build completes. The visitor
+ *   │                        never writes here — the dashboard's read
+ *   │                        path merges the cache into records at serve
+ *   │                        time and never touches this blob.
+ *   │                        Keeping the cache in its own store (vs.
+ *   │                        embedded in the main envelope) means a
+ *   │                        Vulnrichment refresh can't rewrite the main
+ *   │                        blob's `fetchedAt` and trigger spurious
+ *   │                        "newer dataset" banners (v5.1 contract).
+ *   │                        Negative-cache markers ('missing' status)
+ *   │                        are written for HTTP 404 responses so the
+ *   │                        same CVE isn't re-selected within the
+ *   │                        7-day staleness window; both
+ *   │                        `countEnriched` and `dataset.mjs` gate on
+ *   │                        `cached.ssvc.ssvcExploitation` so a marker
+ *   │                        with `ssvc: null` is naturally treated as
+ *   │                        "not enriched".
+ *
  * Local-dev note: `netlify dev` provides the Blobs emulator
  * automatically (via the Netlify CLI). For Vite-only `npm run dev`,
  * the helpers below will detect the missing context and the
@@ -40,6 +66,13 @@ import { getStore } from '@netlify/blobs';
 /** Netlify Blobs store name. Single source of truth. */
 export const STORE_NAME = 'tpr-dataset';
 
+/** v5.5: Netlify Blobs store name for the Vulnrichment SSVC
+ *  cache. Kept separate from the main dataset store so a
+ *  Vulnrichment refresh can't accidentally rewrite the
+ *  `latest-dataset` envelope and trigger a spurious "newer
+ *  dataset" banner. */
+export const VULNRICHMENT_STORE_NAME = 'tpr-vulnrichment';
+
 /** Blob key for the most recently built live dataset. */
 export const LATEST_DATASET_KEY = 'latest-dataset';
 
@@ -48,6 +81,12 @@ export const REFRESH_LOCK_KEY = 'refresh-lock';
 
 /** v5.2.6: Blob key for the NVD cooldown marker. */
 export const NVD_COOLDOWN_KEY = 'nvd-cooldown';
+
+/** v5.5: Blob key for the SSVC cache inside the
+ *  `tpr-vulnrichment` store. The value is a single JSON
+ *  object holding every CVE we've successfully enriched
+ *  so far — a small flat key→value map. */
+export const VULNRICHMENT_CACHE_KEY = 'cache';
 
 /**
  * Refresh-lock TTL (ms). Long enough for the longest realistic
@@ -88,6 +127,18 @@ export const NVD_COOLDOWN_TTL_MS = 15 * 60 * 1000;
 export function getDatasetStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
   return getStore({ name: STORE_NAME, consistency });
+}
+
+/**
+ * v5.5: Resolve a handle to the Vulnrichment Blobs store.
+ * The same `getStore` factory is reused; only the store
+ * `name` differs from `getDatasetStore`. The returned handle
+ * has the same `.get` / `.setJSON` / `.delete` API as the
+ * main dataset store.
+ */
+export function getVulnrichmentStore(opts = {}) {
+  const consistency = opts.consistency ?? 'strong';
+  return getStore({ name: VULNRICHMENT_STORE_NAME, consistency });
 }
 
 /**
@@ -323,4 +374,63 @@ export function buildCooldownPayload(
     expiresAt: expiresAt.toISOString(),
     reason: typeof reason === 'string' ? reason : 'NVD rate limit detected',
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* v5.5: Vulnrichment SSVC cache                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * v5.5: Read the SSVC cache blob. Returns `null` when the
+ * blob is missing, unreadable, or has an unexpected shape.
+ * Defensive try/catch — a transient Blobs read error is
+ * treated as "no cache yet" so the orchestrator can
+ * proceed with a fresh enrichment pass.
+ *
+ * The shape of the returned value:
+ *   {
+ *     records:  { [cveId]: { ssvc: {...}, cachedAt: epochMs } },
+ *     updatedAt: ISO string
+ *   }
+ *
+ * The `records` map contains BOTH positive SSVC entries
+ * (`{ ssvc, cachedAt }`) and negative-cache markers for
+ * HTTP 404 responses (`{ ssvc: null, status: 'missing',
+ * cachedAt, checkedAt }`). The marker is naturally ignored
+ * by `countEnriched` and `dataset.mjs` (both gate on
+ * `cached.ssvc.ssvcExploitation`) so it does NOT count
+ * toward `vulnrichmentCoverage.enriched`. The marker
+ * prevents the same CVE from being re-selected every
+ * cycle when the upstream has no record for it.
+ */
+export async function readVulnrichmentCache(store) {
+  if (!store) return null;
+  try {
+    const blob = await store.get(VULNRICHMENT_CACHE_KEY, { type: 'json' });
+    if (!blob || typeof blob !== 'object') return null;
+    if (!blob.records || typeof blob.records !== 'object') return null;
+    return {
+      records: blob.records,
+      updatedAt: typeof blob.updatedAt === 'string' ? blob.updatedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * v5.5: Write the SSVC cache blob. Silent on Blobs write
+ * errors so a transient Blobs outage on this path doesn't
+ * propagate as a 500 to the visitor — the next refresh
+ * will retry. Returns `true` on a successful write, `false`
+ * on any failure.
+ */
+export async function writeVulnrichmentCache(store, payload) {
+  if (!store) return false;
+  try {
+    await store.setJSON(VULNRICHMENT_CACHE_KEY, payload);
+    return true;
+  } catch {
+    return false;
+  }
 }
