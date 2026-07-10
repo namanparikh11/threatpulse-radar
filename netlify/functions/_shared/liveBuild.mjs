@@ -14,6 +14,21 @@
  * to v5.0.3 so the existing acceptance-proxy suite keeps
  * passing without modification.
  *
+ * v5.4.2 — Last-known-good dataset serving:
+ *   The envelope returned by `buildLiveDataset` now carries
+ *   a non-enumerable `NVD_OUTCOME` Symbol (`enriched`,
+ *   `cooldown-skipped`, `rate-limited`, `timed-out`,
+ *   `http-error`, `network-error`, `unknown`). The refresh
+ *   orchestrator reads it via `readNvdOutcome` to drive the
+ *   last-known-good preservation guard: when a refresh
+ *   produces an unavailable NVD result (any of the five
+ *   failure types OR a cooldown-skip) and the existing
+ *   `latest-dataset` blob is still NVD-enriched, the new
+ *   envelope is NOT written — visitors keep seeing the
+ *   existing good blob. The Symbol is invisible to
+ *   `JSON.stringify`, so the outcome never reaches the
+ *   browser directly.
+ *
  * IMPORTANT: this module has NO Netlify-Blobs dependencies. It
  * only knows how to talk to CISA / NVD / FIRST. The lock +
  * blob-write is the refresh orchestrator's job, not this
@@ -54,6 +69,67 @@ export const OVERALL_BUDGET_MS = 24_000;
  *   }
  */
 export const NVD_PARTIAL_META = Symbol.for('threatpulse.nvd.partialMeta');
+
+/**
+ * v5.4.2: Non-enumerable Symbol used to attach the NVD
+ * refresh outcome to the envelope returned by
+ * `buildLiveDataset`. The value is a short string:
+ *
+ *   'enriched'         — NVD returned CVSS scores for the run.
+ *   'cooldown-skipped' — the refresh orchestrator asked us to
+ *                        skip the NVD fetch (cooldown active
+ *                        and no good existing blob).
+ *   'rate-limited'     — NVD returned HTTP 429 for every chunk.
+ *   'timed-out'        — the NVD fetch hit the per-request
+ *                        timeout (PER_REQUEST_TIMEOUT_MS) or
+ *                        the overall OVERALL_BUDGET_MS budget.
+ *   'http-error'       — NVD returned a non-2xx, non-429 status
+ *                        (HTTP 5xx or other transient upstream
+ *                        error).
+ *   'network-error'    — the NVD fetch threw before getting
+ *                        a response (DNS, connection refused,
+ *                        TLS, etc.).
+ *   'unknown'          — fallback for any other failure mode.
+ *
+ * The Symbol is invisible to JSON.stringify, so the outcome
+ * never reaches the browser directly. The orchestrator
+ * (`refresh.mjs`) reads it via `readNvdOutcome` to drive the
+ * last-known-good preservation guard and to populate the
+ * internal `lastRefreshFailure` metadata.
+ */
+export const NVD_OUTCOME = Symbol.for('threatpulse.nvd.outcome');
+
+/**
+ * v5.4.2: Read the NVD outcome attached to an envelope via
+ * the `NVD_OUTCOME` Symbol. Returns `null` if the envelope
+ * is missing or has no outcome attached (e.g. older build
+ * produced before this field existed).
+ *
+ * Exported for the acceptance suite — lets the pure-JS
+ * tests verify the classification without going through
+ * `buildLiveDataset`.
+ */
+export function readNvdOutcome(envelope) {
+  if (!envelope) return null;
+  const outcome = envelope[NVD_OUTCOME];
+  return typeof outcome === 'string' ? outcome : null;
+}
+
+/**
+ * v5.4.2: Classify a thrown NVD error into one of the
+ * `NVD_OUTCOME` failure types. Used by `safeEnrich` to
+ * tag the envelope with the precise failure reason. The
+ * classification is based on the error message, which is
+ * produced in a single place (`fetchOneNvdBatch` /
+ * `withTimeout`) so the patterns are stable.
+ */
+function classifyNvdFailure(err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/timed\s*out|after\s+\d+\s*ms/i.test(msg)) return 'timed-out';
+  if (/HTTP\s+429|rate\s*limit/i.test(msg)) return 'rate-limited';
+  if (/HTTP\s+5\d\d/i.test(msg)) return 'http-error';
+  return 'network-error';
+}
 
 // ---------------------------------------------------------------------------
 // Upstream payload shapes (only the fields we read).
@@ -114,6 +190,12 @@ export async function buildLiveDataset(opts = {}) {
   // stays unchanged. The refresh orchestrator's quality guard
   // sees the rate-limited envelope and preserves the existing
   // better blob instead of writing this one.
+  //
+  // v5.4.2: the synthetic result carries `failureType:
+  // 'cooldown-skipped'` so the orchestrator can record the
+  // precise reason in the internal `lastRefreshFailure`
+  // metadata (operators want to know whether the latest skip
+  // was a cooldown short-circuit, a 429, a timeout, etc.).
   const nvdFetchPromise = skipNvd
     ? Promise.resolve({
         map: new Map(),
@@ -121,6 +203,7 @@ export async function buildLiveDataset(opts = {}) {
         reason:
           'NVD enrichment skipped (cooldown active); CVSS scores ' +
           'are unavailable for this refresh.',
+        failureType: 'cooldown-skipped',
       })
     : safeEnrich('NVD', () => fetchNvdForCves(cveIds), budgetRemaining());
 
@@ -152,7 +235,20 @@ export async function buildLiveDataset(opts = {}) {
     epssResult.map,
   );
 
-  return {
+  // v5.4.2: tag the envelope with the NVD refresh outcome
+  // (via the non-enumerable `NVD_OUTCOME` Symbol, hidden from
+  // JSON.stringify). The orchestrator reads it via
+  // `readNvdOutcome` to drive the last-known-good guard and
+  // to populate the internal `lastRefreshFailure` metadata.
+  // Enriched runs carry 'enriched'; any unavailable run
+  // carries the failure type classified by `classifyNvdFailure`
+  // (or the synthetic 'cooldown-skipped' from the skipNvd
+  // branch above).
+  const nvdOutcome = nvdStatus === 'nvd'
+    ? 'enriched'
+    : (nvdResult.failureType || 'unknown');
+
+  const envelope = {
     data: enriched,
     source: 'merged',
     fetchedAt: new Date().toISOString(),
@@ -162,6 +258,15 @@ export async function buildLiveDataset(opts = {}) {
     epssStatus: epssResult.status,
     epssReason: epssResult.reason,
   };
+
+  Object.defineProperty(envelope, NVD_OUTCOME, {
+    value: nvdOutcome,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
+
+  return envelope;
 }
 
 /**
@@ -204,7 +309,12 @@ async function safeEnrich(label, fn, budgetMs) {
   const start = Date.now();
   try {
     const map = await withTimeout(fn(), budgetMs, `${label} timed out`);
-    return { map, status: label === 'NVD' ? 'nvd' : 'first', reason: undefined };
+    return {
+      map,
+      status: label === 'NVD' ? 'nvd' : 'first',
+      reason: undefined,
+      failureType: undefined,
+    };
   } catch (err) {
     return {
       map: new Map(),
@@ -213,6 +323,12 @@ async function safeEnrich(label, fn, budgetMs) {
         err instanceof Error
           ? `${label} enrichment failed: ${err.message}`
           : `${label} enrichment failed: unknown error (after ${Date.now() - start} ms)`,
+      // v5.4.2: classify the failure type so the orchestrator
+      // can route the result to the right internal metadata
+      // (rate-limited vs timed-out vs http-error vs network).
+      // EPSS failures don't get classified — only NVD outcomes
+      // matter for the last-known-good guard.
+      failureType: label === 'NVD' ? classifyNvdFailure(err) : undefined,
     };
   }
 }
