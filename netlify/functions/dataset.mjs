@@ -51,9 +51,33 @@
  *   reports `vulnrichmentStatus: 'unavailable'` with the
  *   existing counts.
  *
+ * v5.6: GitHub Advisory Database enrichment (read-time merge).
+ *   Package-remediation context (GHSA id, severity, affected
+ *   packages + vulnerable ranges + first patched versions) is
+ *   stored separately in the `tpr-github-advisory` blob
+ *   store (key `cache`), and is merged into the public
+ *   response at serve time:
+ *     - records carrying a cached advisory entry gain a
+ *       `githubAdvisory` object with `ghsaId` /
+ *       `advisoryUrl` / `advisorySeverity` /
+ *       `githubReviewedAt` / `source` / `packages` fields;
+ *     - the response envelope gains
+ *       `githubAdvisoryStatus: 'available' | 'partial' | 'unavailable'`
+ *       and `githubAdvisoryCoverage: { enriched, total }`.
+ *   The merge is read-time only — the visitor's request
+ *   never mutates the cache, and the cache is never
+ *   rewritten when GitHub advisories are merged. A GitHub
+ *   outage (timeout / 403 / 429 / 5xx) leaves the existing
+ *   dataset envelope completely intact; the public envelope
+ *   just reports `githubAdvisoryStatus: 'unavailable'` with
+ *   the existing counts. The `latest-dataset` blob's
+ *   `fetchedAt` is NEVER modified by a GitHub Advisory
+ *   update — the v5.1 "newer dataset available" banner
+ *   cannot fire spuriously.
+ *
  * Response shape (200 — prebuilt store hit):
  *   {
- *     data: Vulnerability[],         // SSVC fields merged in
+ *     data: Vulnerability[],         // SSVC + GitHub Advisory fields merged in
  *     source: 'merged',
  *     fetchedAt: string (ISO),
  *     mode: 'live',
@@ -66,6 +90,8 @@
  *     refreshInProgress: boolean,
  *     vulnrichmentStatus: 'available' | 'partial' | 'unavailable',
  *     vulnrichmentCoverage: { enriched: number, total: number },
+ *     githubAdvisoryStatus: 'available' | 'partial' | 'unavailable',
+ *     githubAdvisoryCoverage: { enriched: number, total: number },
  *   }
  *
  * Response shape (200 — bootstrap path):
@@ -85,18 +111,18 @@
  * v5.4.2 — Last-known-good dataset serving:
  *   The prebuilt blob may carry internal operator-facing
  *   fields (`lastRefreshAttemptAt`, `lastRefreshFailure`,
- *   `lastVulnrichmentRefresh`) that the refresh orchestrator
- *   writes to record the most recent attempt's outcome.
- *   These are STRIPPED from the public response so visitors
- *   never see transient upstream failures (timeouts, 429s,
- *   5xx, network errors) on a page that was served from a
- *   still-good blob. The strip is driven by
- *   `INTERNAL_BLOB_FIELDS` from refresh.mjs — a single
- *   source of truth shared with the orchestrator. With the
- *   v5.4.2 quality guard, the blob's public envelope is
- *   always the most recent ACCEPTED build, so the public
- *   `nvdStatus` is "nvd" (enriched) as long as a good
- *   blob exists.
+ *   `lastVulnrichmentRefresh`, `lastGithubAdvisoryRefresh`)
+ *   that the refresh orchestrator writes to record the
+ *   most recent attempt's outcome. These are STRIPPED from
+ *   the public response so visitors never see transient
+ *   upstream failures (timeouts, 429s, 5xx, network
+ *   errors) on a page that was served from a still-good
+ *   blob. The strip is driven by `INTERNAL_BLOB_FIELDS`
+ *   from refresh.mjs — a single source of truth shared
+ *   with the orchestrator. With the v5.4.2 quality guard,
+ *   the blob's public envelope is always the most recent
+ *   ACCEPTED build, so the public `nvdStatus` is "nvd"
+ *   (enriched) as long as a good blob exists.
  *
  * Honesty contract (carried forward from v5.0.1 / v5.0.3):
  *   - CISA is the only gating upstream. If CISA fails, the
@@ -120,6 +146,14 @@
  *     parse failures) NEVER reach the visitor. The public
  *     envelope carries only the derived
  *     `vulnrichmentStatus` / `vulnrichmentCoverage` fields.
+ *   - Raw GitHub Advisory errors (timeouts, 403s, 429s, 5xx,
+ *     JSON parse failures, rate-limit response headers,
+ *     token-bearing responses) NEVER reach the visitor.
+ *     The public envelope carries only the derived
+ *     `githubAdvisoryStatus` / `githubAdvisoryCoverage`
+ *     fields. The optional `GITHUB_TOKEN` is read only
+ *     inside the GitHub Advisory fetcher and is never
+ *     serialized, logged, or returned in any response.
  *
  * Refresh interaction:
  *   - This endpoint does NOT trigger refreshes. The scheduled
@@ -133,6 +167,11 @@
  *   - The Vulnrichment enrichment cache is written only by
  *     the refresh orchestrator. This endpoint reads it but
  *     never writes to it.
+ *   - The GitHub Advisory enrichment cache is written only by
+ *     the refresh orchestrator. This endpoint reads it but
+ *     never writes to it. The prebuilt `latest-dataset`
+ *     blob's `fetchedAt` is NEVER modified by the GitHub
+ *     Advisory merge — the merge is in-memory only.
  */
 
 import {
@@ -140,8 +179,10 @@ import {
 } from './_shared/liveBuild.mjs';
 import {
   getDatasetStore,
+  getGithubAdvisoryStore,
   getVulnrichmentStore,
   isRefreshLocked,
+  readGithubAdvisoryCache,
   readLatestDataset,
   readVulnrichmentCache,
   writeLatestDataset,
@@ -151,6 +192,10 @@ import {
   mergeSsvcIntoRecords,
   vulnrichmentStatusForCoverage,
 } from './_shared/vulnrichment.mjs';
+import {
+  mergeAdvisoryIntoRecords,
+  githubAdvisoryStatusForCoverage,
+} from './_shared/githubAdvisory.mjs';
 
 // ---------------------------------------------------------------------------
 // v5.4.2: Strip the internal operator-facing fields that the
@@ -228,6 +273,71 @@ async function attachVulnrichment(envelope, vulnStore) {
 }
 
 // ---------------------------------------------------------------------------
+// v5.6: Read-time GitHub Advisory merge. Reads the GitHub
+// Advisory cache (defensive — a Blobs read error becomes
+// "no advisory yet" so the visitor still gets a fast
+// response), merges the package-remediation context into
+// each record, and computes the public `githubAdvisoryStatus`
+// / `githubAdvisoryCoverage` envelope metadata.
+//
+// The merge is in-memory only — the `latest-dataset` blob
+// is NOT rewritten. A GitHub Advisory outage is therefore
+// transparent to the visitor: the existing dataset is
+// served, the public envelope just reports
+// `githubAdvisoryStatus: 'unavailable'`. The
+// `latest-dataset` blob's `fetchedAt` is NEVER modified by
+// this merge, so the v5.1 "newer dataset available" banner
+// cannot fire spuriously.
+// ---------------------------------------------------------------------------
+
+async function attachGithubAdvisory(envelope, ghStore) {
+  const base = publicEnvelope(envelope);
+  if (!Array.isArray(base.data)) {
+    return {
+      ...base,
+      githubAdvisoryStatus: 'unavailable',
+      githubAdvisoryCoverage: { enriched: 0, total: 0 },
+    };
+  }
+  if (!ghStore) {
+    // No store (local dev without env vars) — still
+    // report the honest metadata so the UI doesn't show a
+    // stale state.
+    return {
+      ...base,
+      githubAdvisoryStatus: 'unavailable',
+      githubAdvisoryCoverage: { enriched: 0, total: base.data.length },
+    };
+  }
+  const cache = await readGithubAdvisoryCache(ghStore);
+  const recordsByCve = (cache && cache.records) || {};
+
+  // Build the per-CVE advisory lookup the merge function
+  // expects. Only positive advisory entries (those with a
+  // `ghsaId`) count as enriched — negative-cache markers
+  // are filtered out here, which is why
+  // `githubAdvisoryCoverage.enriched` only counts actual
+  // positive records (per the v5.6 spec requirement 17).
+  const advisoryByCve = {};
+  let enriched = 0;
+  for (const rec of base.data) {
+    if (!rec || typeof rec.cveId !== 'string') continue;
+    const cached = recordsByCve[rec.cveId];
+    if (cached && cached.advisory && cached.advisory.ghsaId) {
+      advisoryByCve[rec.cveId] = cached.advisory;
+      enriched++;
+    }
+  }
+  const merged = mergeAdvisoryIntoRecords(base.data, advisoryByCve);
+  return {
+    ...base,
+    data: merged,
+    githubAdvisoryStatus: githubAdvisoryStatusForCoverage(enriched, base.data.length),
+    githubAdvisoryCoverage: { enriched, total: base.data.length },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // HTTP response helper. The function lives at /.netlify/functions/dataset,
 // which is same-origin to the deployed app. v5.0.1 CDN-cacheable
 // response preserved unchanged.
@@ -281,6 +391,20 @@ export default async (request, context) => {
     vulnStore = null;
   }
 
+  // v5.6: Resolve the GitHub Advisory store up-front so the
+  // package-remediation merge is consistent across all
+  // three response paths. Same defensive contract as
+  // Vulnrichment: a missing store is handled by the merge
+  // helper, which returns the honest 'unavailable'
+  // metadata. The prebuilt `latest-dataset` blob's
+  // `fetchedAt` is NEVER modified by this merge.
+  let ghStore = null;
+  try {
+    ghStore = getGithubAdvisoryStore();
+  } catch {
+    ghStore = null;
+  }
+
   // Lock state is computed for the response shape regardless
   // of whether the blob is present — the UI shows the
   // "Refresh running in background" pill from this flag.
@@ -298,11 +422,12 @@ export default async (request, context) => {
     if (prebuilt && prebuilt.mode === 'live' && Array.isArray(prebuilt.data)) {
       // Prebuilt envelope is returned verbatim — minus the
       // internal metadata fields (`lastRefreshAttemptAt`,
-      // `lastRefreshFailure`, `lastVulnrichmentRefresh`) that
-      // the refresh orchestrator stores for operator
-      // visibility but that must NEVER appear in the public
-      // response. The lock flag is overlaid so the UI knows
-      // a refresh is in flight.
+      // `lastRefreshFailure`, `lastVulnrichmentRefresh`,
+      // `lastGithubAdvisoryRefresh`) that the refresh
+      // orchestrator stores for operator visibility but
+      // that must NEVER appear in the public response. The
+      // lock flag is overlaid so the UI knows a refresh
+      // is in flight.
       const base = publicEnvelope(prebuilt);
       // v5.5: read-time SSVC merge. The prebuilt blob's
       // records don't carry SSVC fields — the cache lives
@@ -313,7 +438,17 @@ export default async (request, context) => {
       // is contained by `attachVulnrichment` and degrades
       // to `vulnrichmentStatus: 'unavailable'` with the
       // existing data still served.
-      const enriched = await attachVulnrichment(base, vulnStore);
+      //
+      // v5.6: chain the GitHub Advisory merge on top of
+      // the SSVC merge. The `fetchedAt` of the prebuilt
+      // blob is NOT modified — the GitHub Advisory cache
+      // lives in its own store, and the merge is in-memory
+      // only. A Blobs read error is contained by
+      // `attachGithubAdvisory` and degrades to
+      // `githubAdvisoryStatus: 'unavailable'` with the
+      // existing data still served.
+      const withSsvc = await attachVulnrichment(base, vulnStore);
+      const enriched = await attachGithubAdvisory(withSsvc, ghStore);
       return jsonResponse(200, {
         ...enriched,
         proxyStatus: 'proxy',
@@ -352,8 +487,15 @@ export default async (request, context) => {
   //   `vulnrichmentStatus` / `vulnrichmentCoverage` envelope
   //   metadata. The next scheduled refresh will populate
   //   the cache and the next visitor after that sees the
-  //   enriched coverage. ----
-  const liveEnvelope = await attachVulnrichment(live, vulnStore);
+  //   enriched coverage.
+  //
+  //   v5.6: chain the GitHub Advisory merge on top of the
+  //   SSVC merge. Same pattern as the prebuilt-store path:
+  //   the merge is in-memory only, the bootstrap envelope's
+  //   `fetchedAt` is preserved, and a Blobs read error
+  //   degrades to `githubAdvisoryStatus: 'unavailable'`. ----
+  const liveWithSsvc = await attachVulnrichment(live, vulnStore);
+  const liveEnvelope = await attachGithubAdvisory(liveWithSsvc, ghStore);
   if (store) {
     const envelope = {
       ...liveEnvelope,

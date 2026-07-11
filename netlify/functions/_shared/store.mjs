@@ -54,6 +54,33 @@
  *   │                        with `ssvc: null` is naturally treated as
  *   │                        "not enriched".
  *
+ *   Netlify Blobs (store name: "tpr-github-advisory")
+ *   └── cache            → { records: { [cveId]: { advisory, cachedAt } |
+ *   │                                   { advisory: null, status: 'missing',
+ *   │                                     cachedAt, checkedAt } },
+ *   │                        updatedAt: ISO string }.
+ *   │                        GitHub Advisory Database enrichment cache.
+ *   │                        Written only by the refresh orchestrator
+ *   │                        after the main CISA → NVD → EPSS build
+ *   │                        completes; the visitor's read path merges
+ *   │                        the cache into records at serve time and
+ *   │                        never writes here.
+ *   │                        Kept in its own store (separate from both
+ *   │                        the main dataset and the Vulnrichment
+ *   │                        cache) so a GitHub outage leaves the
+ *   │                        SSVC fields completely untouched, and so
+ *   │                        a GitHub refresh can't rewrite the main
+ *   │                        blob's `fetchedAt` and trigger spurious
+ *   │                        "newer dataset" banners (v5.1 contract).
+ *   │                        Negative-cache markers are written for
+ *   │                        HTTP 200 + empty array or HTTP 404
+ *   │                        responses so the same CVE isn't re-selected
+ *   │                        within the 7-day staleness window; both
+ *   │                        `countEnriched` and `dataset.mjs` gate on
+ *   │                        `cached.advisory.ghsaId` so a marker with
+ *   │                        `advisory: null` is naturally treated as
+ *   │                        "not enriched".
+ *
  * Local-dev note: `netlify dev` provides the Blobs emulator
  * automatically (via the Netlify CLI). For Vite-only `npm run dev`,
  * the helpers below will detect the missing context and the
@@ -73,6 +100,19 @@ export const STORE_NAME = 'tpr-dataset';
  *  dataset" banner. */
 export const VULNRICHMENT_STORE_NAME = 'tpr-vulnrichment';
 
+/** v5.6: Netlify Blobs store name for the GitHub Advisory
+ *  Database enrichment cache. Kept separate from BOTH the
+ *  main dataset store and the Vulnrichment cache so:
+ *    - a GitHub outage leaves the SSVC fields untouched;
+ *    - a GitHub refresh can't rewrite the main blob's
+ *      `fetchedAt` and trigger spurious "newer dataset"
+ *      banners (v5.1 contract);
+ *    - the cache schema is independent of the SSVC cache
+ *      schema, so future fields (e.g. CVSS from the
+ *      advisory payload) can be added without touching the
+ *      Vulnrichment blob. */
+export const GITHUB_ADVISORY_STORE_NAME = 'tpr-github-advisory';
+
 /** Blob key for the most recently built live dataset. */
 export const LATEST_DATASET_KEY = 'latest-dataset';
 
@@ -87,6 +127,12 @@ export const NVD_COOLDOWN_KEY = 'nvd-cooldown';
  *  object holding every CVE we've successfully enriched
  *  so far — a small flat key→value map. */
 export const VULNRICHMENT_CACHE_KEY = 'cache';
+
+/** v5.6: Blob key for the GitHub Advisory cache inside
+ *  the `tpr-github-advisory` store. The value is a single
+ *  JSON object holding every CVE we've successfully
+ *  enriched so far — a small flat key→value map. */
+export const GITHUB_ADVISORY_CACHE_KEY = 'cache';
 
 /**
  * Refresh-lock TTL (ms). Long enough for the longest realistic
@@ -139,6 +185,18 @@ export function getDatasetStore(opts = {}) {
 export function getVulnrichmentStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
   return getStore({ name: VULNRICHMENT_STORE_NAME, consistency });
+}
+
+/**
+ * v5.6: Resolve a handle to the GitHub Advisory Blobs
+ * store. The same `getStore` factory is reused; only the
+ * store `name` differs from `getDatasetStore` and
+ * `getVulnrichmentStore`. The returned handle has the same
+ * `.get` / `.setJSON` / `.delete` API as the other stores.
+ */
+export function getGithubAdvisoryStore(opts = {}) {
+  const consistency = opts.consistency ?? 'strong';
+  return getStore({ name: GITHUB_ADVISORY_STORE_NAME, consistency });
 }
 
 /**
@@ -434,3 +492,63 @@ export async function writeVulnrichmentCache(store, payload) {
     return false;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* v5.6: GitHub Advisory Database cache                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * v5.6: Read the GitHub Advisory cache blob. Returns `null`
+ * when the blob is missing, unreadable, or has an unexpected
+ * shape. Defensive try/catch — a transient Blobs read error
+ * is treated as "no cache yet" so the orchestrator can
+ * proceed with a fresh enrichment pass.
+ *
+ * The shape of the returned value:
+ *   {
+ *     records:  { [cveId]: { advisory: {...}, cachedAt: epochMs } },
+ *     updatedAt: ISO string
+ *   }
+ *
+ * The `records` map contains BOTH positive advisory entries
+ * (`{ advisory, cachedAt }`) and negative-cache markers for
+ * empty-array or 404 responses
+ * (`{ advisory: null, status: 'missing', cachedAt, checkedAt }`).
+ * The marker is naturally ignored by `countEnriched` and
+ * `dataset.mjs` (both gate on `cached.advisory.ghsaId`) so it
+ * does NOT count toward `githubAdvisoryCoverage.enriched`.
+ * The marker prevents the same CVE from being re-selected
+ * every cycle when the upstream has no record for it.
+ */
+export async function readGithubAdvisoryCache(store) {
+  if (!store) return null;
+  try {
+    const blob = await store.get(GITHUB_ADVISORY_CACHE_KEY, { type: 'json' });
+    if (!blob || typeof blob !== 'object') return null;
+    if (!blob.records || typeof blob.records !== 'object') return null;
+    return {
+      records: blob.records,
+      updatedAt: typeof blob.updatedAt === 'string' ? blob.updatedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * v5.6: Write the GitHub Advisory cache blob. Silent on
+ * Blobs write errors so a transient Blobs outage on this
+ * path doesn't propagate as a 500 to the visitor — the next
+ * refresh will retry. Returns `true` on a successful write,
+ * `false` on any failure.
+ */
+export async function writeGithubAdvisoryCache(store, payload) {
+  if (!store) return false;
+  try {
+    await store.setJSON(GITHUB_ADVISORY_CACHE_KEY, payload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+

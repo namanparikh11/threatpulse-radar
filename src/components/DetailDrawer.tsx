@@ -1,6 +1,8 @@
-import { ClipboardList, ExternalLink, ShieldCheck, X } from 'lucide-react';
+import { ClipboardList, ExternalLink, Package, ShieldCheck, X } from 'lucide-react';
 import { useEffect } from 'react';
 import type {
+  GithubAdvisory,
+  GithubAdvisoryPackage,
   SsvcAutomatable,
   SsvcExploitation,
   SsvcTechnicalImpact,
@@ -113,6 +115,13 @@ function DrawerBody({ vuln, onClose }: { vuln: Vulnerability; onClose: () => voi
           icon={<ClipboardList className="h-3.5 w-3.5 text-radar-accent" />}
         >
           <SsvcContext vuln={vuln} />
+        </Section>
+
+        <Section
+          title="Package remediation context"
+          icon={<Package className="h-3.5 w-3.5 text-radar-accent" />}
+        >
+          <GithubAdvisoryContext vuln={vuln} />
         </Section>
 
         <Section title="External references">
@@ -307,5 +316,186 @@ function formatSsvcTechnicalImpact(value: SsvcTechnicalImpact | undefined) {
       return { label: 'Partial', tone: 'text-radar-accent' };
     default:
       return { label: 'Unknown', tone: 'text-radar-muted' };
+  }
+}
+
+/**
+ * v5.6: Compact "Package remediation context" panel for the
+ * vulnerability detail drawer. Surfaces the GitHub Advisory
+ * Database review for the CVE — GHSA id, severity, the
+ * most recent GitHub review date, the source label
+ * ("GitHub Advisory Database"), and (when present) a
+ * per-package breakdown of the ecosystem / package name /
+ * affected version range / first patched version.
+ *
+ * Rendered only when a positive reviewed advisory exists;
+ * otherwise the honest empty-state copy "No GitHub-reviewed
+ * package advisory available." is shown. The empty state
+ * is intentionally NOT styled as an error — partial
+ * coverage is a normal state of the incremental backfill,
+ * not a failure.
+ *
+ * Spec contract:
+ *   - `ghsaId` / `advisoryUrl` / `advisorySeverity` /
+ *     `githubReviewedAt` / `source` come from the
+ *     normalized advisory payload (see
+ *     `githubAdvisory.mjs#extractReviewedAdvisories`).
+ *   - `packages` is a deduplicated, capped-at-5 list of
+ *     package entries with `ecosystem` / `name` /
+ *     `vulnerableVersionRange` / `firstPatchedVersion`.
+ *   - `firstPatchedVersion: null` is rendered as the
+ *     explicit neutral copy "First patched version
+ *     unavailable." — NEVER as "No fix exists". This
+ *     distinction is a hard contract (v5.6 spec
+ *     requirement 11).
+ *   - The external `advisoryUrl` link uses the normalized
+ *     GitHub `html_url`, opens in a new tab, and uses
+ *     `rel="noreferrer noopener"` for safety.
+ */
+function GithubAdvisoryContext({ vuln }: { vuln: Vulnerability }) {
+  const advisory = vuln.githubAdvisory;
+  if (!advisory || !advisory.ghsaId) {
+    return (
+      <p className="rounded-md border border-radar-border bg-radar-panel2/60 p-3 text-xs text-radar-muted">
+        No GitHub-reviewed package advisory available.
+      </p>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-radar-border bg-radar-panel2/60 p-3">
+      <dl className="grid grid-cols-1 gap-2 text-[11px] text-radar-dim sm:grid-cols-2">
+        <div>
+          <dt className="font-medium uppercase tracking-wider text-radar-muted">
+            GHSA
+          </dt>
+          <dd className="mt-0.5">
+            {advisory.advisoryUrl ? (
+              <a
+                href={advisory.advisoryUrl}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="focus-ring inline-flex items-center gap-1.5 text-radar-accent underline-offset-2 hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" />
+                <span className="font-mono">{advisory.ghsaId}</span>
+              </a>
+            ) : (
+              <span className="font-mono text-radar-text">
+                {advisory.ghsaId}
+              </span>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium uppercase tracking-wider text-radar-muted">
+            Severity
+          </dt>
+          <dd
+            className={`mt-0.5 text-sm font-medium ${advisorySeverityTone(
+              advisory.advisorySeverity
+            )}`}
+          >
+            {formatAdvisorySeverity(advisory.advisorySeverity)}
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium uppercase tracking-wider text-radar-muted">
+            GitHub-reviewed
+          </dt>
+          <dd className="mt-0.5 text-radar-text">
+            {advisory.githubReviewedAt
+              ? formatAbsolute(advisory.githubReviewedAt)
+              : 'Unknown'}
+          </dd>
+        </div>
+        <div>
+          <dt className="font-medium uppercase tracking-wider text-radar-muted">
+            Source
+          </dt>
+          <dd className="mt-0.5 text-radar-text">
+            {advisory.source}
+          </dd>
+        </div>
+      </dl>
+      {Array.isArray(advisory.packages) && advisory.packages.length > 0 ? (
+        <div className="mt-3">
+          <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-radar-muted">
+            Affected packages
+          </div>
+          <ul className="space-y-2">
+            {advisory.packages.map((p, idx) => (
+              <PackageEntry key={`${p.ecosystem}-${p.name}-${idx}`} pkg={p} />
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PackageEntry({ pkg }: { pkg: GithubAdvisoryPackage }) {
+  return (
+    <li className="rounded-md border border-radar-border bg-radar-panel/60 p-2.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-radar-text">
+            <span className="text-radar-muted">{pkg.ecosystem}</span>
+            <span className="px-1 text-radar-dim">/</span>
+            <span className="font-mono">{pkg.name}</span>
+          </div>
+          {pkg.vulnerableVersionRange ? (
+            <div className="mt-0.5 text-[11px] text-radar-dim">
+              <span className="uppercase tracking-wider">Affected:</span>{' '}
+              <span className="font-mono">{pkg.vulnerableVersionRange}</span>
+            </div>
+          ) : null}
+        </div>
+        <div className="shrink-0 text-right">
+          <div className="text-[10px] uppercase tracking-wider text-radar-muted">
+            First patched
+          </div>
+          <div className="mt-0.5 font-mono text-sm text-radar-text">
+            {pkg.firstPatchedVersion
+              ? pkg.firstPatchedVersion
+              : 'unavailable'}
+          </div>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function formatAdvisorySeverity(value: Vulnerability['githubAdvisory'] extends infer A
+  ? A extends { advisorySeverity: infer S }
+    ? S
+    : never
+  : never) {
+  switch (value) {
+    case 'critical':
+      return 'Critical';
+    case 'high':
+      return 'High';
+    case 'medium':
+      return 'Medium';
+    case 'low':
+      return 'Low';
+    default:
+      return 'Unknown';
+  }
+}
+
+function advisorySeverityTone(value: GithubAdvisory['advisorySeverity']) {
+  switch (value) {
+    case 'critical':
+      return 'text-radar-warn';
+    case 'high':
+      return 'text-radar-warn';
+    case 'medium':
+      return 'text-radar-accent2';
+    case 'low':
+      return 'text-radar-accent';
+    default:
+      return 'text-radar-muted';
   }
 }
