@@ -5,7 +5,7 @@
 > probability, and severity across your stack in one focused
 > command-center view.
 
-![status](https://img.shields.io/badge/status-v5.3-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v5.5.1-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -33,7 +33,7 @@ dashboard surfaces those honestly rather than papering over them.
 
 ## What it does
 
-ThreatPulse Radar joins three public defensive-intelligence feeds into a
+ThreatPulse Radar joins four public defensive-intelligence feeds into a
 single filterable dashboard:
 
 | Feed | Provides | Source |
@@ -41,6 +41,7 @@ single filterable dashboard:
 | **CISA KEV** | "This CVE is being actively exploited in the wild" | [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) |
 | **NVD CVE 2.0** | CVSS base score + severity (v3.1 → v3.0 → v2) | [NVD](https://nvd.nist.gov/) |
 | **FIRST EPSS** | Probability of exploitation in the next 30 days | [FIRST EPSS](https://www.first.org/epss/) |
+| **CISA Vulnrichment** | CISA SSVC decision context — Exploitation, Automatable, Technical impact | [cisagov/vulnrichment](https://github.com/cisagov/vulnrichment) |
 
 The result is a one-page command center:
 
@@ -50,13 +51,51 @@ The result is a one-page command center:
   severity filter, KEV-only toggle, minimum EPSS slider, sort by
   newest / CVSS / EPSS / KEV
 - **Detail drawer** — full description, metrics, recommended defensive
-  action, external links to CISA KEV + NVD
+  action, external links to CISA KEV + NVD, and (when available) the
+  CISA SSVC decision context for that CVE
 - **Dark cybersecurity command-center theme** — neon cyan / amber
   accents, desktop-first responsive
 
 The same `Vulnerability` shape is used end-to-end, so the filter / sort
 / chart pipeline doesn't care which upstream provider contributed which
 record.
+
+### CISA Vulnrichment / SSVC — what it adds, and what it does not
+
+The fourth feed is CISA's public **Vulnrichment** repository, which
+publishes CISA-ADP **SSVC (Stakeholder-Specific Vulnerability
+Categorization)** decision context for selected CVEs. Three
+fields are surfaced in the dashboard:
+
+- **Exploitation** — `none` / `poc` / `active` (whether exploitation
+  is observed in the wild, has proof-of-concept code, or is
+  actively used)
+- **Automatable** — `yes` / `no` (whether exploitation can be
+  automated)
+- **Technical impact** — `partial` / `total` (the scope of the
+  technical impact if exploited)
+
+Coverage is **incremental and partial**. Not every CVE in the
+dashboard has a CISA Vulnrichment assessment; the backend fetches at
+most 50 missing-or-stale CVEs per background run, and a CVE for
+which the upstream returns HTTP 404 ("no CISA Vulnrichment
+assessment available") is recorded as a lightweight negative-cache
+marker so the backfill continues with the rest of the queue rather
+than looping over the same CVEs every cycle. The public dataset
+envelope carries two derived metadata fields — `vulnrichmentStatus:
+"available" | "partial" | "unavailable"` and
+`vulnrichmentCoverage: { enriched, total }` — that reflect the
+actual cache state at read time. The dashboard never claims
+`available` while backfill is still in progress, and the SSVC
+fields themselves stay drawer-only (see below).
+
+SSVC is shown **only in the vulnerability details drawer**, as a
+"**CISA decision context**" section. It is intentionally **not** a
+main-table column and is **not** combined with NVD / EPSS / KEV
+into a proprietary "ThreatPulse score" — the four signals stay
+independent so a defender can weigh them separately. If a CVE has
+no Vulnrichment record, the drawer renders the empty-state copy
+"No CISA Vulnrichment assessment available."
 
 ---
 
@@ -72,10 +111,15 @@ record.
    │   1. Try `latest-dataset` blob (prebuilt envelope)      │
    │      ├─ hit  → return immediately                        │
    │      └─ miss → build live (bootstrap path)              │
+   │   2. Read-time merge: SSVC from `tpr-vulnrichment`      │
+   │      blob attached to each record in-memory             │
    │                                                         │
    │   Response tagged with:                                 │
    │     dataSource: "prebuilt-store" | "live-build"          │
    │     refreshInProgress: <bool>  (from refresh-lock blob) │
+   │     vulnrichmentStatus: "available" | "partial" |        │
+   │                          "unavailable"                  │
+   │     vulnrichmentCoverage: { enriched, total }           │
    └─────────────────────────────────────────────────────────┘
             │                                  ▲
             │ writes                           │ acquires
@@ -101,7 +145,7 @@ record.
             │ build                       build
             ▼                              ▼
    ┌──────────────────────────────────────────────────────┐
-   │  Shared build pipeline:                              │
+   │  Shared build pipeline (main envelope):              │
    │    CISA KEV  →  NVD CVE 2.0  →  FIRST EPSS           │
    │                                                      │
    │  • Optional NVD_API_KEY (server-side only) raises    │
@@ -111,9 +155,38 @@ record.
    │  • 15-min NVD cooldown marker avoids hammering a     │
    │    known-flaky NVD                                   │
    └──────────────────────────────────────────────────────┘
+                       │
+                       │ after a successful main build, a
+                       │ v5.5 incremental enrichment pass runs
+                       │ in the same refresh:
+                       ▼
+   ┌──────────────────────────────────────────────────────┐
+   │  CISA Vulnrichment enrichment (server-side, post-step):│
+   │    • Incremental: only CVEs missing or > 7 d stale   │
+   │    • Capped at 50 CVEs per refresh run               │
+   │    • Concurrency 5; KEV-newest first                  │
+   │    • HTTP 404 → negative-cache marker                 │
+   │      (so the same CVE is not re-selected every run)  │
+   │    • A 404 never overwrites a positive SSVC record   │
+   │    • Public `vulnrichmentStatus` /                   │
+   │      `vulnrichmentCoverage` are computed at read-time │
+   └──────────────────────────────────────────────────────┘
+                       │
+                       │ writes
+                       ▼
+   ┌──────────────────────────┐
+   │  Netlify Blobs store     │
+   │  (name: tpr-vulnrichment)│   ◄── separate from the main
+   │  ┌────────────────────┐  │       dataset blob; the visitor
+   │  │ cache              │  │       read path never writes here
+   │  │  (SSVC records +   │  │
+   │  │   negative-cache   │  │
+   │  │   markers)         │  │
+   │  └────────────────────┘  │
+   └──────────────────────────┘
 ```
 
-**Three properties this architecture guarantees:**
+**Four properties this architecture guarantees:**
 
 1. **The build runs once on the server**, not per visitor. The prebuilt
    blob is the source of truth for normal traffic; cron + manual
@@ -124,6 +197,15 @@ record.
 3. **The browser never blocks on the upstream pipeline.** The first
    visitor after a cold deploy pays the bootstrap cost once; everyone
    after reads the prebuilt blob.
+4. **Vulnrichment is incremental, partial, and never pollutes the
+   main blob.** SSVC is stored in its own Netlify Blobs store
+   (`tpr-vulnrichment`) and merged into the public response at read
+   time. The prebuilt `latest-dataset` blob's `fetchedAt` is never
+   rewritten by a Vulnrichment update, so the v5.1 "newer dataset
+   available" banner can never fire spuriously. Up to 50 missing /
+   stale CVEs are enriched per background run; CVEs that return
+   HTTP 404 receive a lightweight negative-cache marker so the
+   backfill queue keeps moving instead of looping.
 
 ---
 
@@ -146,6 +228,17 @@ contributed:
 - **Dataset store:** `latest available` / `bootstrapping` /
   `refresh running in background` — visible state of the prebuilt
   blob + refresh lock
+
+Vulnrichment is intentionally **not** surfaced as a separate
+header pill. The two public dataset metadata fields
+(`vulnrichmentStatus: "available" | "partial" | "unavailable"`
+and `vulnrichmentCoverage: { enriched, total }`) are computed
+at read time and shipped in the function response body, but
+there is no badge in the current header for them — a defender
+who wants the current coverage value can read it from
+DevTools → Network → the `/.netlify/functions/dataset`
+response. The SSVC decision context itself is shown only in
+the vulnerability details drawer (see the section above).
 
 ### Per-provider status pills
 
@@ -177,6 +270,51 @@ If NVD returns HTTP 429 (its anonymous endpoint allows only 5 req / 30s):
 - A 15-minute cooldown marker is set so the next refresh
   short-circuits the doomed NVD fetch
 - When the cooldown expires, normal refresh behavior resumes
+
+### CISA Vulnrichment / SSVC reliability
+
+The Vulnrichment enrichment is incremental, partial, and isolated
+from the main dataset blob:
+
+- **Separate Netlify Blobs store.** SSVC records live in their own
+  store (`tpr-vulnrichment`, key `cache`). The visitor's read path
+  merges them into records at serve time and never writes to this
+  store. The prebuilt `latest-dataset` blob's `fetchedAt` is never
+  rewritten by a Vulnrichment update, so the v5.1 "newer dataset
+  available" banner can never fire spuriously.
+- **Incremental and capped.** Each refresh selects at most 50
+  CVEs that are missing from the cache or older than the 7-day
+  staleness window, runs at concurrency 5, and sorts by KEV
+  `dateAdded` descending so the most-recently-added KEV entries
+  are enriched first. The full dataset is never refetched in a
+  single cycle.
+- **HTTP 404 is "no assessment", not a failure.** When the
+  upstream repository has no record for a CVE (HTTP 404), the
+  refresh writes a lightweight negative-cache marker
+  (`{ ssvc: null, status: "missing", cachedAt, checkedAt }`)
+  instead of re-fetching the same CVE on every cycle. A stale
+  negative entry (older than the 7-day window) is re-selected
+  so a newly published CISA assessment eventually replaces it.
+- **A 404 never overwrites a positive record.** If the cache
+  already holds a positive SSVC record for a CVE, a later 404
+  leaves the positive record untouched — losing real data on a
+  transient upstream inconsistency is worse than keeping a
+  possibly-stale one.
+- **`vulnrichmentCoverage.enriched` counts only positive SSVC
+  records.** The 404 markers are not counted as enriched; the
+  public envelope's `available` / `partial` / `unavailable`
+  status is derived from the honest `{ enriched, total }` ratio
+  and never claims `available` while backfill is still incomplete.
+- **No internal metadata reaches the visitor.** The
+  per-cycle operator fields (`lastVulnrichmentRefresh`,
+  `lastRefreshFailure`, `lastRefreshAttemptAt`) are written to
+  the prebuilt blob for operators to inspect, but they are
+  stripped from the public response before the dataset endpoint
+  returns. The frontend bundle never references the
+  `raw.githubusercontent.com` upstream — the browser has no
+  way to call Vulnrichment directly, and a malicious visitor
+  cannot reconstruct a 404 reason or transient failure from
+  the response body.
 
 ### Manual refresh never blocks the user
 
@@ -251,7 +389,9 @@ threatpulse-radar/
 │       └── _shared/
 │           ├── store.mjs             # Netlify Blobs + lock + cooldown helpers
 │           ├── refresh.mjs           # lock + write orchestrator + quality guard
-│           └── liveBuild.mjs         # shared CISA → NVD → EPSS pipeline
+│           ├── liveBuild.mjs         # shared CISA → NVD → EPSS pipeline
+│           ├── vulnrichment.mjs      # CISA Vulnrichment path / parser / coverage (v5.5)
+│           └── vulnrichmentRefresh.mjs # CISA Vulnrichment incremental orchestrator (v5.5)
 └── src/
     ├── main.tsx                       # entry
     ├── App.tsx                        # thin shell
@@ -349,17 +489,27 @@ in it are the artifact — not the feature list.
 
 What I would point to in a review:
 
-- **Per-provider status side-channels.** CISA, NVD, and FIRST are
-  three independent services with three independent failure modes.
-  The `FetchResult` shape has separate `nvdStatus` and `epssStatus`
-  fields so partial outages degrade honestly instead of misrepresenting
-  the data.
+- **Per-provider status side-channels.** CISA, NVD, FIRST, and CISA
+  Vulnrichment are four independent services with four independent
+  failure modes. The `FetchResult` shape has separate `nvdStatus`,
+  `epssStatus`, `vulnrichmentStatus`, and `vulnrichmentCoverage`
+  fields so partial outages degrade honestly instead of
+  misrepresenting the data.
 - **Prebuilt blob + quality guard.** A shared `latest-dataset`
   Netlify Blobs entry decouples the upstream pipeline from per-request
   latency. The orchestrator refuses to overwrite a better envelope
   with a rate-limited downgrade — a real-world reliability bug
   (NVD HTTP 429 silently worsening the cached data) that most
   tutorials skip.
+- **Incremental, partial enrichment with negative caching.** The
+  v5.5 CISA Vulnrichment pass is a separate post-step that
+  enriches at most 50 missing/stale CVEs per background run
+  instead of re-fetching the full dataset. HTTP 404 results are
+  written as lightweight negative-cache markers so the backfill
+  queue keeps moving instead of looping over the same CVEs every
+  cycle. Coverage is reported honestly as `{ enriched, total }` —
+  the dashboard never claims `available` while backfill is still
+  incomplete.
 - **No API keys in the frontend bundle.** `NVD_API_KEY` is read from
   `process.env` inside the Netlify Function only, passed as a request
   header, never exposed. The app works identically without it.
@@ -387,9 +537,9 @@ tooling. The mock CVEs in `src/data/mockVulnerabilities.ts` are
 fictional and provided for visualization purposes; always refer to
 upstream advisories before taking action.
 
-The NVD, CISA KEV, and FIRST EPSS feeds are public services operated by
-their respective organizations. ThreatPulse Radar is not affiliated
-with NIST, CISA, or FIRST.
+The NVD, CISA KEV, CISA Vulnrichment, and FIRST EPSS feeds are public
+services operated by their respective organizations. ThreatPulse
+Radar is not affiliated with NIST, CISA, or FIRST.
 
 ---
 

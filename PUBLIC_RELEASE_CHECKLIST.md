@@ -104,6 +104,56 @@ history to be fully clean, rewrite history with
 For most public-release cases the working-tree-only removal
 done in v5.4.1 is sufficient.
 
+### 7. CISA Vulnrichment — internal metadata isolation — **clean**
+
+The v5.5 Vulnrichment enrichment introduces a fourth
+defensive-intelligence feed and a separate Netlify Blobs
+store (`tpr-vulnrichment`). The public-surface contract is
+the same as the existing CISA KEV / NVD / EPSS feeds:
+
+- ✅ The visitor's response body never contains any of the
+  internal operator-only fields the refresh orchestrator
+  writes to the prebuilt blob: no `lastVulnrichmentRefresh`,
+  no `lastRefreshFailure`, no `lastRefreshAttemptAt`. These
+  are stripped by the `publicEnvelope()` helper in
+  `netlify/functions/dataset.mjs` (driven by the
+  `INTERNAL_BLOB_FIELDS` set in `refresh.mjs`) before the
+  response is sent.
+- ✅ The Vulnrichment orchestrator's transient-failure
+  `reason` is not part of the public envelope. The
+  per-cycle `lastVulnrichmentRefresh` envelope carries
+  the precise provider failure message in its internal
+  `reason` field, but that envelope is on `INTERNAL_BLOB_FIELDS`
+  and is stripped before the response is sent. The
+  public envelope carries only the coarse
+  `vulnrichmentStatus: "available" | "partial" |
+  "unavailable"` and the `vulnrichmentCoverage: { enriched,
+  total }` counts.
+  Note: this is the Vulnrichment-specific boundary. The
+  NVD and EPSS provider-facing sanitized `nvdReason` /
+  `epssReason` strings ARE intentionally part of the
+  public provider-status contract — they are rendered
+  verbatim by the `NvdUnavailableBanner` /
+  `EpssUnavailableBanner` so a defender can see *why* a
+  provider failed, and the application already uses them.
+  The two contracts are different and should not be
+  conflated.
+- ✅ The frontend bundle never references the Vulnrichment
+  upstream directly. There is no `raw.githubusercontent.com`
+  or `cisagov/vulnrichment` reference in any `src/**` file;
+  the browser has no way to call Vulnrichment itself. The
+  dashboard reads only the two public envelope fields
+  (`vulnrichmentStatus` / `vulnrichmentCoverage`) plus the
+  per-record SSVC fields from the Netlify Function.
+- ✅ The Vulnrichment cache is in a separate Netlify Blobs
+  store (`tpr-vulnrichment`) and is never mixed into the
+  main `latest-dataset` blob. A Vulnrichment refresh cannot
+  rewrite the main blob's `fetchedAt` and trigger a spurious
+  "newer dataset available" banner (v5.1 contract).
+- ✅ The acceptance suite (`scripts/acceptance-vulnrichment.mjs`,
+  125 assertions) actively asserts all of the above as a
+  regression guard.
+
 ---
 
 ## Pre-release steps (run before flipping the repo public)
@@ -137,9 +187,11 @@ node scripts/acceptance-cisa.mjs
 node scripts/acceptance-epss.mjs
 node scripts/acceptance-nvd.mjs
 node scripts/acceptance-cache.mjs
+node scripts/acceptance-lastknowngood.mjs
+node scripts/acceptance-vulnrichment.mjs
 ```
 
-All seven scripts must report `PASSED (N/N)` with no failures.
+All nine scripts must report `PASSED (N/N)` with no failures.
 
 ### C. Verify the production deploy is honest
 
@@ -154,11 +206,37 @@ On the live demo at
 - The CVSS column has non-zero values for KEV records that
   exist in NVD; KEV records NVD hasn't published yet keep
   `cvssScore: 0` with the CISA-derived severity.
+- For at least one KEV-listed CVE, open the detail drawer
+  and verify the "CISA decision context" section either
+  shows the three SSVC fields with a `CISA Vulnrichment`
+  source label, or the empty-state copy "No CISA Vulnrichment
+  assessment available." SSVC is intentionally **not** a
+  main-table column.
+- The public `vulnrichmentStatus` and `vulnrichmentCoverage`
+  values are visible in DevTools → Network → the
+  `/.netlify/functions/dataset` response body. The status is
+  one of `available` / `partial` / `unavailable` and reflects
+  the actual cache state, not an optimistic claim.
 - Open the browser DevTools → Network → trigger a manual
   refresh and verify the response body contains
   `proxyStatus: "proxy"`, `dataSource: "prebuilt-store"`,
-  `nvdStatus: "nvd"`, `epssStatus: "first"` and no
-  `NVD_API_KEY` substring anywhere.
+  `nvdStatus: "nvd"`, `epssStatus: "first"`, and no
+  `NVD_API_KEY` substring anywhere. Also confirm the
+  response body does **not** contain any of the
+  internal-only fields written by the refresh orchestrator
+  to the prebuilt blob: no `lastRefreshFailure`, no
+  `lastRefreshAttemptAt`, no `lastVulnrichmentRefresh`. The
+  public response must also remain free of raw upstream
+  URLs (no `raw.githubusercontent.com`), stack traces,
+  secrets / API keys, and internal store metadata
+  (no `tpr-vulnrichment` blob keys, no `tpr-dataset` blob
+  keys, no `refresh-lock` payloads). The provider-facing
+  sanitized `nvdReason` / `epssReason` strings ARE part
+  of the honest public provider-status contract — they
+  are rendered verbatim by the `NvdUnavailableBanner` and
+  `EpssUnavailableBanner` so a defender can see *why* a
+  provider failed, and their presence in the response
+  body is expected.
 
 ### D. GitHub-side preparation (after pushing the release commit)
 
@@ -175,14 +253,14 @@ On the GitHub repo settings page (before flipping visibility):
    fine, but the default landing branch should be `main`.
 3. **Add a repository description and URL** (Settings →
    General): "Defensive vulnerability intelligence dashboard
-   (CISA KEV + NVD CVSS + FIRST EPSS). Production-style React
-   + Vite + Netlify Functions + Netlify Blobs. Defensive use
-   only."
+   (CISA KEV + NVD CVSS + FIRST EPSS + CISA Vulnrichment SSVC).
+   Production-style React + Vite + Netlify Functions + Netlify
+   Blobs. Defensive use only."
 4. **Add topics** (Settings → General): `cybersecurity`,
    `vulnerability-management`, `defensive-security`,
    `react`, `typescript`, `vite`, `netlify`, `cisa-kev`,
-   `nvd`, `epss`. These help searchability without over-
-   claiming.
+   `nvd`, `epss`, `cisa-vulnrichment`, `ssvc`. These help
+   searchability without over-claiming.
 5. **Pin the repository** (optional, profile page) if you
    want it at the top of your GitHub profile.
 6. **Flip visibility to public** (Settings → Danger Zone →
@@ -204,17 +282,20 @@ On the GitHub repo settings page (before flipping visibility):
 
 ## What this checklist does NOT do
 
-The v5.4 + v5.4.1 audit branches together do **not**:
+The v5.4 + v5.4.1 + v5.5 + v5.5.1 audit branches together do
+**not**:
 
 - Flip the GitHub repository to public.
 - Rewrite git history.
-- Change any code, tests, or UI.
+- Change any application code, Netlify Functions, refresh
+  behavior, provider cadence, UI components, or tests.
 - Push to remote.
 
 (v5.4.1 *did* delete two internal markdown files from the
-working tree as the documented pre-release action; the audit
-itself still did not flip visibility, rewrite history, or
-push.)
+working tree as the documented pre-release action; v5.5
+*did* add the CISA Vulnrichment server-side enrichment; the
+audits themselves still did not flip visibility, rewrite
+history, or push.)
 
 The maintainer runs the remaining pre-release steps in the
 "Pre-release steps" section when ready, by hand, in their own
@@ -222,5 +303,7 @@ time.
 
 ---
 
-_Last updated: v5.4.1 public-surface-cleanup branch (handover
-docs removed from working tree)._
+_Last updated: v5.5.1 vulnrichment-launch-polish branch
+(documentation refresh; CISA Vulnrichment audit findings
+added; Vulnrichment public-surface check added to the
+production verification list)._
