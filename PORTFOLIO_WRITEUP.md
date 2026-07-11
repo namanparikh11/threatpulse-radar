@@ -12,22 +12,26 @@
 **ThreatPulse Radar** is a single-page web dashboard that tracks
 publicly disclosed cybersecurity vulnerabilities for **defensive
 security work** — patch prioritization, exposure awareness, and
-remediation tracking. It pulls three public defensive-intelligence
-feeds live in the browser (no backend) and joins them into one
-filterable view:
+remediation tracking. It pulls four public defensive-intelligence
+feeds live (server-side, via a Netlify Function) and joins them
+into one filterable view:
 
 | Feed | What it gives the dashboard |
 | --- | --- |
 | **CISA KEV** | "This CVE is being actively exploited in the wild" |
 | **NVD CVE 2.0** | CVSS base score and severity |
 | **FIRST EPSS** | Probability the CVE will be exploited in the next 30 days |
+| **CISA Vulnrichment** | CISA SSVC decision context (Exploitation, Automatable, Technical impact) |
 
 The result is a one-page command center: at a glance, a defender
 can see "which critical KEV-listed CVEs are most likely to be
 exploited against my stack, and which vendor / product do they
 affect?" The dashboard's 6 stat cards, 4 charts, and filterable
 table all share one pipeline, so a click anywhere updates
-everywhere.
+everywhere. The Vulnrichment SSVC context appears only in the
+vulnerability details drawer (not as a main-table column) so the
+four signals stay independent — the dashboard never combines them
+into a proprietary composite score.
 
 It is **defensive-only**. There is no exploit code, no offensive
 tooling, and no "how to weaponize this CVE" content. Every
@@ -136,30 +140,37 @@ This means a recruiter can ask "what happens when a CVE isn't
 in the EPSS response?" and the answer is in three lines of code
 at the top of the enricher.
 
-### 5. The dashboard ships with **195 acceptance tests** that don't
+### 5. The dashboard ships with **701 acceptance tests** that don't
 need a browser
 
-A hand-rolled `scripts/acceptance*.mjs` test runner exercises
-the filter / sort / enrichment / orchestration / cache pipeline
-against synthetic data, with no test framework, no DOM, no build
-step. It runs in ~2 seconds on Node 18+:
+A hand-rolled `scripts/acceptance-*.mjs` test runner exercises
+the filter / sort / enrichment / orchestration / cache / proxy /
+soft-refresh / prebuilt / last-known-good / CISA Vulnrichment
+pipeline against synthetic data, with no test framework, no
+DOM, no build step. It runs in seconds on Node 18+:
 
 ```bash
-node scripts/acceptance.mjs          # 15 v1 mock tests
-node scripts/acceptance-cisa.mjs     # 28 v2 CISA tests
-node scripts/acceptance-epss.mjs     # 39 v2.5 EPSS tests
-node scripts/acceptance-nvd.mjs      # 53 v3 NVD tests
-node scripts/acceptance-cache.mjs    # 60 v4 cache tests
+node scripts/acceptance-cisa.mjs            # 28 CISA KEV tests
+node scripts/acceptance-epss.mjs            # 39 FIRST EPSS tests
+node scripts/acceptance-nvd.mjs             # 57 NVD CVSS tests
+node scripts/acceptance-cache.mjs           # 60 v4 cache tests
+node scripts/acceptance-proxy.mjs           # 110 v5.0 proxy tests
+node scripts/acceptance-softrefresh.mjs     # 58 v5.1 soft-refresh tests
+node scripts/acceptance-prebuilt.mjs        # 148 v5.2 prebuilt-blob tests
+node scripts/acceptance-lastknowngood.mjs   # 76 v5.4.2 last-known-good tests
+node scripts/acceptance-vulnrichment.mjs    # 125 v5.5 CISA Vulnrichment tests
 ```
 
 The tests assert source-code wiring (e.g. "the service file
 imports the EPSS provider", "the cache envelope preserves
-`nvdStatus` on the round-trip") as well as runtime behavior. This
+`nvdStatus` on the round-trip", "the public response strips
+`lastVulnrichmentRefresh`") as well as runtime behavior. This
 catches regressions like "someone reverted the severity sort
 comparator", "someone reintroduced the CISA description note
-that claims EPSS is unwired", or "someone optimized the cache
-by stripping the unavailable flags" — all real or near-real
-bugs that would have been silent failures without these tests.
+that claims EPSS is unwired", "someone optimized the cache by
+stripping the unavailable flags", or "someone reintroduced a
+main-table column for SSVC" — all real or near-real bugs that
+would have been silent failures without these tests.
 
 ### 6. The cache layer is transparent and never hides failures
 
@@ -237,6 +248,59 @@ an interview:
    not a quietly-laid track. The dashboard as deployed
    today is strictly frontend-only.
 
+### 8. V5.x — The server-side prebuilt-blob design (incremental, partial, honest)
+
+The v5.x backend is a thin Netlify Function that runs the
+CISA → NVD → EPSS build on a cron, writes the result to a
+shared Netlify Blobs entry, and serves the prebuilt envelope
+to every subsequent visitor. Three design choices in the
+backend are worth pointing to:
+
+- **Last-known-good preservation (v5.4.2).** If the live
+  build fails (CISA unreachable, NVD rate-limited, network
+  error), the orchestrator does **not** overwrite the
+  existing prebuilt blob with a degraded envelope. Visitors
+  keep seeing the last successful build, the header pill
+  explains the partial outage, and the next cron tick
+  retries. A bad refresh is never allowed to worsen the
+  public dataset.
+- **Incremental enrichment with negative caching (v5.5).**
+  CISA's Vulnrichment repository publishes SSVC decision
+  context for selected CVEs, but not for all of them. The
+  refresh runs a **separate incremental post-step** that
+  selects at most 50 missing-or-stale CVEs per cycle and
+  enriches them at concurrency 5, sorted by KEV `dateAdded`
+  descending. An HTTP 404 ("no CISA Vulnrichment assessment
+  available") is recorded as a lightweight
+  `{ ssvc: null, status: "missing", cachedAt, checkedAt }`
+  negative-cache marker instead of being re-fetched every
+  cycle — so the backfill queue keeps moving instead of
+  looping over the same CVEs. A 404 is also explicitly
+  prevented from overwriting an existing positive SSVC
+  record, so a transient upstream inconsistency cannot
+  delete real data.
+- **Honest partial coverage (v5.5).** The public envelope
+  carries `vulnrichmentStatus: "available" | "partial" |
+  "unavailable"` and `vulnrichmentCoverage: { enriched,
+  total }`, computed from the actual cache state at read
+  time. The status is never `available` while the
+  incremental backfill is still in progress — the
+  `enriched` count is compared to the total, and the
+  status is derived honestly. Visitors see exactly how
+  many CVEs in the current dataset have a CISA Vulnrichment
+  assessment, and the SSVC fields appear in the details
+  drawer for those that do. The four signals (KEV, NVD,
+  EPSS, SSVC) stay independent; the dashboard never
+  combines them into a proprietary composite score.
+
+The result: a backend that runs cheaply (one cron tick every
+30 min, one enrichment pass per refresh), degrades honestly
+(partial outages are labeled, never hidden), and is
+incremental (the 1,600+ CVEs in CISA KEV are not re-fetched
+in a single cycle). The visitor never sees a raw provider
+error, a transient failure reason, or any of the internal
+operator-only fields written to the blob.
+
 ---
 
 ## What I would do differently next time
@@ -263,8 +327,11 @@ A short list of honest trade-offs:
   the next pass if I had more time. (Note: any new `localStorage`
   key should follow the v4 cache module's pattern — versioned
   suffix, schema-validated reads, defensive try/catch.)
-- **Recharts 2 is deprecated.** The deprecation warning is
-  benign for v4 but I'd pin `recharts@3` in the next pass.
+- **Recharts 2 is on a deprecation track upstream.** The
+  current pinned version is `^2.13.3` and the deprecation
+  warning is benign for the production build, but a future
+  pass would pin `recharts@3` and audit any breaking
+  changes in the chart components.
 
 ---
 
@@ -280,9 +347,13 @@ A short list of honest trade-offs:
   exact time of the last upstream fetch.
 - **15 minutes**: read `src/services/vulnerabilityService.ts`,
   `src/services/datasetCache.ts`, and the three providers
-  under `src/services/providers/`. That's the entire data
-  + cache layer. Then read the five acceptance scripts and
-  follow the test flow backward into the production code.
+  under `src/services/providers/`. For the v5.x backend,
+  skim `netlify/functions/_shared/refresh.mjs`,
+  `liveBuild.mjs`, `store.mjs`, `vulnrichment.mjs`, and
+  `vulnrichmentRefresh.mjs` — the entire build + enrichment
+  pipeline is in those five files. Then read the nine
+  acceptance scripts and follow the test flow backward into
+  the production code.
 - **30 minutes**: skim the git history (or run
   `git log --oneline --graph`). The version-by-version commit
   messages tell the same "story" — what shipped, what was
