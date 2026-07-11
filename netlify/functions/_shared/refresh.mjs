@@ -122,10 +122,48 @@
  *   set is unchanged. The public `vulnrichmentStatus`
  *   honestly reflects the cache state (available / partial
  *   / unavailable).
+ *
+ *   v5.6: also runs the GitHub Advisory Database enrichment
+ *   pass (see `githubAdvisoryRefresh.mjs`). The pass runs
+ *   AFTER the Vulnrichment pass on the same refresh cycle,
+ *   reads the new envelope's CVE list, and enriches the
+ *   GitHub Advisory cache incrementally:
+ *     - missing or stale (≥ 7 d) CVEs only;
+ *     - max 50 per cycle with `GITHUB_TOKEN`, max 25 without;
+ *     - concurrency 4;
+ *     - KEV-newest first;
+ *     - inspects `x-ratelimit-remaining` on every response
+ *       and stops the pass when the remaining allowance
+ *       drops below 10;
+ *     - empty-array / 404 results write a lightweight
+ *       negative-cache marker so the same CVE isn't
+ *       re-selected every cycle;
+ *     - 403 / 429 / 5xx / timeout / network errors preserve
+ *       the existing cache entry for that CVE.
+ *   The GitHub Advisory pass shares the same lock as the
+ *   main build (no double-refresh risk) and the outcome is
+ *   recorded on the existing `latest-dataset` blob as an
+ *   internal `lastGithubAdvisoryRefresh` field. The field
+ *   is stripped from the public response by `dataset.mjs`
+ *   (via the `INTERNAL_BLOB_FIELDS` set below) — visitors
+ *   only see the derived `githubAdvisoryStatus` /
+ *   `githubAdvisoryCoverage` envelope metadata, computed
+ *   at read-time in `dataset.mjs`.
+ *
+ *   The GitHub Advisory pass is best-effort, same as the
+ *   Vulnrichment pass. A failure or rate-limit short-circuit
+ *   of the GitHub Advisory cycle does NOT downgrade the
+ *   main build's status. The public `githubAdvisoryStatus`
+ *   honestly reflects the cache state (available / partial
+ *   / unavailable). The optional `GITHUB_TOKEN` env var
+ *   is read only inside the GitHub Advisory fetcher
+ *   (never logged, never serialized, never exposed through
+ *   public responses or comments).
  */
 import {
   clearNvdCooldown,
   clearRefreshLock,
+  getGithubAdvisoryStore,
   getVulnrichmentStore,
   isNvdCooldownActive,
   isRefreshLocked,
@@ -137,6 +175,7 @@ import {
   writeNvdCooldown,
 } from './store.mjs';
 import { readNvdOutcome } from './liveBuild.mjs';
+import { runGithubAdvisoryRefresh } from './githubAdvisoryRefresh.mjs';
 import { runVulnrichmentRefresh } from './vulnrichmentRefresh.mjs';
 
 /**
@@ -340,11 +379,21 @@ function truncateForFailureReason(s, max) {
  * (`vulnrichmentStatus` / `vulnrichmentCoverage`) are
  * computed at read-time in `dataset.mjs` and are NOT on
  * this strip list because they ARE public.
+ *
+ * v5.6: added `lastGithubAdvisoryRefresh` — the per-cycle
+ * outcome of the GitHub Advisory enrichment pass (status,
+ * enriched/total counts, last attempt time, rate-limit
+ * state). Operators see it via the blob inspector; visitors
+ * never see the raw operator metadata. The derived public
+ * fields (`githubAdvisoryStatus` / `githubAdvisoryCoverage`)
+ * are computed at read-time in `dataset.mjs` and are NOT on
+ * this strip list because they ARE public.
  */
 export const INTERNAL_BLOB_FIELDS = new Set([
   'lastRefreshAttemptAt',
   'lastRefreshFailure',
   'lastVulnrichmentRefresh',
+  'lastGithubAdvisoryRefresh',
 ]);
 
 /**
@@ -586,11 +635,57 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
     };
   }
 
+  //   v5.6: also run the GitHub Advisory enrichment pass and
+  //   record its outcome in the internal `lastGithubAdvisoryRefresh`
+  //   field on the same blob. The pass runs AFTER the
+  //   Vulnrichment pass on the same refresh cycle and shares
+  //   the same lock — no double-refresh risk. Failures of
+  //   the GitHub Advisory pass do NOT downgrade the main
+  //   build's status; the field is purely informational.
+  //   The optional `GITHUB_TOKEN` env var is read only inside
+  //   the GitHub Advisory fetcher (never logged, never
+  //   serialized, never exposed through public responses or
+  //   comments).
+  let githubAdvisoryOutcome = null;
+  try {
+    const ghStore = getGithubAdvisoryStore();
+    const cveList = (envelope.data || []).map((r) => ({
+      cveId: r.cveId,
+      dateAdded: r.publishedDate || null,
+    }));
+    githubAdvisoryOutcome = await runGithubAdvisoryRefresh({
+      store: ghStore,
+      cveList,
+      now,
+    });
+  } catch (err) {
+    // Defensive: a thrown GitHub Advisory cycle must never
+    // break the main refresh. The `runGithubAdvisoryRefresh`
+    // contract is to NEVER throw, but a defensive catch
+    // here keeps the main refresh's 'completed' status
+    // honest even if a future regression introduces a
+    // throw.
+    githubAdvisoryOutcome = {
+      status: 'failed',
+      enriched: 0,
+      total: 0,
+      attempted: 0,
+      empty: 0,
+      transient: 0,
+      reason:
+        err instanceof Error
+          ? `GitHub Advisory pass threw: ${err.message}`
+          : 'GitHub Advisory pass threw an unknown error.',
+      lastAttemptAt: now.toISOString(),
+    };
+  }
+
   await writeLatestDataset(store, {
     ...envelope,
     lastRefreshAttemptAt: now.toISOString(),
     lastRefreshFailure: null,
     lastVulnrichmentRefresh: vulnrichmentOutcome,
+    lastGithubAdvisoryRefresh: githubAdvisoryOutcome,
   });
   if (!isNvdRateLimitedReason(envelope)) {
     await clearNvdCooldown(store);

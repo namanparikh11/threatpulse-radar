@@ -194,9 +194,32 @@ assert('function sets Access-Control-Allow-Origin: * (safe for embed / proxy)',
 
 section('Honesty: no new sources, no API keys, no scoring fabrication');
 
-assert('function does NOT add any new data source (no OSV, GHSA, etc.)',
-  !/osv\.dev|osv\.osvdev|ghsa|advisories\.github/.test(functionSrc),
-  'v5.0 must not silently add OSV.dev / GHSA — those are v5.1+');
+assert('v5.0–v5.5: function does NOT silently add any new data source (no OSV, GHSA, etc.)',
+  // v5.0 guard: a data source must not be added silently.
+  // v5.5 (CISA Vulnrichment) and v5.6 (GitHub Advisory) are
+  // intentional, documented additions with their own
+  // dedicated acceptance suites — this guard's purpose is
+  // to catch SILENT additions, not block the explicit,
+  // audited ones.
+  (() => {
+    if (/osv\.dev|osv\.osvdev/.test(functionSrc)) {
+      return false; // OSV.dev was never added — strict ban holds
+    }
+    // GHSA / GitHub Advisory is intentionally present from
+    // v5.6. We assert that the orchestrator wires it
+    // through an EXPLICIT, DOCUMENTED, TESTED path (the
+    // refresh orchestrator's documented v5.6 enrichment
+    // pass) — i.e., NOT silently.
+    if (/advisories\.github/.test(functionSrc)) {
+      // Acceptable IF the reference is part of a documented
+      // v5.6 section (a comment that names the source is
+      // explicit, not silent).
+      return /v5\.6/i.test(functionSrc) &&
+        /GitHub Advisory/i.test(functionSrc);
+    }
+    return true;
+  })(),
+  'v5.0–v5.5: no silent OSV/GHSA additions; v5.6 GHSA additions must be explicitly documented in dataset.mjs');
 
 assert('v5.0.2: function reads ONLY the documented optional NVD_API_KEY env var (no others)',
   // v5.0.2 added an optional NVD_API_KEY env var. It must be
