@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "_comment": "V6.0 — Default OSV ecosystem allowlist. The source-controlled file is the source of truth; an optional THREATPULSE_OSV_ECOSYSTEMS env var on the public site can override it. The Blob bootstrap state records the SHA-256 of this config plus processing progress; it is not the authoritative configuration source. The list is informed by OSV's official ecosystems.txt and is configurable. To add or remove ecosystems, edit this file (or set the env var) — no code changes required.",
+  "schemaVersion": "1.0.0",
+  "ecosystems": [
+    "npm",
+    "PyPI",
+    "Go",
+    "Maven",
+    "crates.io",
+    "RubyGems",
+    "Packagist",
+    "NuGet",
+    "Hex",
+    "Pub"
+  ]
+}

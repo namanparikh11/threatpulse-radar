@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/source-registry-v1.schema.json",
+  "title": "ThreatPulse Radar Source Registry v1",
+  "description": "Static list of sources that contribute to the canonical baseline. The OSV source's allowlist is documented in config/osv-ecosystems.json (not in this schema).",
+  "type": "object",
+  "required": ["schemaVersion", "sources"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "displayName", "type"],
+        "properties": {
+          "id": { "type": "string", "enum": ["cisa_kev", "nvd", "first_epss", "cisa_vulnrichment", "github_advisory", "osv"] },
+          "displayName": { "type": "string" },
+          "type": { "type": "string", "enum": ["gating", "enrichment", "incremental"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

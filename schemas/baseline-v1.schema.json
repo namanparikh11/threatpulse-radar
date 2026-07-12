@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/baseline-v1.schema.json",
+  "title": "ThreatPulse Radar Canonical Baseline v1",
+  "description": "Schema for entities in the canonical baseline. Each entity carries a type discriminator, a canonicalId, aliases, source provenance, and per-type fields. All entities in a shard are sorted by canonicalId. Timestamps are RFC3339 UTC. Object keys are sorted lexicographically before hashing.",
+  "type": "object",
+  "required": ["type", "canonicalId", "firstSeen", "lastObserved", "withdrawn", "schemaVersion"],
+  "properties": {
+    "type": { "type": "string", "enum": ["vulnerability", "advisory", "package", "relationship", "tombstone"] },
+    "schemaVersion": { "type": "string", "const": "1.0.0" }
+  },
+  "oneOf": [
+    {
+      "title": "Vulnerability",
+      "type": "object",
+      "required": ["type", "canonicalId", "aliases", "sourceIds", "firstSeen", "lastObserved", "withdrawn", "schemaVersion"],
+      "properties": {
+        "type": { "const": "vulnerability" },
+        "canonicalId": { "type": "string", "pattern": "^vuln:" },
+        "aliases": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "sourceIds": { "type": "array", "items": { "type": "string" } },
+        "firstSeen": { "type": "string", "format": "date-time" },
+        "lastObserved": { "type": "string", "format": "date-time" },
+        "withdrawn": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "Advisory",
+      "type": "object",
+      "required": ["type", "canonicalId", "sourceId", "sourceRecordId", "subjectVulnerabilityId", "provenance", "firstSeen", "lastObserved", "sourceModifiedAt", "retrievedAt", "withdrawn", "schemaVersion"],
+      "properties": {
+        "type": { "const": "advisory" },
+        "canonicalId": { "type": "string", "pattern": "^adv:" },
+        "sourceId": { "type": "string" },
+        "sourceRecordId": { "type": "string" },
+        "subjectVulnerabilityId": { "type": "string", "pattern": "^vuln:" },
+        "provenance": { "type": "array", "items": { "type": "string" } },
+        "summary": { "type": "string" },
+        "details": { "type": "string" },
+        "severity": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "score"],
+            "properties": {
+              "type": { "type": "string", "enum": ["CVSS_V2", "CVSS_V3", "CVSS_V4", "Ubuntu"] },
+              "score": { "type": "string" },
+              "source": { "type": "string", "enum": ["NVD", "CNA", "SELF", "OSV"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "affectedPackages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["canonicalPackageId"],
+            "properties": {
+              "canonicalPackageId": { "type": "string", "pattern": "^pkg:" },
+              "ranges": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["type", "events"],
+                  "properties": {
+                    "type": { "type": "string", "enum": ["GIT", "SEMVER", "ECOSYSTEM", "native"] },
+                    "events": { "type": "array", "minItems": 1, "items": { "type": "object" } }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "references": { "type": "array", "items": { "type": "object" } },
+        "published": { "type": "string", "format": "date-time" },
+        "sourceModifiedAt": { "type": "string", "format": "date-time" },
+        "retrievedAt": { "type": "string", "format": "date-time" },
+        "firstSeen": { "type": "string", "format": "date-time" },
+        "lastObserved": { "type": "string", "format": "date-time" },
+        "withdrawn": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "Package",
+      "type": "object",
+      "required": ["type", "canonicalId", "ecosystem", "name", "firstSeen", "lastObserved", "schemaVersion"],
+      "properties": {
+        "type": { "const": "package" },
+        "canonicalId": { "type": "string", "pattern": "^pkg:" },
+        "ecosystem": { "type": "string" },
+        "name": { "type": "string" },
+        "purl": { "type": "string" },
+        "firstSeen": { "type": "string", "format": "date-time" },
+        "lastObserved": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "Relationship",
+      "type": "object",
+      "required": ["type", "canonicalId", "subjectType", "subjectId", "predicate", "objectType", "objectId", "firstSeen", "lastObserved", "schemaVersion"],
+      "properties": {
+        "type": { "const": "relationship" },
+        "canonicalId": { "type": "string", "pattern": "^rel:" },
+        "subjectType": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "predicate": { "type": "string" },
+        "objectType": { "type": "string" },
+        "objectId": { "type": "string" },
+        "ranges": { "type": "array", "items": { "type": "object" } },
+        "firstSeen": { "type": "string", "format": "date-time" },
+        "lastObserved": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    {
+      "title": "Tombstone",
+      "type": "object",
+      "required": ["type", "canonicalId", "subjectType", "subjectId", "sourceId", "sourceRecordId", "reason", "observedAt", "schemaVersion"],
+      "properties": {
+        "type": { "const": "tombstone" },
+        "canonicalId": { "type": "string", "pattern": "^tomb:" },
+        "subjectType": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "sourceId": { "type": "string" },
+        "sourceRecordId": { "type": "string" },
+        "reason": { "type": "string" },
+        "withdrawnAt": { "type": "string", "format": "date-time" },
+        "observedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  ]
+}
