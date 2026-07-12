@@ -3,6 +3,7 @@ import { CircleAlert, HardDrive, Loader2, RefreshCw, Sparkles, X } from 'lucide-
 import Header from '../components/Header';
 import StatsCards from '../components/StatsCards';
 import FiltersPanel from '../components/FiltersPanel';
+import DefenderViewsPanel from '../components/DefenderViewsPanel';
 import VulnerabilityTable from '../components/VulnerabilityTable';
 import DetailDrawer from '../components/DetailDrawer';
 import EmptyState from '../components/EmptyState';
@@ -146,10 +147,24 @@ export default function DashboardPage() {
   }, [all]);
 
   // Filter + sort pipeline (delegates to the custom hook).
-  const { sorted, isAnyFilterActive, isSearchActive, isSearching } =
-    useVulnerabilityFilter(all, filters, sort);
+  // v5.7: `activePreset` is surfaced so the "Filters are
+  // active" footer can name the active preset. The hook
+  // also returns `filtered` (pre-sort) for callers that
+  // need the un-ordered matching set; the table and the
+  // export use the sorted view.
+  const {
+    sorted,
+    isAnyFilterActive,
+    isSearchActive,
+    isSearching,
+    activePreset,
+  } = useVulnerabilityFilter(all, filters, sort);
 
   const handleReset = useCallback(() => {
+    // DEFAULT_FILTERS already carries `presetId: null` and
+    // the v5.7 enrichment filters at their "any" defaults,
+    // so resetting the filter state via the constants also
+    // clears the active defender-view preset.
     setFilters(DEFAULT_FILTERS);
     setSort(DEFAULT_SORT);
   }, []);
@@ -367,6 +382,13 @@ export default function DashboardPage() {
 
             <TrendChart data={charts.trend} />
 
+            <DefenderViewsPanel
+              rows={sorted}
+              totalCount={all.length}
+              filters={filters}
+              onChange={setFilters}
+            />
+
             <FiltersPanel
               filters={filters}
               sort={sort}
@@ -377,6 +399,7 @@ export default function DashboardPage() {
               isSearching={isSearching}
               isSearchActive={isSearchActive}
               onReset={handleReset}
+              allVulnerabilities={all}
             />
 
             {sorted.length === 0 ? (
@@ -404,8 +427,9 @@ export default function DashboardPage() {
 
             {isAnyFilterActive && (
               <p className="text-center text-[11px] text-radar-dim">
-                Filters are active. Results reflect your current search, severity,
-                KEV and EPSS selection.
+                {activePreset
+                  ? `Filters and the “${activePreset.label}” preset are active. Reset clears the preset too.`
+                  : 'Filters are active. Results reflect your current search, severity, KEV, EPSS, GitHub Advisory, patch context, and SSVC exploitation selection.'}
               </p>
             )}
 

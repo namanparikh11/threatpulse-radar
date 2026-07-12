@@ -8,9 +8,11 @@ import {
 } from 'lucide-react';
 import type {
   SeverityFilterValue,
+  SsvcExploitation,
   SortDirection,
   SortField,
   SortState,
+  Vulnerability,
   VulnerabilityFilters,
 } from '../types/vulnerability';
 import { DEFAULT_FILTERS, DEFAULT_SORT } from '../types/vulnerability';
@@ -27,6 +29,14 @@ interface FiltersPanelProps {
   isSearching: boolean;
   isSearchActive: boolean;
   onReset: () => void;
+  /**
+   * v5.7: full vulnerability set (un-filtered) — used to
+   * compute the dynamic SSVC exploitation values the
+   * dropdown offers. Without this prop, the dropdown would
+   * have to hardcode a value list, which the v5.7 spec
+   * explicitly forbids.
+   */
+  allVulnerabilities?: Vulnerability[];
 }
 
 const SEVERITY_OPTIONS: SeverityFilterValue[] = ['All', ...SEVERITY_ORDER];
@@ -65,6 +75,7 @@ export default function FiltersPanel({
   isSearching,
   isSearchActive,
   onReset,
+  allVulnerabilities = [],
 }: FiltersPanelProps) {
   const update = <K extends keyof VulnerabilityFilters>(
     key: K,
@@ -73,6 +84,15 @@ export default function FiltersPanel({
 
   const clearSearch = () => update('search', '');
 
+  /**
+   * v5.7: "Reset all filters" must also clear the active
+   * defender-view preset. The reset always returns the
+   * filter state to `DEFAULT_FILTERS` (presetId: null,
+   * githubAdvisory: 'any', patchContext: 'any',
+   * ssvcExploitation: 'any') and the sort to
+   * `DEFAULT_SORT`. The `onReset` callback is fired so
+   * the dashboard can clear any other state.
+   */
   const handleReset = () => {
     onChange(DEFAULT_FILTERS);
     onSortChange(DEFAULT_SORT);
@@ -80,6 +100,38 @@ export default function FiltersPanel({
   };
 
   const epssPct = Math.round(filters.minEpss * 100);
+
+  /**
+   * v5.7: Dynamically enumerate the SSVC exploitation
+   * values that actually appear in the current dataset so
+   * the dropdown never offers a value the data cannot
+   * satisfy. The order is the documented SSVC order
+   * (`none` → `poc` → `active`), not the order of first
+   * appearance, so the dropdown is stable across renders.
+   */
+  const SSVC_EXPLOITATION_ORDER: SsvcExploitation[] = [
+    'none',
+    'poc',
+    'active',
+  ];
+  const ssvcValuesPresent = new Set<SsvcExploitation>();
+  for (const v of allVulnerabilities) {
+    if (v.ssvcExploitation) ssvcValuesPresent.add(v.ssvcExploitation);
+  }
+  const ssvcExploitationOptions: SsvcExploitation[] = SSVC_EXPLOITATION_ORDER.filter(
+    (v) => ssvcValuesPresent.has(v)
+  );
+  // If the current filter is set to a value that no
+  // longer appears in the dataset (e.g. after a refresh
+  // the value fell out), keep the option visible so the
+  // user can still see the active filter and reset it.
+  const currentSsvc = filters.ssvcExploitation ?? 'any';
+  if (
+    currentSsvc !== 'any' &&
+    !ssvcExploitationOptions.includes(currentSsvc as SsvcExploitation)
+  ) {
+    ssvcExploitationOptions.push(currentSsvc as SsvcExploitation);
+  }
 
   return (
     <section className="panel p-4" aria-label="Filters">
@@ -251,6 +303,109 @@ export default function FiltersPanel({
             <span>75%</span>
             <span>100%</span>
           </div>
+        </div>
+
+        {/* v5.7 enrichment filters: GitHub Advisory, Patch
+            context, and SSVC exploitation. Each is a compact
+            <select> with the documented "Any" wildcard plus
+            the values the data actually carries. Absence of
+            enrichment is treated as "unknown", never as a
+            negative signal. */}
+        <div className="md:col-span-4">
+          <label
+            className="stat-label mb-1 block"
+            htmlFor="github-advisory"
+          >
+            GitHub Advisory
+          </label>
+          <select
+            id="github-advisory"
+            value={filters.githubAdvisory ?? 'any'}
+            onChange={(e) =>
+              update(
+                'githubAdvisory',
+                e.target.value as 'any' | 'available'
+              )
+            }
+            className="focus-ring w-full appearance-none rounded-md border border-radar-border bg-radar-panel2 py-2 px-2.5 text-xs text-radar-text"
+            aria-label="Filter by GitHub Advisory availability"
+          >
+            <option value="any">Any</option>
+            <option value="available">Available</option>
+          </select>
+          <p className="mt-1 text-[10px] text-radar-dim">
+            Available = a reviewed GitHub Advisory exists. Absence
+            is <span className="text-radar-text">unknown</span>,
+            not &quot;no patch&quot;.
+          </p>
+        </div>
+
+        <div className="md:col-span-4">
+          <label
+            className="stat-label mb-1 block"
+            htmlFor="patch-context"
+          >
+            Patch context
+          </label>
+          <select
+            id="patch-context"
+            value={filters.patchContext ?? 'any'}
+            onChange={(e) =>
+              update(
+                'patchContext',
+                e.target.value as 'any' | 'available' | 'unavailable'
+              )
+            }
+            className="focus-ring w-full appearance-none rounded-md border border-radar-border bg-radar-panel2 py-2 px-2.5 text-xs text-radar-text"
+            aria-label="Filter by patch context"
+          >
+            <option value="any">Any</option>
+            <option value="available">First patched version available</option>
+            <option value="unavailable">Patched version unavailable</option>
+          </select>
+          <p className="mt-1 text-[10px] text-radar-dim">
+            Unavailable = reviewed advisory exists but no patched
+            version is listed. Rendered as &quot;First patched
+            version unavailable&quot;, never &quot;No fix exists&quot;.
+          </p>
+        </div>
+
+        <div className="md:col-span-4">
+          <label
+            className="stat-label mb-1 block"
+            htmlFor="ssvc-exploitation"
+          >
+            SSVC exploitation
+          </label>
+          <select
+            id="ssvc-exploitation"
+            value={currentSsvc}
+            onChange={(e) =>
+              update(
+                'ssvcExploitation',
+                e.target.value as 'any' | SsvcExploitation
+              )
+            }
+            className="focus-ring w-full appearance-none rounded-md border border-radar-border bg-radar-panel2 py-2 px-2.5 text-xs text-radar-text"
+            aria-label="Filter by CISA Vulnrichment SSVC exploitation value"
+          >
+            <option value="any">Any</option>
+            {ssvcExploitationOptions.map((v) => (
+              <option key={v} value={v}>
+                {v === 'active'
+                  ? 'Active'
+                  : v === 'poc'
+                    ? 'Proof of concept'
+                    : 'None'}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-[10px] text-radar-dim">
+            Options come from the current dataset only — no
+            hardcoded values. Absence of SSVC is{' '}
+            <span className="text-radar-text">unknown</span>, not a
+            negative assessment.
+          </p>
         </div>
       </div>
     </section>

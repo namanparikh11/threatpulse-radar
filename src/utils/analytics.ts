@@ -5,11 +5,18 @@
  *   1. applyFilters(all, filters)    -> narrowed list
  *   2. applySortBy(narrowed, sort)   -> ordered list
  *
- * Filtering combines 4 independent predicates (severity, KEV, EPSS, search).
- * They are AND-ed together so all conditions must match.
+ * Filtering combines multiple independent predicates (severity, KEV, EPSS,
+ * search, GitHub-Advisory availability, patch context, SSVC exploitation,
+ * active defender-view preset). They are AND-ed together so all conditions
+ * must match.
  *
  * The search predicate is case-insensitive, trims whitespace, and matches
  * across: cveId, summary, description, vendor, product, severity, source.
+ *
+ * v5.7: New filter fields (presetId, githubAdvisory, patchContext,
+ * ssvcExploitation) are evaluated here. Each predicate is delegated to
+ * a focused helper in `utils/presets.ts` and `utils/patchContext.ts` so
+ * the same logic is exercised by the acceptance suite without a DOM.
  */
 import type {
   DashboardStats,
@@ -21,6 +28,11 @@ import type {
   VulnerabilityFilters,
 } from '../types/vulnerability';
 import { SEVERITY_ORDER } from './severity';
+import {
+  applyPatchContextFilter,
+  type PatchContextFilter,
+} from './patchContext';
+import { applyPreset } from './presets';
 
 /** Critical -> 0, High -> 1, Medium -> 2, Low -> 3 (lower = "more severe") */
 const SEVERITY_RANK: Record<Severity, number> = {
@@ -62,6 +74,12 @@ function buildHaystack(v: Vulnerability): string {
 /**
  * Apply all active filters to a vulnerability list.
  * Pure function — never mutates the input.
+ *
+ * v5.7: also applies the v5.7 defender-view fields
+ * (presetId, githubAdvisory, patchContext, ssvcExploitation).
+ * The patch-context predicate is delegated to
+ * `applyPatchContextFilter` so the rules live in one place
+ * and the acceptance suite can exercise them directly.
  */
 export function applyFilters(
   vulns: Vulnerability[],
@@ -69,7 +87,24 @@ export function applyFilters(
 ): Vulnerability[] {
   const q = normalizeQuery(filters.search);
 
-  return vulns.filter((v) => {
+  // v5.7: Preset is applied first as a pre-filter. Doing it
+  // before the per-record scan means the per-record loop only
+  // sees rows that already satisfy the preset. When no preset
+  // is active, `applyPreset` is a no-op and returns the input
+  // list unchanged.
+  const afterPreset = applyPreset(
+    vulns,
+    filters.presetId ?? null
+  );
+
+  // v5.7: Patch-context filter. Delegated to the
+  // patchContext helper so the rule lives in one place.
+  const afterPatchContext = applyPatchContextFilter(
+    afterPreset,
+    (filters.patchContext ?? 'any') as PatchContextFilter
+  );
+
+  return afterPatchContext.filter((v) => {
     // Severity filter (All passes everything)
     if (filters.severity !== 'All' && v.severity !== filters.severity) {
       return false;
@@ -86,6 +121,22 @@ export function applyFilters(
     if (q.length > 0) {
       const haystack = buildHaystack(v);
       if (!haystack.includes(q)) return false;
+    }
+    // v5.7: GitHub Advisory availability. 'available' means a
+    // positive reviewed advisory exists on the record.
+    // Absence of an advisory is not "no patch"; it is just
+    // not 'available'.
+    if (filters.githubAdvisory === 'available') {
+      if (!v.githubAdvisory || !v.githubAdvisory.ghsaId) return false;
+    }
+    // v5.7: SSVC exploitation. 'any' passes everything.
+    // A specific value requires the record to carry that
+    // exact value — records without an SSVC record do not
+    // match any specific value, so absence of SSVC is
+    // correctly treated as "unknown" rather than a
+    // negative assessment.
+    if (filters.ssvcExploitation && filters.ssvcExploitation !== 'any') {
+      if (v.ssvcExploitation !== filters.ssvcExploitation) return false;
     }
     return true;
   });
