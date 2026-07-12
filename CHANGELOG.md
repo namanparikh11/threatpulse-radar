@@ -7,6 +7,91 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## V5.6.1 — GitHub Advisory release documentation
+
+- README, portfolio writeup, public-release checklist, and
+  changelog refreshed to describe the v5.6 reviewed
+  GitHub Advisory capability accurately: fifth source
+  listed, five-provider architecture diagram, drawer-only
+  "Package remediation context" section, neutral
+  missing-patch semantics ("First patched version
+  unavailable", never "No fix exists"), safe GHSA link
+  behavior, server-side-only `GITHUB_TOKEN` contract,
+  and explicit no-real-time / no-proprietary-score /
+  no-header-pill / no-table-column claims.
+- Public-release checklist adds a v5.6 GitHub Advisory
+  public-surface audit finding (no token leak, no raw
+  rate-limit metadata, no raw provider error bodies, no
+  internal cache markers, separate `tpr-github-advisory`
+  blob store, drawer-only presentation) and a
+  production-verification step for
+  `githubAdvisoryStatus` / `githubAdvisoryCoverage` /
+  Package remediation context / safe GHSA links.
+- Portfolio writeup updates the assertion total from
+  701 to **874** and adds a fourth design-choice bullet
+  to the v5.x section describing the v5.6 reviewed
+  package-remediation enrichment, the optional
+  `GITHUB_TOKEN`, the read-time merge without
+  `fetchedAt` rewrite, and the null-patched-version
+  rendering rule.
+- No application, Netlify Function, refresh, UI, or test
+  changes.
+
+## V5.6 — GitHub Advisory remediation context
+
+- Fifth defensive-intelligence feed: the public **GitHub
+  Advisory Database**, surfaced as reviewed package-
+  remediation context (GHSA identifier, advisory severity,
+  GitHub-reviewed date, source label, and up to 5
+  normalized package entries — ecosystem, name, vulnerable
+  range, first patched version) in the vulnerability
+  details drawer.
+- Server-side incremental enrichment: the endpoint is
+  filtered by CVE and by the reviewed advisory type, and
+  at most 25 missing / stale CVEs are enriched per
+  background run without a token (50 with the optional
+  server-side `GITHUB_TOKEN`), running at concurrency 4
+  as a separate post-step in the same refresh cycle.
+  Only reviewed, non-withdrawn advisories are stored;
+  withdrawn and unreviewed entries are dropped at the
+  filter.
+- Separate Netlify Blobs store
+  (`tpr-github-advisory`, key `cache`) holds reviewed
+  advisory records and lightweight negative-cache
+  markers for empty / 404 ("no reviewed GitHub Advisory")
+  responses, so the backfill queue keeps moving instead
+  of looping. An empty / 404 result never overwrites an
+  existing positive advisory record; provider failures
+  (5xx, network errors, rate-limit responses) preserve
+  positive cached entries.
+- A null patched version on a reviewed advisory is
+  rendered as **"First patched version unavailable"** —
+  the dashboard never infers a missing patched version
+  as **"No fix exists"**.
+- Package remediation context is drawer-only: no main-
+  table column, no header pill, no combined score. The
+  public envelope's `githubAdvisoryStatus` /
+  `githubAdvisoryCoverage` reflect the actual cache
+  state; the dashboard never claims `available` while
+  backfill is still in progress. External GHSA links
+  open in a new tab with `rel="noopener noreferrer"`
+  and point only to the public
+  `https://github.com/advisories/<GHSA-ID>` URL.
+- Internal-only fields — negative-cache markers, raw
+  rate-limit headers (`x-ratelimit-*`, `Retry-After`),
+  raw provider error bodies, cache keys, and stack
+  traces — are stripped from the public response. The
+  optional `GITHUB_TOKEN` is read from `process.env`
+  inside the Netlify Function only, passed to the
+  upstream as an `Authorization: Bearer <token>` header,
+  and never appears in the function response body, in
+  any URL, in any log, or in the frontend bundle. The
+  frontend bundle never references the `api.github.com`
+  upstream.
+- New acceptance suite:
+  `scripts/acceptance-github-advisory.mjs`
+  (173 assertions).
+
 ## V5.5.1 — Vulnrichment launch polish (documentation only)
 
 - README, portfolio writeup, and public-release checklist

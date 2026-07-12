@@ -2,10 +2,10 @@
 
 > A modern cybersecurity **vulnerability-intelligence dashboard** built for
 > **defensive** security work. Track CVEs, KEV status, CVSS scores, EPSS
-> probability, and severity across your stack in one focused
-> command-center view.
+> probability, SSVC decision context, and reviewed package-remediation
+> guidance across your stack in one focused command-center view.
 
-![status](https://img.shields.io/badge/status-v5.5.1-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v5.6.1-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -33,7 +33,7 @@ dashboard surfaces those honestly rather than papering over them.
 
 ## What it does
 
-ThreatPulse Radar joins four public defensive-intelligence feeds into a
+ThreatPulse Radar joins five public defensive-intelligence feeds into a
 single filterable dashboard:
 
 | Feed | Provides | Source |
@@ -42,6 +42,7 @@ single filterable dashboard:
 | **NVD CVE 2.0** | CVSS base score + severity (v3.1 → v3.0 → v2) | [NVD](https://nvd.nist.gov/) |
 | **FIRST EPSS** | Probability of exploitation in the next 30 days | [FIRST EPSS](https://www.first.org/epss/) |
 | **CISA Vulnrichment** | CISA SSVC decision context — Exploitation, Automatable, Technical impact | [cisagov/vulnrichment](https://github.com/cisagov/vulnrichment) |
+| **GitHub Advisory Database** | Reviewed GHSA, affected package, vulnerable range, first patched version | [GitHub Advisory Database](https://github.com/advisories) |
 
 The result is a one-page command center:
 
@@ -51,8 +52,11 @@ The result is a one-page command center:
   severity filter, KEV-only toggle, minimum EPSS slider, sort by
   newest / CVSS / EPSS / KEV
 - **Detail drawer** — full description, metrics, recommended defensive
-  action, external links to CISA KEV + NVD, and (when available) the
-  CISA SSVC decision context for that CVE
+  action, external links to CISA KEV + NVD, the CISA SSVC decision
+  context for that CVE (when available), and — for CVEs that have a
+  reviewed GitHub Advisory — the **Package remediation context**
+  (GHSA ID, advisory severity, reviewed date, affected npm package,
+  vulnerable range, first patched version)
 - **Dark cybersecurity command-center theme** — neon cyan / amber
   accents, desktop-first responsive
 
@@ -92,10 +96,51 @@ fields themselves stay drawer-only (see below).
 SSVC is shown **only in the vulnerability details drawer**, as a
 "**CISA decision context**" section. It is intentionally **not** a
 main-table column and is **not** combined with NVD / EPSS / KEV
-into a proprietary "ThreatPulse score" — the four signals stay
+into a proprietary "ThreatPulse score" — the five signals stay
 independent so a defender can weigh them separately. If a CVE has
 no Vulnrichment record, the drawer renders the empty-state copy
 "No CISA Vulnrichment assessment available."
+
+### GitHub Advisory Database — what it adds, and what it does not
+
+The fifth feed is the public **GitHub Advisory Database**, which
+publishes reviewed, vulnerability-scoped advisories. When a CVE has
+a matching reviewed GitHub Advisory, the drawer surfaces a
+"**Package remediation context**" section with:
+
+- **GHSA identifier** and a safe external link to the advisory
+- **Advisory severity** (the GitHub-reviewed severity)
+- **GitHub-reviewed date**
+- **Source:** GitHub Advisory Database
+- **Affected packages** (up to 5 normalized package entries per
+  advisory) — ecosystem, package name, **vulnerable range**,
+  and **first patched version** when one is known
+- If the advisory does not list a patched version, the field is
+  rendered as **"First patched version unavailable"** — never
+  inferred as **"No fix exists"**
+
+Coverage is **incremental and partial**. Not every CVE in the
+dashboard has a matching reviewed advisory; the backend fetches
+at most 25 CVEs per background run without a token (50 with a
+token) at concurrency 4, and a CVE for which the upstream
+returns an empty result is recorded as a lightweight
+negative-cache marker so the backfill continues with the rest
+of the queue rather than looping over the same CVEs every
+cycle. The public dataset envelope carries two derived
+metadata fields — `githubAdvisoryStatus: "available" | "partial"
+| "unavailable"` and `githubAdvisoryCoverage: { enriched,
+total }` — that reflect the actual cache state at read time.
+The dashboard never claims `available` while backfill is still
+in progress, and the package-remediation fields themselves stay
+drawer-only (see below).
+
+The package-remediation context is shown **only in the
+vulnerability details drawer**, as a "**Package remediation
+context**" section. It is intentionally **not** a main-table
+column, is **not** a header pill, and is **not** combined with
+the other four signals into a proprietary composite score. If
+a CVE has no reviewed advisory, the drawer simply omits the
+section — missing coverage is neutral, not alarming.
 
 ---
 
@@ -111,8 +156,9 @@ no Vulnrichment record, the drawer renders the empty-state copy
    │   1. Try `latest-dataset` blob (prebuilt envelope)      │
    │      ├─ hit  → return immediately                        │
    │      └─ miss → build live (bootstrap path)              │
-   │   2. Read-time merge: SSVC from `tpr-vulnrichment`      │
-   │      blob attached to each record in-memory             │
+   │   2. Read-time merge into each record:                  │
+   │      • SSVC from `tpr-vulnrichment` blob                │
+   │      • Package remediation from `tpr-github-advisory`   │
    │                                                         │
    │   Response tagged with:                                 │
    │     dataSource: "prebuilt-store" | "live-build"          │
@@ -120,6 +166,9 @@ no Vulnrichment record, the drawer renders the empty-state copy
    │     vulnrichmentStatus: "available" | "partial" |        │
    │                          "unavailable"                  │
    │     vulnrichmentCoverage: { enriched, total }           │
+   │     githubAdvisoryStatus: "available" | "partial" |     │
+   │                           "unavailable"                 │
+   │     githubAdvisoryCoverage: { enriched, total }         │
    └─────────────────────────────────────────────────────────┘
             │                                  ▲
             │ writes                           │ acquires
@@ -156,9 +205,9 @@ no Vulnrichment record, the drawer renders the empty-state copy
    │    known-flaky NVD                                   │
    └──────────────────────────────────────────────────────┘
                        │
-                       │ after a successful main build, a
-                       │ v5.5 incremental enrichment pass runs
-                       │ in the same refresh:
+                       │ after a successful main build, two
+                       │ incremental enrichment passes run in
+                       │ the same refresh (v5.5 + v5.6):
                        ▼
    ┌──────────────────────────────────────────────────────┐
    │  CISA Vulnrichment enrichment (server-side, post-step):│
@@ -184,9 +233,41 @@ no Vulnrichment record, the drawer renders the empty-state copy
    │  │   markers)         │  │
    │  └────────────────────┘  │
    └──────────────────────────┘
+
+   ┌──────────────────────────────────────────────────────┐
+   │  GitHub Advisory enrichment (server-side, post-step):│
+   │    • Endpoint filters by CVE + reviewed advisory type│
+   │    • Incremental: only CVEs missing or with a        │
+   │      positive record older than 7 d                   │
+   │    • Capped at 25 CVEs/run without GITHUB_TOKEN,    │
+   │      50 CVEs/run with GITHUB_TOKEN                   │
+   │    • Concurrency 4; only reviewed, non-withdrawn     │
+   │      advisories; npm-ecosystem package entries only  │
+   │    • Empty result → negative-cache marker             │
+   │      (so the same CVE is not re-selected every run)  │
+   │    • An empty / 404 result never overwrites a        │
+   │      positive advisory; provider failures preserve  │
+   │      positive cached entries                         │
+   │    • Public `githubAdvisoryStatus` /                  │
+   │      `githubAdvisoryCoverage` are computed at read-time│
+   └──────────────────────────────────────────────────────┘
+                       │
+                       │ writes
+                       ▼
+   ┌──────────────────────────┐
+   │  Netlify Blobs store     │
+   │  (name: tpr-github-      │   ◄── separate from both the main
+   │   advisory)              │       dataset blob and the
+   │  ┌────────────────────┐  │       Vulnrichment blob; the
+   │  │ cache              │  │       visitor read path never
+   │  │  (GHSA records +   │  │       writes here
+   │  │   negative-cache   │  │
+   │  │   markers)         │  │
+   │  └────────────────────┘  │
+   └──────────────────────────┘
 ```
 
-**Four properties this architecture guarantees:**
+**Five properties this architecture guarantees:**
 
 1. **The build runs once on the server**, not per visitor. The prebuilt
    blob is the source of truth for normal traffic; cron + manual
@@ -206,6 +287,20 @@ no Vulnrichment record, the drawer renders the empty-state copy
    stale CVEs are enriched per background run; CVEs that return
    HTTP 404 receive a lightweight negative-cache marker so the
    backfill queue keeps moving instead of looping.
+5. **Package remediation is incremental, partial, and never
+   pollutes the main blob.** Reviewed GitHub Advisories are stored
+   in their own Netlify Blobs store (`tpr-github-advisory`) and
+   merged into the public response at read time. The prebuilt
+   `latest-dataset` blob's `fetchedAt` is never rewritten by a
+   GitHub Advisory update, so the v5.1 "newer dataset available"
+   banner can never fire spuriously. The endpoint is filtered by
+   CVE and by the reviewed advisory type, and only reviewed,
+   non-withdrawn advisories are kept. Up to 25 CVEs per run are
+   processed without a token (50 with a token) at concurrency 4;
+   empty / 404 results are negatively cached, an empty result
+   never overwrites a positive advisory, and a null patched
+   version is rendered as "First patched version unavailable"
+   (never inferred as "No fix exists").
 
 ---
 
@@ -316,6 +411,81 @@ from the main dataset blob:
   cannot reconstruct a 404 reason or transient failure from
   the response body.
 
+### GitHub Advisory reliability
+
+The GitHub Advisory enrichment is incremental, partial, and isolated
+from both the main dataset blob and the Vulnrichment blob:
+
+- **Separate Netlify Blobs store.** Reviewed advisory records live
+  in their own store (`tpr-github-advisory`, key `cache`). The
+  visitor's read path merges them into records at serve time and
+  never writes to this store. The prebuilt `latest-dataset`
+  blob's `fetchedAt` is never rewritten by a GitHub Advisory
+  update, so the v5.1 "newer dataset available" banner can
+  never fire spuriously.
+- **Endpoint filtered by CVE and reviewed advisory type.** The
+  request filters for reviewed, non-withdrawn advisories that
+  match the target CVE. Only reviewed entries that survive the
+  filter are stored. Withdrawn and unreviewed entries are
+  intentionally dropped, not surfaced with a partial
+  provenance disclaimer — the dashboard never claims a
+  "review" it cannot verify.
+- **Incremental and capped.** Each refresh selects at most 25
+  CVEs that are missing from the cache or whose positive
+  advisory record is older than the 7-day staleness window.
+  The cap doubles to 50 CVEs per run when the optional
+  `GITHUB_TOKEN` is set server-side. Requests run at
+  concurrency 4; the full dataset is never refetched in a
+  single cycle.
+- **Empty result is "no reviewed advisory", not a failure.**
+  When the upstream returns no reviewed advisory for a CVE
+  (empty result), the refresh writes a lightweight
+  negative-cache marker (`{ advisory: null, status: "missing",
+  cachedAt, checkedAt }`) instead of re-fetching the same
+  CVE on every cycle. A stale negative entry (older than the
+  7-day window) is re-selected so a newly reviewed advisory
+  eventually replaces it.
+- **An empty / 404 result never overwrites a positive
+  record.** If the cache already holds a positive advisory
+  for a CVE, a later empty or 404 response leaves the
+  positive record untouched — losing real data on a
+  transient upstream inconsistency is worse than keeping a
+  possibly-stale one. Provider failures (5xx, network errors,
+  rate-limit responses) also preserve the positive cached
+  entry; the failure is recorded in the internal operator
+  envelope but never surfaces in the public response.
+- **`githubAdvisoryCoverage.enriched` counts only positive
+  records.** The empty / 404 markers are not counted as
+  enriched; the public envelope's `available` / `partial` /
+  `unavailable` status is derived from the honest
+  `{ enriched, total }` ratio and never claims `available`
+  while backfill is still incomplete.
+- **Null patched version means "unavailable", not "no fix".**
+  When a reviewed advisory does not list a patched version
+  (e.g. the upstream record omits the field, or the package
+  is unmaintained), the drawer renders the field as
+  **"First patched version unavailable"**. The dashboard
+  never infers a missing patched version as
+  **"No fix exists"** — that would be a fabricated claim
+  that a defender could act on.
+- **No internal metadata reaches the visitor.** The
+  negative-cache markers, raw rate-limit headers
+  (`x-ratelimit-*`, `Retry-After`), raw provider error
+  bodies, cache keys, and stack traces all stay internal.
+  The optional `GITHUB_TOKEN` is read from `process.env`
+  inside the Netlify Function only, passed as an
+  `Authorization: Bearer <token>` header, and **never**
+  appears in the function response body, in any URL, in
+  any log, or in the frontend bundle. The
+  `githubAdvisoryStatus` /
+  `githubAdvisoryCoverage` fields are the only public
+  surface; the frontend bundle never references the
+  `api.github.com` upstream directly — the browser has
+  no way to call the GitHub Advisory API itself, and a
+  malicious visitor cannot reconstruct a token, a
+  rate-limit value, or a transient provider error from
+  the response body.
+
 ### Manual refresh never blocks the user
 
 Clicking "Refresh live data" POSTs to a Netlify Background Function
@@ -325,7 +495,7 @@ and surfaces a "New dataset available. Updated 2 min ago." banner with
 explicit **Apply update** / × controls — filters, search, sort, and the
 open detail view are preserved across the apply.
 
-### API key stays server-side
+### API keys stay server-side
 
 The optional `NVD_API_KEY` is read from `process.env` inside the
 Netlify Function only, passed to NVD as a request header
@@ -334,6 +504,17 @@ in any URL, in any log, or in the frontend bundle. The key is optional
 — the dashboard works identically without it (just slower for the
 first visitor in a region per 15 min; repeat visitors ride the CDN
 cache).
+
+The optional `GITHUB_TOKEN` follows the same contract: it is read
+from `process.env` inside the Netlify Function only, passed to the
+GitHub Advisory API as an `Authorization: Bearer <token>` header,
+and **never** appears in the function response body, in any URL,
+in any log, or in the frontend bundle. Setting it raises the
+incremental-enrichment cap from 25 to 50 CVEs per background run
+and tightens the upstream rate-limit allowance; the dashboard
+works identically without it (slower incremental backfill,
+repeat visitors ride the CDN cache for the main envelope either
+way).
 
 ### No mock fallback in the prebuilt store
 
@@ -391,7 +572,9 @@ threatpulse-radar/
 │           ├── refresh.mjs           # lock + write orchestrator + quality guard
 │           ├── liveBuild.mjs         # shared CISA → NVD → EPSS pipeline
 │           ├── vulnrichment.mjs      # CISA Vulnrichment path / parser / coverage (v5.5)
-│           └── vulnrichmentRefresh.mjs # CISA Vulnrichment incremental orchestrator (v5.5)
+│           ├── vulnrichmentRefresh.mjs # CISA Vulnrichment incremental orchestrator (v5.5)
+│           ├── githubAdvisory.mjs    # GitHub Advisory path / parser / coverage (v5.6)
+│           └── githubAdvisoryRefresh.mjs # GitHub Advisory incremental orchestrator (v5.6)
 └── src/
     ├── main.tsx                       # entry
     ├── App.tsx                        # thin shell
@@ -489,12 +672,14 @@ in it are the artifact — not the feature list.
 
 What I would point to in a review:
 
-- **Per-provider status side-channels.** CISA, NVD, FIRST, and CISA
-  Vulnrichment are four independent services with four independent
-  failure modes. The `FetchResult` shape has separate `nvdStatus`,
-  `epssStatus`, `vulnrichmentStatus`, and `vulnrichmentCoverage`
-  fields so partial outages degrade honestly instead of
-  misrepresenting the data.
+- **Per-provider status side-channels.** CISA, NVD, FIRST, CISA
+  Vulnrichment, and the GitHub Advisory Database are five
+  independent services with five independent failure modes. The
+  `FetchResult` shape has separate `nvdStatus`, `epssStatus`,
+  `vulnrichmentStatus` + `vulnrichmentCoverage`, and
+  `githubAdvisoryStatus` + `githubAdvisoryCoverage` fields so
+  partial outages degrade honestly instead of misrepresenting the
+  data.
 - **Prebuilt blob + quality guard.** A shared `latest-dataset`
   Netlify Blobs entry decouples the upstream pipeline from per-request
   latency. The orchestrator refuses to overwrite a better envelope
@@ -502,14 +687,17 @@ What I would point to in a review:
   (NVD HTTP 429 silently worsening the cached data) that most
   tutorials skip.
 - **Incremental, partial enrichment with negative caching.** The
-  v5.5 CISA Vulnrichment pass is a separate post-step that
-  enriches at most 50 missing/stale CVEs per background run
-  instead of re-fetching the full dataset. HTTP 404 results are
-  written as lightweight negative-cache markers so the backfill
-  queue keeps moving instead of looping over the same CVEs every
-  cycle. Coverage is reported honestly as `{ enriched, total }` —
-  the dashboard never claims `available` while backfill is still
-  incomplete.
+  v5.5 CISA Vulnrichment and v5.6 GitHub Advisory passes are
+  separate post-steps that each enrich only the CVEs that are
+  missing from the cache or older than the staleness window.
+  Vulnrichment is capped at 50 missing/stale CVEs per
+  background run; the GitHub Advisory pass is capped at 25
+  CVEs per run without a token, 50 with a token. HTTP 404 and
+  empty results are written as lightweight negative-cache
+  markers so the backfill queue keeps moving instead of looping
+  over the same CVEs every cycle. Coverage is reported honestly
+  as `{ enriched, total }` — the dashboard never claims
+  `available` while backfill is still incomplete.
 - **No API keys in the frontend bundle.** `NVD_API_KEY` is read from
   `process.env` inside the Netlify Function only, passed as a request
   header, never exposed. The app works identically without it.
@@ -537,9 +725,10 @@ tooling. The mock CVEs in `src/data/mockVulnerabilities.ts` are
 fictional and provided for visualization purposes; always refer to
 upstream advisories before taking action.
 
-The NVD, CISA KEV, CISA Vulnrichment, and FIRST EPSS feeds are public
-services operated by their respective organizations. ThreatPulse
-Radar is not affiliated with NIST, CISA, or FIRST.
+The NVD, CISA KEV, CISA Vulnrichment, GitHub Advisory Database, and
+FIRST EPSS feeds are public services operated by their respective
+organizations. ThreatPulse Radar is not affiliated with NIST, CISA,
+GitHub, or FIRST.
 
 ---
 

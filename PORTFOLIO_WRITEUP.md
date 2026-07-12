@@ -12,7 +12,7 @@
 **ThreatPulse Radar** is a single-page web dashboard that tracks
 publicly disclosed cybersecurity vulnerabilities for **defensive
 security work** — patch prioritization, exposure awareness, and
-remediation tracking. It pulls four public defensive-intelligence
+remediation tracking. It pulls five public defensive-intelligence
 feeds live (server-side, via a Netlify Function) and joins them
 into one filterable view:
 
@@ -22,6 +22,7 @@ into one filterable view:
 | **NVD CVE 2.0** | CVSS base score and severity |
 | **FIRST EPSS** | Probability the CVE will be exploited in the next 30 days |
 | **CISA Vulnrichment** | CISA SSVC decision context (Exploitation, Automatable, Technical impact) |
+| **GitHub Advisory Database** | Reviewed GHSA, affected package, vulnerable range, first patched version |
 
 The result is a one-page command center: at a glance, a defender
 can see "which critical KEV-listed CVEs are most likely to be
@@ -30,7 +31,7 @@ affect?" The dashboard's 6 stat cards, 4 charts, and filterable
 table all share one pipeline, so a click anywhere updates
 everywhere. The Vulnrichment SSVC context appears only in the
 vulnerability details drawer (not as a main-table column) so the
-four signals stay independent — the dashboard never combines them
+five signals stay independent — the dashboard never combines them
 into a proprietary composite score.
 
 It is **defensive-only**. There is no exploit code, no offensive
@@ -140,25 +141,26 @@ This means a recruiter can ask "what happens when a CVE isn't
 in the EPSS response?" and the answer is in three lines of code
 at the top of the enricher.
 
-### 5. The dashboard ships with **701 acceptance tests** that don't
+### 5. The dashboard ships with **874 acceptance tests** that don't
 need a browser
 
 A hand-rolled `scripts/acceptance-*.mjs` test runner exercises
 the filter / sort / enrichment / orchestration / cache / proxy /
-soft-refresh / prebuilt / last-known-good / CISA Vulnrichment
-pipeline against synthetic data, with no test framework, no
-DOM, no build step. It runs in seconds on Node 18+:
+soft-refresh / prebuilt / last-known-good / CISA Vulnrichment /
+GitHub Advisory pipeline against synthetic data, with no test
+framework, no DOM, no build step. It runs in seconds on Node 18+:
 
 ```bash
-node scripts/acceptance-cisa.mjs            # 28 CISA KEV tests
-node scripts/acceptance-epss.mjs            # 39 FIRST EPSS tests
-node scripts/acceptance-nvd.mjs             # 57 NVD CVSS tests
-node scripts/acceptance-cache.mjs           # 60 v4 cache tests
-node scripts/acceptance-proxy.mjs           # 110 v5.0 proxy tests
-node scripts/acceptance-softrefresh.mjs     # 58 v5.1 soft-refresh tests
-node scripts/acceptance-prebuilt.mjs        # 148 v5.2 prebuilt-blob tests
-node scripts/acceptance-lastknowngood.mjs   # 76 v5.4.2 last-known-good tests
-node scripts/acceptance-vulnrichment.mjs    # 125 v5.5 CISA Vulnrichment tests
+node scripts/acceptance-cisa.mjs               # 28 CISA KEV tests
+node scripts/acceptance-epss.mjs               # 39 FIRST EPSS tests
+node scripts/acceptance-nvd.mjs                # 57 NVD CVSS tests
+node scripts/acceptance-cache.mjs              # 60 v4 cache tests
+node scripts/acceptance-proxy.mjs              # 110 v5.0 proxy tests
+node scripts/acceptance-softrefresh.mjs        # 58 v5.1 soft-refresh tests
+node scripts/acceptance-prebuilt.mjs           # 148 v5.2 prebuilt-blob tests
+node scripts/acceptance-lastknowngood.mjs      # 76 v5.4.2 last-known-good tests
+node scripts/acceptance-vulnrichment.mjs       # 125 v5.5 CISA Vulnrichment tests
+node scripts/acceptance-github-advisory.mjs    # 173 v5.6 GitHub Advisory tests
 ```
 
 The tests assert source-code wiring (e.g. "the service file
@@ -253,7 +255,7 @@ an interview:
 The v5.x backend is a thin Netlify Function that runs the
 CISA → NVD → EPSS build on a cron, writes the result to a
 shared Netlify Blobs entry, and serves the prebuilt envelope
-to every subsequent visitor. Three design choices in the
+to every subsequent visitor. Four design choices in the
 backend are worth pointing to:
 
 - **Last-known-good preservation (v5.4.2).** If the live
@@ -289,12 +291,55 @@ backend are worth pointing to:
   status is derived honestly. Visitors see exactly how
   many CVEs in the current dataset have a CISA Vulnrichment
   assessment, and the SSVC fields appear in the details
-  drawer for those that do. The four signals (KEV, NVD,
-  EPSS, SSVC) stay independent; the dashboard never
-  combines them into a proprietary composite score.
+  drawer for those that do. The five signals (KEV, NVD,
+  EPSS, SSVC, GitHub Advisory) stay independent; the
+  dashboard never combines them into a proprietary
+  composite score.
+- **Reviewed package-remediation enrichment (v5.6).** The
+  GitHub Advisory Database publishes reviewed, vulnerability-
+  scoped advisories. The refresh runs a **second separate
+  incremental post-step** that filters the upstream endpoint
+  by CVE and by the reviewed advisory type, then selects at
+  most 25 missing-or-stale CVEs per cycle (50 when the
+  optional server-side `GITHUB_TOKEN` is configured) and
+  enriches them at concurrency 4. Withdrawn and unreviewed
+  advisories are dropped at the filter; only reviewed,
+  non-withdrawn entries are stored. The same read-time merge
+  pattern is used as for Vulnrichment: records are stored
+  in their own Netlify Blobs store (`tpr-github-advisory`),
+  attached to records at serve time, and never written to
+  the main `latest-dataset` blob. As a result, a GitHub
+  Advisory update can never rewrite the main blob's
+  `fetchedAt`, and the v5.1 "newer dataset available"
+  banner can never fire spuriously from a remediation
+  refresh. Empty / 404 results are negatively cached as
+  `{ advisory: null, status: "missing", cachedAt,
+  checkedAt }`; a 404 is explicitly prevented from
+  overwriting an existing positive advisory record, and
+  provider failures (5xx, network errors, rate-limit
+  responses) preserve the positive cached entry. The
+  public envelope carries
+  `githubAdvisoryStatus: "available" | "partial" |
+  "unavailable"` and `githubAdvisoryCoverage: { enriched,
+  total }`, computed honestly from the actual cache state.
+  When a reviewed advisory does not list a patched version
+  — for example because the upstream record omits the field
+  or the package is unmaintained — the drawer renders the
+  field as **"First patched version unavailable"**. The
+  dashboard never infers a missing patched version as
+  **"No fix exists"**; that would be a fabricated claim
+  that a defender could act on. The optional
+  `GITHUB_TOKEN` is read from `process.env` inside the
+  Netlify Function only, passed to the upstream as an
+  `Authorization: Bearer <token>` header, and **never**
+  appears in the function response body, in any URL, in
+  any log, or in the frontend bundle. The dashboard works
+  identically without it (slower incremental backfill,
+  repeat visitors ride the CDN cache for the main envelope
+  either way).
 
 The result: a backend that runs cheaply (one cron tick every
-30 min, one enrichment pass per refresh), degrades honestly
+30 min, two enrichment passes per refresh), degrades honestly
 (partial outages are labeled, never hidden), and is
 incremental (the 1,600+ CVEs in CISA KEV are not re-fetched
 in a single cycle). The visitor never sees a raw provider
@@ -349,11 +394,12 @@ A short list of honest trade-offs:
   `src/services/datasetCache.ts`, and the three providers
   under `src/services/providers/`. For the v5.x backend,
   skim `netlify/functions/_shared/refresh.mjs`,
-  `liveBuild.mjs`, `store.mjs`, `vulnrichment.mjs`, and
-  `vulnrichmentRefresh.mjs` — the entire build + enrichment
-  pipeline is in those five files. Then read the nine
-  acceptance scripts and follow the test flow backward into
-  the production code.
+  `liveBuild.mjs`, `store.mjs`, `vulnrichment.mjs`,
+  `vulnrichmentRefresh.mjs`, `githubAdvisory.mjs`, and
+  `githubAdvisoryRefresh.mjs` — the entire build +
+  enrichment pipeline is in those seven files. Then read
+  the ten acceptance scripts and follow the test flow
+  backward into the production code.
 - **30 minutes**: skim the git history (or run
   `git log --oneline --graph`). The version-by-version commit
   messages tell the same "story" — what shipped, what was
