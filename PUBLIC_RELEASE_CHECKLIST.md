@@ -4,10 +4,12 @@
 > captures the v5.4 public-readiness audit findings and the manual
 > steps to take before the private repo is made public on GitHub.
 > The v5.4.1 follow-up removed the two internal handover files
-> from the working tree (section 6 below); the remaining
-> pre-release steps in this checklist are still manual.
-> The audit only — no public-publishing actions are taken from
-> this branch.
+> from the working tree (section 6 below); the v5.5 / v5.5.1
+> audits extended the checklist with CISA Vulnrichment coverage;
+> the v5.6 / v5.6.1 audits extend it with reviewed GitHub
+> Advisory coverage. The remaining pre-release steps in this
+> checklist are still manual. The audit only — no
+> public-publishing actions are taken from this branch.
 
 ---
 
@@ -154,6 +156,77 @@ the same as the existing CISA KEV / NVD / EPSS feeds:
   125 assertions) actively asserts all of the above as a
   regression guard.
 
+### 8. GitHub Advisory — internal metadata isolation — **clean**
+
+The v5.6 GitHub Advisory enrichment introduces a fifth
+defensive-intelligence feed and a separate Netlify Blobs
+store (`tpr-github-advisory`). The public-surface contract
+follows the same pattern as the existing four feeds:
+
+- ✅ The visitor's response body never contains any of the
+  GitHub Advisory internal-only fields. The optional
+  `GITHUB_TOKEN` is read from `process.env` inside the
+  Netlify Function only, passed to the upstream as an
+  `Authorization: Bearer <token>` header, and **never**
+  appears in the function response body, in any URL, in
+  any log, or in the frontend bundle. The token is
+  optional — the dashboard works identically without it
+  (slower incremental backfill; the cap drops from 50 to
+  25 CVEs per run).
+- ✅ The GitHub Advisory cache markers, negative-cache
+  records, raw rate-limit headers (`x-ratelimit-*`,
+  `Retry-After`), raw provider error bodies, cache keys,
+  and stack traces all stay internal. The public envelope
+  carries only the coarse
+  `githubAdvisoryStatus: "available" | "partial" |
+  "unavailable"` and the `githubAdvisoryCoverage:
+  { enriched, total }` counts — the same shape as the
+  Vulnrichment envelope, deliberately so a defender can
+  read the two side-by-side without inferring provider
+  internals. The provider-facing sanitized `nvdReason` /
+  `epssReason` strings ARE intentionally part of the
+  public provider-status contract (see section 7 note
+  above) — the same carve-out applies here.
+- ✅ The frontend bundle never references the GitHub
+  Advisory API directly. There is no `api.github.com`
+  reference in any `src/**` file; the browser has no way
+  to call the GitHub Advisory API itself. The dashboard
+  reads only the two public envelope fields
+  (`githubAdvisoryStatus` / `githubAdvisoryCoverage`)
+  plus the per-record package-remediation fields from
+  the Netlify Function.
+- ✅ The GitHub Advisory cache is in a separate Netlify
+  Blobs store (`tpr-github-advisory`) and is never mixed
+  into either the main `latest-dataset` blob or the
+  Vulnrichment blob. A GitHub Advisory refresh cannot
+  rewrite the main blob's `fetchedAt` and trigger a
+  spurious "newer dataset available" banner (v5.1
+  contract). The read-time merge into the public record
+  is additive only — main-envelope fields are never
+  replaced.
+- ✅ Package remediation context is drawer-only. There is
+  no GitHub Advisory column in the main vulnerability
+  table, no GitHub Advisory header pill, and the section
+  appears only inside the vulnerability details drawer
+  as "**Package remediation context**". Missing coverage
+  is rendered neutrally (the section is simply omitted
+  for CVEs that do not have a reviewed advisory) — never
+  as a fabricated "No fix exists" claim. A null patched
+  version on a reviewed advisory is rendered as
+  "**First patched version unavailable**".
+- ✅ External GitHub advisory links use safe new-tab
+  behavior: `target="_blank"` and `rel="noopener
+  noreferrer"`. The link target is the public
+  `https://github.com/advisories/<GHSA-ID>` URL only;
+  raw API endpoints and `api.github.com` URLs are never
+  surfaced in the drawer.
+- ✅ The acceptance suite (`scripts/acceptance-github-advisory.mjs`,
+  173 assertions) actively asserts all of the above as a
+  regression guard, including: no token leak, no raw
+  rate-limit metadata, no raw provider error bodies, no
+  internal cache keys / store names, no table column, no
+  header pill, and no fabricated patched-version claims.
+
 ---
 
 ## Pre-release steps (run before flipping the repo public)
@@ -189,9 +262,10 @@ node scripts/acceptance-nvd.mjs
 node scripts/acceptance-cache.mjs
 node scripts/acceptance-lastknowngood.mjs
 node scripts/acceptance-vulnrichment.mjs
+node scripts/acceptance-github-advisory.mjs
 ```
 
-All nine scripts must report `PASSED (N/N)` with no failures.
+All ten scripts must report `PASSED (N/N)` with no failures.
 
 ### C. Verify the production deploy is honest
 
@@ -217,23 +291,61 @@ On the live demo at
   `/.netlify/functions/dataset` response body. The status is
   one of `available` / `partial` / `unavailable` and reflects
   the actual cache state, not an optimistic claim.
+- The public `githubAdvisoryStatus` and `githubAdvisoryCoverage`
+  values are visible in DevTools → Network → the
+  `/.netlify/functions/dataset` response body. The status is
+  one of `available` / `partial` / `unavailable` and reflects
+  the actual cache state, not an optimistic claim.
+- For at least one KEV-listed CVE that has a reviewed GitHub
+  Advisory, open the detail drawer and verify the
+  "**Package remediation context**" section shows: the GHSA
+  identifier, the advisory severity, the GitHub-reviewed date,
+  a `source: "GitHub Advisory Database"` label, and — when the
+  upstream record provides one — the affected package, the
+  vulnerable range, and the first patched version. When the
+  upstream record omits the patched version, the field reads
+  "**First patched version unavailable**" (never "No fix
+  exists"). For a CVE without a reviewed advisory, the section
+  is simply omitted. Package remediation context is
+  intentionally **not** a main-table column and **not** a
+  header pill.
+- The external GHSA link in the drawer opens in a new tab
+  (`target="_blank"`, `rel="noopener noreferrer"`) and points
+  to the public `https://github.com/advisories/<GHSA-ID>` URL
+  only — never to `api.github.com` or any raw-API endpoint.
+- Open the browser DevTools → Network → trigger a manual
+  refresh and verify the response body does **not** contain
+  any of the GitHub Advisory internal-only fields: no
+  `GITHUB_TOKEN` substring anywhere, no raw `x-ratelimit-*`
+  headers, no raw `Retry-After` values, no raw provider error
+  bodies or stack traces, no `tpr-github-advisory` blob keys,
+  no negative-cache markers (`status: "missing"`), and no
+  internal cache keys. The only public GitHub Advisory
+  surface in the response body is
+  `githubAdvisoryStatus` + `githubAdvisoryCoverage` on the
+  envelope and the per-record package-remediation fields on
+  the record — exactly the same shape as the existing NVD,
+  EPSS, and Vulnrichment public contracts.
 - Open the browser DevTools → Network → trigger a manual
   refresh and verify the response body contains
   `proxyStatus: "proxy"`, `dataSource: "prebuilt-store"`,
   `nvdStatus: "nvd"`, `epssStatus: "first"`, and no
-  `NVD_API_KEY` substring anywhere. Also confirm the
-  response body does **not** contain any of the
-  internal-only fields written by the refresh orchestrator
-  to the prebuilt blob: no `lastRefreshFailure`, no
-  `lastRefreshAttemptAt`, no `lastVulnrichmentRefresh`. The
-  public response must also remain free of raw upstream
-  URLs (no `raw.githubusercontent.com`), stack traces,
-  secrets / API keys, and internal store metadata
-  (no `tpr-vulnrichment` blob keys, no `tpr-dataset` blob
-  keys, no `refresh-lock` payloads). The provider-facing
-  sanitized `nvdReason` / `epssReason` strings ARE part
-  of the honest public provider-status contract — they
-  are rendered verbatim by the `NvdUnavailableBanner` and
+  `NVD_API_KEY` substring anywhere, and no `GITHUB_TOKEN`
+  substring anywhere. Also confirm the response body does
+  **not** contain any of the internal-only fields written
+  by the refresh orchestrator to the prebuilt blob: no
+  `lastRefreshFailure`, no `lastRefreshAttemptAt`, no
+  `lastVulnrichmentRefresh`. The public response must
+  also remain free of raw upstream URLs (no
+  `raw.githubusercontent.com`, no `api.github.com`),
+  stack traces, secrets / API keys, and internal store
+  metadata (no `tpr-vulnrichment` blob keys, no
+  `tpr-github-advisory` blob keys, no `tpr-dataset` blob
+  keys, no `refresh-lock` payloads, no GitHub Advisory
+  negative-cache markers). The provider-facing sanitized
+  `nvdReason` / `epssReason` strings ARE part of the
+  honest public provider-status contract — they are
+  rendered verbatim by the `NvdUnavailableBanner` and
   `EpssUnavailableBanner` so a defender can see *why* a
   provider failed, and their presence in the response
   body is expected.
@@ -253,13 +365,15 @@ On the GitHub repo settings page (before flipping visibility):
    fine, but the default landing branch should be `main`.
 3. **Add a repository description and URL** (Settings →
    General): "Defensive vulnerability intelligence dashboard
-   (CISA KEV + NVD CVSS + FIRST EPSS + CISA Vulnrichment SSVC).
-   Production-style React + Vite + Netlify Functions + Netlify
-   Blobs. Defensive use only."
+   (CISA KEV + NVD CVSS + FIRST EPSS + CISA Vulnrichment SSVC
+   + reviewed GitHub Advisory package remediation). Production-
+   style React + Vite + Netlify Functions + Netlify Blobs.
+   Defensive use only."
 4. **Add topics** (Settings → General): `cybersecurity`,
    `vulnerability-management`, `defensive-security`,
    `react`, `typescript`, `vite`, `netlify`, `cisa-kev`,
-   `nvd`, `epss`, `cisa-vulnrichment`, `ssvc`. These help
+   `nvd`, `epss`, `cisa-vulnrichment`, `ssvc`,
+   `github-advisory-database`, `ghsa`. These help
    searchability without over-claiming.
 5. **Pin the repository** (optional, profile page) if you
    want it at the top of your GitHub profile.
@@ -282,8 +396,8 @@ On the GitHub repo settings page (before flipping visibility):
 
 ## What this checklist does NOT do
 
-The v5.4 + v5.4.1 + v5.5 + v5.5.1 audit branches together do
-**not**:
+The v5.4 + v5.4.1 + v5.5 + v5.5.1 + v5.6 + v5.6.1 audit
+branches together do **not**:
 
 - Flip the GitHub repository to public.
 - Rewrite git history.
@@ -293,9 +407,10 @@ The v5.4 + v5.4.1 + v5.5 + v5.5.1 audit branches together do
 
 (v5.4.1 *did* delete two internal markdown files from the
 working tree as the documented pre-release action; v5.5
-*did* add the CISA Vulnrichment server-side enrichment; the
-audits themselves still did not flip visibility, rewrite
-history, or push.)
+*did* add the CISA Vulnrichment server-side enrichment;
+v5.6 *did* add the reviewed GitHub Advisory server-side
+enrichment; the audits themselves still did not flip
+visibility, rewrite history, or push.)
 
 The maintainer runs the remaining pre-release steps in the
 "Pre-release steps" section when ready, by hand, in their own
@@ -303,7 +418,8 @@ time.
 
 ---
 
-_Last updated: v5.5.1 vulnrichment-launch-polish branch
-(documentation refresh; CISA Vulnrichment audit findings
-added; Vulnrichment public-surface check added to the
-production verification list)._
+_Last updated: v5.6.1 github-advisory-docs branch
+(documentation refresh; v5.6 GitHub Advisory audit findings
+added; GitHub Advisory public-surface check added to the
+production verification list; production-readiness checklist
+extended with the v5.6 reviewed-advisory contract)._
