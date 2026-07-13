@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/delta-v1.schema.json",
+  "title": "ThreatPulse Radar Canonical Baseline Delta v1",
+  "description": "Delta from baseVersion to targetVersion. Explicit upserts and tombstones. The delta SHA-256 is computed over the canonical JSON bytes of the delta file itself. Object keys are sorted lexicographically before hashing.",
+  "type": "object",
+  "required": ["schemaVersion", "baseVersion", "baseManifestHash", "targetVersion", "targetManifestHash", "deltaSha256", "upserts", "tombstones"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "baseVersion": { "type": "string" },
+    "baseManifestHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "targetVersion": { "type": "string" },
+    "targetManifestHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "deltaSha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "upserts": {
+      "type": "object",
+      "properties": {
+        "vulnerabilities": { "type": "array", "items": { "type": "object" } },
+        "advisories": { "type": "array", "items": { "type": "object" } },
+        "packages": { "type": "array", "items": { "type": "object" } },
+        "relationships": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
+    "tombstones": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": false
+}

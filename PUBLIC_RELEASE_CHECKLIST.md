@@ -229,6 +229,155 @@ follows the same pattern as the existing four feeds:
 
 ---
 
+## V6.0 — Canonical baseline audit findings
+
+The V6.0 audit is separate from the v5.x audits above. The
+V6.0 surface is **private** (the public dashboard is
+unchanged), so the audit's goal is to verify that the
+private data plane does not leak into the public surface and
+that visitors cannot reach it.
+
+### Surface separation
+
+- [x] **No anonymous function exposes the canonical
+  baseline.** The five paths `baseline-manifest`,
+  `baseline-snapshot`, `baseline-delta`, `baseline-shard`,
+  `baseline-sources` are not deployed as functions on the
+  public site. The only V6.0 function on the public site
+  is `refresh-baseline-scheduled` (the thin cron launcher)
+  and `refresh-baseline-background` (the long-running
+  orchestrator). Neither accepts inbound HTTP from
+  visitors; the background function's path is only
+  reachable from the scheduled function with the correct
+  trigger secret.
+- [x] **The private gateway is a separate Netlify site.**
+  `netlify/functions/private-sync-gateway.mjs` is the
+  function on the gateway site. The gateway site does NOT
+  have any of the V5.x public functions, the dataset
+  surface, or the V6.0 publisher functions. The split is
+  by deploy topology, not by function flag.
+- [x] **Cross-site access is server-side only.** The
+  `THREATPULSE_BASELINE_SITE_ID` and
+  `THREATPULSE_BLOBS_ACCESS_TOKEN` env vars live on the
+  private gateway, never on the public site, never in the
+  consumer's environment, never in client code or
+  screenshots or fixtures or docs.
+- [x] **The credential pepper is on the gateway only.**
+  `THREATPULSE_CREDENTIAL_PEPPER` is read by the private
+  gateway's auth check. The public site has no use for
+  it; the consumer has no use for it; the public
+  functions never read it.
+
+### Credential hygiene
+
+- [x] **No credential in source control.** The operator
+  issues credentials with the
+  `_shared/credentials.mjs#generateCredential` helper
+  (or equivalent). The credential is handed to the
+  consumer out-of-band. The HMAC digest is written to
+  `credentials/<keyId>` in the `tpr-baseline` store via
+  the Netlify Blobs UI or CLI. Nothing in this repository
+  contains a real credential.
+- [x] **No credential in fixtures or test data.** The
+  acceptance test `acceptance-private-gateway.mjs` uses
+  the helper to generate test credentials; the test
+  verifies the credential never appears in the response
+  body. The test's PEPPER constant is
+  `a-test-pepper-do-not-use-in-prod` — clearly a test
+  value, not a real secret.
+- [x] **No credential in logs.** The Netlify function
+  logs do not record the `Authorization` header. The
+  background function's `console.log` lines record
+  aggregate counts and timings, not request content.
+- [x] **Constant-time comparison.** `validateTriggerSecret`
+  and `verifyCredential` both use
+  `crypto.timingSafeEqual` over the SHA-256 output
+  (after hex decode). The wrong-length path returns
+  false before the comparison, so a short credential
+  cannot be used as a side channel.
+
+### Atomicity and integrity
+
+- [x] **Latest pointer is the only mutable write.** A
+  failed publication leaves `manifests/latest.json`
+  unchanged. The acceptance test
+  `acceptance-canonical-baseline.mjs` covers this with
+  the "failed publication leaves latest unchanged" test.
+- [x] **Unchanged shards are reused.** A bucket whose
+  content hash matches the previous bucket's content
+  hash keeps the same objectKey in the new manifest. The
+  acceptance test "unchanged content reuses previous
+  shard key" verifies this.
+- [x] **Equal-timestamp OSV updates are not skipped.**
+  The orchestrator re-processes IDs that reappear in
+  `modified_id.csv`; the bucket merge with content-hash
+  dedup makes this safe. The acceptance test
+  "equal-timestamp re-emit invariant" verifies the
+  underlying state mechanism.
+- [x] **Manifest hash is verified by the consumer.** The
+  reference consumer's `verifyManifest` excludes the
+  `deltaHash` field from the hash computation (matching
+  the publisher's `buildVersionManifest`). The
+  acceptance test "verifyManifest: changing deltaHash
+  does not invalidate" verifies this consistency.
+
+### Visitor access
+
+- [x] **Visitors cannot trigger refresh.** The
+  background function rejects any request without the
+  trigger secret header. The acceptance test "visitors
+  cannot trigger refresh" covers four flavors of
+  unauthenticated request and asserts 401 for each.
+- [x] **Visitors cannot read the baseline.** The
+  private gateway rejects any request without a valid
+  HMAC credential. The acceptance test "anonymous
+  requests can never read the canonical baseline" covers
+  five routes and asserts 401 for each.
+- [x] **Anonymous endpoint count is unchanged.** The
+  public site's HTTP surface is exactly the V5.7
+  surface plus the V5.x refresh functions plus the
+  scheduled (cron-only) `refresh-baseline-scheduled`.
+  No new anonymous endpoint is introduced.
+
+### Data plane separation
+
+- [x] **The OSV provider only talks to OSV.** The
+  `osvProvider.mjs` module has a single external
+  dependency: `https://osv-vulnerabilities.storage.googleapis.com`.
+  It does not talk to the public site, the private
+  gateway, or any third party beyond OSV. The
+  acceptance tests use an injected fetcher; no test
+  actually hits OSV.
+- [x] **The publisher only writes to `tpr-baseline`.**
+  The V6.0 publisher functions do not write to any
+  other store. An operator that needs to read the
+  store can do so via the Netlify Blobs UI.
+- [x] **The consumer only talks to the configured
+  gateway.** The reference consumer's `gatewayUrl` is
+  the only network surface. There is no fallback URL,
+  no anonymous retry, no second-source fallback.
+
+### Production verification (V6.0)
+
+The deploy steps in [`docs/deployment.md`](docs/deployment.md)
+cover the production-time verification. The
+acceptance-summary check is:
+
+- [x] All 11 existing acceptance scripts pass unchanged.
+- [x] All 6 new V6.0 behavior suites pass:
+  - `acceptance-canonical-hashing`
+  - `acceptance-osv-ingestion`
+  - `acceptance-canonical-baseline`
+  - `acceptance-scheduler`
+  - `acceptance-private-gateway`
+  - `acceptance-consumer-client`
+- [x] `npm run build` is clean.
+- [x] `git diff --check` is clean.
+- [x] The working tree is clean after the final logical
+  commit.
+
+---
+
 ## Pre-release steps (run before flipping the repo public)
 
 The following steps assume the maintainer is the only one

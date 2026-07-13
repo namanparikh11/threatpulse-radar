@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/manifest-v1.schema.json",
+  "title": "ThreatPulse Radar Canonical Baseline Manifest v1",
+  "description": "Manifest for an immutable canonical baseline version. The manifest is the atomic commit point. The previousVersion field enables rollback. Shards are content-addressed (sha256 in the object key); manifestVersion embeds a short hash of the canonical content hash. Object keys are sorted lexicographically before hashing.",
+  "type": "object",
+  "required": ["schemaVersion", "baselineVersion", "previousVersion", "publishedAt", "canonicalContentHash", "shards", "sources"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "baselineVersion": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z-[0-9a-f]{8}$" },
+    "previousVersion": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z-[0-9a-f]{8}$" },
+    "publishedAt": { "type": "string", "format": "date-time" },
+    "canonicalContentHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "sources": {
+      "type": "object",
+      "additionalProperties": { "type": "object" }
+    },
+    "shards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["entityType", "bucket", "objectKey", "sha256", "byteSize", "recordCount"],
+        "properties": {
+          "entityType": { "type": "string", "enum": ["vulnerability", "advisory", "package", "relationship", "tombstone"] },
+          "bucket": { "type": "string", "pattern": "^[0-9a-f]{2}$" },
+          "objectKey": { "type": "string", "pattern": "^objects/sha256/[0-9a-f]{64}\\.json\\.gz$" },
+          "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "byteSize": { "type": "integer", "minimum": 0 },
+          "recordCount": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "deltasAvailable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["fromVersion", "toVersion", "objectKey", "sha256", "byteSize"],
+        "properties": {
+          "fromVersion": { "type": "string" },
+          "toVersion": { "type": "string" },
+          "objectKey": { "type": "string" },
+          "sha256": { "type": "string" },
+          "byteSize": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

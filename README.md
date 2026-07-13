@@ -297,10 +297,62 @@ section — missing coverage is neutral, not alarming.
    CVE and by the reviewed advisory type, and only reviewed,
    non-withdrawn advisories are kept. Up to 25 CVEs per run are
    processed without a token (50 with a token) at concurrency 4;
-   empty / 404 results are negatively cached, an empty result
-   never overwrites a positive advisory, and a null patched
-   version is rendered as "First patched version unavailable"
-   (never inferred as "No fix exists").
+    empty / 404 results are negatively cached, an empty result
+    never overwrites a positive advisory, and a null patched
+    version is rendered as "First patched version unavailable"
+    (never inferred as "No fix exists").
+
+---
+
+## V6.0 — Canonical baseline (private)
+
+V6.0 adds a **canonical baseline**: a content-addressed,
+versioned, atomic-publication snapshot of the full
+vulnerability / advisory / package / relationship / tombstone
+data plane, derived from OSV. The baseline is **private** —
+the public V5.7 dashboard above is unchanged. The new
+surface is split across THREE Netlify environments:
+
+1. **The public site** (this one) — the OSV ingestion
+   pipeline writes the canonical baseline to a new
+   `tpr-baseline` Blob store. A thin Scheduled Function
+   fires hourly; a Background Function runs the actual
+   work.
+2. **A private sync gateway** (a separate Netlify site) —
+   exposes five authenticated routes at `/private/v1/*`
+   that authenticated consumers call to read the baseline.
+3. **The consumer** — a reference Node.js client
+   ([`client/consumer-client.mjs`](client/consumer-client.mjs))
+   and the SQLite/Postgres adapter contract
+   ([`client/contracts.md`](client/contracts.md)).
+
+The gateway requires an HMAC-SHA256 credential
+(`tpr_<keyId>_<randomSecret>`) issued by the operator.
+Visitors cannot trigger refreshes or read the baseline —
+the only public surface is the V5.7 dashboard.
+
+What V6.0 is NOT:
+- It is NOT a real-time push system. Consumers pull.
+- It is NOT a multi-product "shared baseline service".
+- It is NOT a public read API.
+- It is NOT a STIX 2.1 interop layer.
+- It is NOT a per-client quota system (per-credential hard
+  quotas are deferred until an atomic counter store
+  exists).
+
+V6.0 documentation:
+- [`docs/v6-architecture.md`](docs/v6-architecture.md) —
+  the read-once architecture summary.
+- [`docs/credentials.md`](docs/credentials.md) — how to
+  issue, rotate, and revoke credentials.
+- [`docs/deployment.md`](docs/deployment.md) — production
+  deploy of the public site, the private gateway, and the
+  consumer.
+- [`docs/ecosystems.md`](docs/ecosystems.md) — the OSV
+  ecosystem allowlist and how to change it.
+- [`schemas/`](schemas/) — the JSON Schemas for the
+  baseline, the manifest, the delta, and the source
+  registry.
 
 ---
 

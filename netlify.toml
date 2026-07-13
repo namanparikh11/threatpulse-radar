@@ -65,6 +65,18 @@
 [functions.refresh-dataset-scheduled]
   schedule = "*/30 * * * *"
 
+# V6.0 — scheduled-refresh function for the canonical baseline.
+# The scheduled function is THIN: it only POSTs to the
+# refresh-baseline-background function with the
+# THREATPULSE_REFRESH_TRIGGER_SECRET. The background function
+# does the actual work (OSV ingestion + canonical baseline
+# build + publication) and has the 15-minute ceiling.
+#   `schedule = "0 * * * *"` = top of every hour. The
+# default schedule is hourly per the V6.0 design (decision #1).
+# The cron TZ is UTC.
+[functions.refresh-baseline-scheduled]
+  schedule = "0 * * * *"
+
 # Standard security headers for static `dist/` assets.
 [[headers]]
   for = "/*"
