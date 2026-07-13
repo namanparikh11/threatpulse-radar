@@ -380,6 +380,67 @@ A short list of honest trade-offs:
 
 ---
 
+## V6.0 — Canonical baseline (private data plane)
+
+V6.0 introduces a private data plane alongside the public
+V5.7 dashboard. The full vulnerability dataset is published
+as a content-addressed, versioned, atomic baseline; consumers
+authenticate to a separate Netlify site to read it.
+
+The interesting engineering problems:
+
+- **The bootstrap state is a journal, not a log.** The
+  orchestrator's per-ecosystem cursor and bounded
+  recent-ids ring let a run that is killed by the 15-minute
+  Background Function ceiling resume from the last
+  persisted position. The state lives in a single Blob
+  (`osv-bootstrap-state`); it is a journal of progress,
+  not a record of every record processed.
+- **The latest pointer is the only mutable write.** Every
+  other artifact (version manifests, content-addressed
+  shards, deltas) is immutable. A reader that sees the new
+  pointer can also find the new version manifest and
+  delta; a reader that sees the old pointer still sees a
+  consistent previous version. The publisher's atomicity
+  is one `manifests/latest.json` write.
+- **The delta's `targetManifestHash` matches the new
+  manifest's `canonicalContentHash` exactly.** A previous
+  two-pass build produced a mismatch because `deltaHash`
+  was inside the manifest's content hash. The fix moves
+  `deltaHash` to a metadata field, attached AFTER the
+  canonical content hash is computed. Consumers verify
+  the delta and the manifest against each other; the
+  hash discipline is the same on both sides.
+- **The credential is HMAC, not a JWT.** The pepper
+  (`THREATPULSE_CREDENTIAL_PEPPER`) lives only in the
+  gateway's environment. The stored digest is the raw
+  HMAC-SHA256 output, no `sha256:` prefix, no extra
+  wrapping. The keyId character set is `A-Za-z0-9-`
+  (deliberately excludes `_` to keep the credential
+  unambiguously parseable). The constant-time
+  comparison hashes both sides to SHA-256 BEFORE the
+  `timingSafeEqual` call, so a wrong-length input cannot
+  be used as a side channel.
+- **The consumer is intentionally small.** It is a
+  reference implementation, not a feature-complete sync
+  engine. A real product would add retries, exponential
+  backoff, concurrent fetches, and an observability
+  surface. The reference keeps the surface area small so
+  the integration story is obvious.
+
+What V6.0 is explicit about NOT doing:
+- No anonymous public function reads the canonical
+  baseline. The only public surface is the V5.7 dashboard.
+- No real-time push. Consumers pull on their own schedule.
+- No STIX 2.1 interop (a future-version concern).
+- No per-credential hard quotas (deferred until an atomic
+  counter store exists).
+
+The full V6.0 architecture summary is in
+[`docs/v6-architecture.md`](docs/v6-architecture.md).
+
+---
+
 ## How to look at it
 
 - **5 minutes**: load the deployed URL, click around, try the
