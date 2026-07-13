@@ -85,6 +85,60 @@ const root = join(here, '..');
 const buildDir = join(here, '.v57-build');
 
 /* ------------------------------------------------------------------ */
+/* V5.7 implementation commit (immutable anchor for scope checks)     */
+/* ------------------------------------------------------------------ */
+
+// The V5.7 implementation is captured at this exact commit. Sections
+// 19 and 20 below are historical release-scope audits: they verify
+// that THIS release touched only its own files and nothing else.
+// To survive later releases (V6.0, …), the audit must be anchored to
+// the immutable V5.7 implementation commit rather than to the
+// current branch tip. Never widen this range; doing so would
+// include future-release work and break the V5.7 audit on every
+// subsequent version.
+const V57_IMPL_COMMIT = '45774a8d529dae2604f203cd0395ff577b084bcf';
+
+let _v57ChangedFilesCache = null;
+function v57ChangedFiles() {
+  if (_v57ChangedFilesCache) return _v57ChangedFilesCache;
+  // `git diff-tree -r --name-only` lists every path the commit
+  // touched (added / modified / deleted). Using the commit hash
+  // directly makes this range-stable across all later releases.
+  let out;
+  try {
+    out = execFileSync('git',
+      ['diff-tree', '--no-commit-id', '--name-only', '-r', V57_IMPL_COMMIT],
+      { cwd: root, encoding: 'utf8' });
+  } catch (err) {
+    // Fail clearly if the anchor commit cannot be resolved.
+    // We do not silently fall back to a branch diff, because that
+    // would re-introduce the V6.0+ range problem this helper exists
+    // to avoid.
+    throw new Error(
+      `V5.7 scope audit could not resolve implementation commit ${V57_IMPL_COMMIT}. ` +
+      'The V5.7 historical release-scope check requires this exact commit. ' +
+      'Refusing to run with a different anchor. Underlying error: ' +
+      (err && err.message ? err.message : String(err))
+    );
+  }
+  // Normalize, dedupe, drop empty lines.
+  const set = new Set();
+  for (const line of out.split('\n')) {
+    const f = line.trim();
+    if (f) set.add(f);
+  }
+  _v57ChangedFilesCache = Array.from(set);
+  return _v57ChangedFilesCache;
+}
+
+// The V5.7 implementation commit also adds this very test script.
+// The scope audit is checking the IMPLEMENTATION, not itself, so
+// the test's own path is excluded from the scope-audit list. To
+// stay non-silent, section 19 emits a positive assertion that the
+// V5.7 release did include this test script.
+const V57_TEST_SCRIPT = 'scripts/acceptance-v57.mjs';
+
+/* ------------------------------------------------------------------ */
 /* Test runner                                                        */
 /* ------------------------------------------------------------------ */
 
@@ -688,11 +742,20 @@ section('19. No Netlify / backend / provider changes in V5.7');
   // src/pages/DashboardPage.tsx.
   // Acceptance-*.mjs scripts and netlify/functions/* must be
   // unchanged from the v5.6.1 baseline.
-  const { execFileSync } = await import('node:child_process');
-  function git(args) {
-    return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
-  }
-  const changed = git(['diff', '--name-only', 'main..HEAD']);
+  //
+  // Scope is anchored to the immutable V5.7 implementation commit
+  // (see V57_IMPL_COMMIT above) so that later releases (V6.0, …)
+  // cannot leak into this historical audit.
+  const allChanged = v57ChangedFiles();
+  // Positive confirmation: the V5.7 release did ship its own test
+  // script. The test script's path is then excluded from the
+  // implementation-only scope list below (the audit is about the
+  // IMPLEMENTATION, not the test), but its presence is still
+  // asserted explicitly so nothing is skipped silently.
+  assert('V5.7 release includes its own acceptance test script',
+    allChanged.includes(V57_TEST_SCRIPT),
+    `expected ${V57_TEST_SCRIPT} in ${V57_IMPL_COMMIT}`);
+  const changedFiles = allChanged.filter(f => f !== V57_TEST_SCRIPT);
   const expectedAllowed = [
     'src/components/DefenderViewsPanel.tsx',
     'src/components/FiltersPanel.tsx',
@@ -704,7 +767,6 @@ section('19. No Netlify / backend / provider changes in V5.7');
     'src/utils/patchContext.ts',
     'src/utils/csvExport.ts',
   ];
-  const changedFiles = changed.split('\n').filter(Boolean);
   for (const f of changedFiles) {
     assert(`v5.7 changed file is in the allowed set: ${f}`,
       expectedAllowed.includes(f), `unexpected: ${f}`);
@@ -746,10 +808,8 @@ section('20. No main-table column or header-pill creep');
 {
   // VulnerabilityTable and Header must be byte-identical to
   // the v5.6.1 baseline (i.e. not in the v5.7 changed set).
-  const { execFileSync } = await import('node:child_process');
-  const changed = execFileSync('git', ['diff', '--name-only', 'main..HEAD'], {
-    cwd: root, encoding: 'utf8',
-  }).trim().split('\n').filter(Boolean);
+  // Same range-stable anchor as section 19.
+  const changed = v57ChangedFiles();
   assert('VulnerabilityTable.tsx is not changed by v5.7',
     !changed.includes('src/components/VulnerabilityTable.tsx'),
     'forbidden: changed main-table source');

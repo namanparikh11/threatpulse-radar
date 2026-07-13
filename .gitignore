@@ -27,3 +27,7 @@ scripts/.v6-build-*
 # V5.7 acceptance test transient build dir (TS sources compiled
 # to .js for the test's ESM imports). Recreated on every test run.
 scripts/.v57-build
+# Local run-all-acceptance helper (not a test, not a production
+# script — only used to invoke every acceptance suite in one go
+# during verification).
+scripts/_run-all.mjs
