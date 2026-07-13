@@ -239,6 +239,12 @@ export function normalizeOsvVulnerability({ rawVuln, ecosystem }) {
   // Build the vulnerability entity. `firstSeen` is the OSV record's
   // `published` timestamp; `lastObserved` is `modified`; the schema
   // allows `modified` to be missing for never-edited records.
+  //
+  // The `affected` field embeds the per-package, per-range details
+  // verbatim from OSV. Per amendment #8, the OSV "events" arrays
+  // are stored as-is — the provider-native range notation is the
+  // source of truth, not a generic dialect. Consumers should read
+  // the ranges from here; re-fetching from OSV is not necessary.
   const vulnerability = {
     canonicalId: vId,
     type: 'vulnerability',
@@ -252,6 +258,16 @@ export function normalizeOsvVulnerability({ rawVuln, ecosystem }) {
     severities,
     references,
     affectedPackages: affectedNormalized.map((a) => packageCanonicalId(a.packageEcosystem, a.packageName)),
+    affected: affectedNormalized.map((a) => ({
+      packageId: packageCanonicalId(a.packageEcosystem, a.packageName),
+      packageEcosystem: a.packageEcosystem,
+      packageName: a.packageName,
+      packagePurl: a.packagePurl,
+      ranges: a.ranges, // VERBATIM OSV events arrays (per amendment #8)
+      versions: a.versions,
+      ecosystemSpecific: a.ecosystemSpecific,
+      databaseSpecific: a.databaseSpecific,
+    })),
     publishedAt: toIso(rawVuln.published),
     modifiedAt: toIso(rawVuln.modified),
     firstSeen: toIso(rawVuln.published),
