@@ -20,3 +20,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 zip-source.ps1
+# V6.0: transient build dirs produced by acceptance tests
+# (they compile netlify/functions/_shared/*.mjs to .js via tsc so
+# the tests can import them as ESM). Recreated on every test run.
+scripts/.v6-build-*
