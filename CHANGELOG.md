@@ -62,29 +62,51 @@ The V6.0 architecture has three Netlify environments:
 
 1. The **public ThreatPulse Radar site** (the V5.7 site
    plus the V6.0 OSV ingestion pipeline). Owns the
-   `tpr-baseline` Blob store.
-2. The **private sync gateway** (a separate Netlify site).
-   Reads the public site's `tpr-baseline` store via
-   cross-site env vars. Holds the credential pepper.
+   `tpr-baseline` Blob store (canonical baseline data).
+   The public site does NOT own the credentials store.
+2. The **private sync gateway** (a separate Netlify site,
+   built from the `netlify/gateway/` subtree in this
+   repo). Reads the public site's `tpr-baseline` store
+   via cross-site env vars. Owns its OWN
+   `tpr-private-credentials` store, accessed via the
+   gateway's local Netlify Blobs runtime context (no
+   siteID, no token, no cross-site). Holds the
+   credential pepper. The public site does NOT deploy
+   the gateway function — the gateway function
+   source-of-truth lives in `netlify/gateway/src/`, not
+   in `netlify/functions/`.
 3. The **consumer** (a third-party product). Authenticates
    to the gateway with the HMAC credential and pulls the
    baseline.
 
 ### Operational entries
 
-- `THREATPULSE_REFRESH_TRIGGER_SECRET` (public site) —
-  shared secret used by the scheduled function to invoke
-  the background function. Long random string.
+- `THREATPULSE_REFRESH_TRIGGER_SECRET` (public site,
+  Production scope) — shared secret used by the
+  scheduled function to invoke the background function.
+  Long random string.
 - `THREATPULSE_BASELINE_SITE_ID` and
-  `THREATPULSE_BLOBS_ACCESS_TOKEN` (private gateway) —
-  cross-site access to the public site's `tpr-baseline`
-  store.
-- `THREATPULSE_CREDENTIAL_PEPPER` (private gateway) —
-  the HMAC pepper. Server-side only. Identical to the
-  value used by the operator script when issuing
-  credentials.
+  `THREATPULSE_BLOBS_ACCESS_TOKEN` (private gateway,
+  Production scope) — cross-site access to the public
+  site's `tpr-baseline` store. The token is scoped to
+  `tpr-baseline` only; it does NOT authorize reading the
+  gateway-local `tpr-private-credentials` store.
+- `THREATPULSE_CREDENTIAL_PEPPER` (private gateway,
+  Production scope) — the HMAC pepper. Server-side only.
+  Identical to the value used by the operator script
+  when issuing credentials. The Production-only scoping
+  is critical: a deploy-preview URL with the production
+  pepper could forge credentials against the
+  gateway-local `tpr-private-credentials` store.
 - `THREATPULSE_OSV_ECOSYSTEMS` (public site, optional) —
   JSON override of `config/osv-ecosystems.json`.
+
+The gateway does NOT need an env var to authorize reading
+the credentials store. The credentials store is
+gateway-local: it lives on the gateway's own Netlify
+Blobs runtime context, which is provided automatically
+by the Netlify runtime. There is no token, no site ID,
+and no cross-site round trip.
 
 ### V6.0 invariants (and the test names that verify them)
 
@@ -133,6 +155,56 @@ The V6.0 architecture has three Netlify environments:
   background function rejects any request without the
   trigger secret header. Tested by "visitors cannot
   trigger refresh" in `acceptance-scheduler.mjs`.
+- **The private sync gateway is NOT deployed on the
+  public site.** The public site's `netlify/functions/`
+  directory contains only the V5.x and V6.0-publisher
+  functions. The gateway function and the
+  credentials helper live in `netlify/gateway/src/` and
+  are copied to a deployment-only staging directory
+  at deploy time by `scripts/copy-gateway-files.mjs`.
+  The public-site build does NOT include the gateway
+  function. Tested by "public site netlify/functions/
+  does NOT contain private-sync-gateway.mjs" in
+  `acceptance-deployment-hardening.mjs`.
+- **Consumer credential records live in a GATEWAY-LOCAL
+  Blob store.** `credentials/<keyId>` is stored in
+  `tpr-private-credentials` on the GATEWAY site, NOT on
+  the public site. The public site never sees this
+  store. The gateway reads it via the local Netlify
+  Blobs runtime context — no siteID, no access token,
+  no cross-site access. The public site's `tpr-baseline`
+  Blob store contains only baseline/intelligence
+  artifacts (manifests, version manifests, content-
+  addressed shards, deltas, source registry, source
+  health, bootstrap state, publication lock). The
+  baseline token (`THREATPULSE_BLOBS_ACCESS_TOKEN`,
+  scoped to `tpr-baseline`) cannot authorize reading
+  the credentials store, because the credentials store
+  is in a different Netlify site and uses a different
+  access path. Tested by the credential-store-
+  separation section in `acceptance-deployment-hardening.mjs`.
+- **Route version parameters are validated before
+  Blob-key construction.** `version`, `from`, and `to`
+  parameters on the gateway's manifest, snapshot, and
+  delta routes are matched against
+  `/^[A-Za-z0-9._-]{1,128}$/` BEFORE the value is
+  interpolated into a Blob key. Path-traversal attempts
+  (`..%2F..%2F…`, `/etc/…`, etc.) are rejected with
+  HTTP 400 `bad-request` before any store read. Tested
+  by the path-traversal section in
+  `acceptance-deployment-hardening.mjs`.
+- **Safe error responses and sanitized logs.** The
+  gateway function does not call `console.log` /
+  `console.error` / `console.warn` / `console.info` /
+  `console.debug`. 500 / 401 response bodies do not
+  contain credential values, keyIds, the pepper env
+  var, the token env var, the site-id env var, or the
+  Authorization header. The background function's
+  `console.log` summary line does not include the
+  trigger secret value, the Authorization header, or
+  the bearer header. Tested by the safe-error-response
+  and sanitized-log sections in
+  `acceptance-deployment-hardening.mjs`.
 - **Working tree is clean after the final logical
   commit.** Each logical commit's working tree is empty
   before the next one starts. `git status --short` returns
@@ -140,8 +212,8 @@ The V6.0 architecture has three Netlify environments:
 
 ### Test summary
 
-The V6.0 implementation adds 6 new behavior suites with
-441 total assertions:
+The V6.0 implementation adds 7 new behavior suites with
+548 total assertions:
 
 | Suite | Assertions |
 | --- | --- |
@@ -151,24 +223,59 @@ The V6.0 implementation adds 6 new behavior suites with
 | `acceptance-scheduler` | 50 |
 | `acceptance-private-gateway` | 90 |
 | `acceptance-consumer-client` | 54 |
-| **Total V6.0** | **441** |
+| `acceptance-deployment-hardening` | 107 |
+| **Total V6.0** | **548** |
 
 All 11 existing V5.x acceptance scripts pass unchanged.
 
 ### Files added or modified
 
 - **New shared modules**:
-  `netlify/functions/_shared/{canonicalBaseline,baselinePublish,osvBackground,triggerAuth,credentials}.mjs`
-- **New functions**:
-  `netlify/functions/{refresh-baseline-scheduled,refresh-baseline-background,private-sync-gateway}.mjs`
+  `netlify/functions/_shared/{canonicalBaseline,baselinePublish,osvBackground,triggerAuth}.mjs`
+- **New public-site functions**:
+  `netlify/functions/{refresh-baseline-scheduled,refresh-baseline-background}.mjs`
+- **New gateway subtree** (under `netlify/gateway/`):
+  - `netlify.toml` — gateway Netlify site config
+  - `package.json` — declares `@netlify/blobs` only
+  - `site/.gitkeep` — empty publish directory
+  - `src/private-sync-gateway.mjs` — gateway function
+  - `src/_shared/credentials.mjs` — HMAC credential format + verify
+  - `src/_shared/baselineStore.mjs` — gateway-local
+    credential store helper (`getCredentialsStore`, no
+    siteID, no token) plus the cross-site baseline
+    store helper (`getCrossSiteBaselineStore`, requires
+    `THREATPULSE_BASELINE_SITE_ID` and
+    `THREATPULSE_BLOBS_ACCESS_TOKEN`)
+- **New deployment tooling**:
+  `scripts/copy-gateway-files.mjs` — copies the gateway
+  subtree's source-of-truth into a deployment-only
+  staging directory at deploy time.
+- **Removed from public site**:
+  `netlify/functions/private-sync-gateway.mjs` and
+  `netlify/functions/_shared/credentials.mjs` moved
+  into the gateway subtree.
 - **New client**:
   `client/{consumer-client.mjs,contracts.md}`
 - **New docs**: `docs/{v6-architecture,credentials,deployment,ecosystems}.md`
 - **New JSON Schemas**: `schemas/{baseline,delta,manifest,source-registry}-v1.schema.json`
 - **New config**: `config/osv-ecosystems.json`
-- **Modified**: `netlify.toml` (V6.0 cron), `README.md`,
+- **New acceptance suite**:
+  `scripts/acceptance-deployment-hardening.mjs` —
+  covers gateway subtree shape, staging script
+  behavior, public-site isolation, source-of-truth
+  hardening, path-traversal rejection, version
+  validation, secret-leak avoidance in error bodies,
+  log sanitization, credential-store separation, and
+  existing private-gateway regression.
+- **Modified**: `netlify.toml` (V6.0 cron + topology
+  comment block), `netlify/functions/_shared/baselineStore.mjs`
+  (gateway-side cross-site helpers moved to
+  `netlify/gateway/src/_shared/baselineStore.mjs`),
+  `netlify/functions/refresh-baseline-background.mjs`
+  (corrected deployment comment), `README.md`,
   `PORTFOLIO_WRITEUP.md`, `PUBLIC_RELEASE_CHECKLIST.md`,
-  `CHANGELOG.md`, `.gitignore` (transient build dirs).
+  `CHANGELOG.md`, `.gitignore` (gateway staging dir
+  excluded).
 
 ### Why this is a major version
 

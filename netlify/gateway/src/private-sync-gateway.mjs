@@ -7,12 +7,19 @@
  * function (in a separate site, by deploy topology) that:
  *
  *   1. Authenticates the caller with an HMAC-SHA256 credential
- *      (see _shared/credentials.mjs).
+ *      (see _shared/credentials.mjs). The credential HMACs
+ *      are read from the GATEWAY's own `tpr-private-credentials`
+ *      Blob store via the local Netlify Blobs runtime context
+ *      (no siteID, no access token, no cross-site access). The
+ *      public site never sees this store.
  *   2. Reads the canonical baseline from the PUBLIC site's
  *      `tpr-baseline` Blob store using the cross-site env vars
- *      THREATPULSE_BASELINE_SITE_ID and THREATPULSE_BLOBS_ACCESS_TOKEN.
- *      These values must NEVER appear in client code, browser
- *      bundles, logs, fixtures, screenshots, or docs.
+ *      THREATPULSE_BASELINE_SITE_ID and
+ *      THREATPULSE_BLOBS_ACCESS_TOKEN. The token is scoped to
+ *      `tpr-baseline` only and does NOT authorize reading the
+ *      gateway-local credentials store. These values must
+ *      NEVER appear in client code, browser bundles, logs,
+ *      fixtures, screenshots, or docs.
  *   3. Returns the requested artifact.
  *
  * Per amendment #1, there is NO anonymous function for the
@@ -30,9 +37,12 @@
  *
  * Per amendment #5, the rate limit is configured via the
  * function's exported `config` (NOT in netlify.toml). The
- * initial rule is 200 requests per 60-second window, aggregated
- * by IP and domain. This is a reasonable initial cap; per-client
- * hard quotas are deferred until an atomic counter store exists.
+ * initial rule is 200 requests per 60-second window. Netlify
+ * Functions v2 applies this with its default per-IP
+ * aggregation; the previous `aggregateBy: ['ip', 'domain']`
+ * field was silently ignored by Netlify (not a real config
+ * key) and has been removed. Per-client hard quotas are
+ * deferred until an atomic counter store exists.
  */
 
 import {
@@ -40,13 +50,40 @@ import {
   credentialBlobKey,
 } from './_shared/credentials.mjs';
 import {
-  getCrossSiteBaselineStore, readJson, readVersionManifest, readDelta,
+  getCrossSiteBaselineStore, getCredentialsStore,
+  readJson, readVersionManifest, readDelta,
   LATEST_MANIFEST_KEY, SOURCE_REGISTRY_KEY,
 } from './_shared/baselineStore.mjs';
 
 const GATEWAY_PATH_PREFIX = '/private/v1';
 const AUTH_HEADER = 'authorization';
 const BEARER_PREFIX = 'Bearer ';
+
+/**
+ * Safe character set for baseline version strings. A version
+ * is interpolated into a Blob key (`manifests/versions/<v>.json`
+ * or `deltas/<from>__to__<to>.json`), so the pattern rejects
+ * path-traversal attempts (`..`, `/`, `\`, whitespace, and any
+ * character outside `[A-Za-z0-9._-]`). The maximum length is
+ * 128 — comfortably above any plausible version string while
+ * bounding the Blob-key length.
+ *
+ * Mirrors the per-shard `key` validation in `handleShard`
+ * (the shard key uses a richer alphabet because it includes
+ * the `objects/sha256/<hex>.json.gz` path).
+ */
+const VERSION_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+/**
+ * Validate a baseline-version string. Returns true iff the
+ * input is a non-empty string of length <= 128 containing only
+ * safe characters. Use this for the `version` path segment of
+ * `/manifest/{version}` and the `from` / `to` / `version`
+ * query parameters of `/delta` and `/snapshot`.
+ */
+function isValidVersionString(s) {
+  return typeof s === 'string' && VERSION_PATTERN.test(s);
+}
 
 const ROUTE = Object.freeze({
   MANIFEST: 'manifest',
@@ -144,7 +181,10 @@ function parseRoute(request) {
 /* ------------------------------------------------------------------ */
 
 async function handleManifest(store, { version }) {
-  if (version) {
+  if (version !== null) {
+    if (!isValidVersionString(version)) {
+      return badRequest('invalid version');
+    }
     const m = await readVersionManifest(store, version);
     if (!m) return notFound(`version '${version}' not found`);
     return jsonResponse(200, m, {
@@ -162,6 +202,9 @@ async function handleManifest(store, { version }) {
 
 async function handleDelta(store, { from, to }) {
   if (!from || !to) return badRequest('both from and to are required');
+  if (!isValidVersionString(from) || !isValidVersionString(to)) {
+    return badRequest('invalid from or to');
+  }
   const d = await readDelta(store, from, to);
   if (!d) return notFound(`no delta from '${from}' to '${to}'`);
   return jsonResponse(200, d, {
@@ -200,6 +243,9 @@ async function handleShard(store, { key }) {
 
 async function handleSnapshot(store, { version }) {
   if (!version) return badRequest('version parameter is required');
+  if (!isValidVersionString(version)) {
+    return badRequest('invalid version');
+  }
   const m = await readVersionManifest(store, version);
   if (!m) return notFound(`version '${version}' not found`);
   // Read all shards in the manifest and package them. The result
@@ -255,13 +301,36 @@ async function handleSources(store) {
 
 /**
  * Inner handler. Takes all dependencies explicitly so the unit
- * tests can stub the store and the request.
+ * tests can stub the stores and the request.
+ *
+ * The handler uses TWO store handles:
+ *   - `resolveStore()`         → `tpr-baseline` (read-only,
+ *                                cross-site from the public
+ *                                site: manifests, shards,
+ *                                deltas, sources)
+ *   - `resolveCredentialsStore()` → `tpr-private-credentials`
+ *                                (read-only, GATEWAY-LOCAL:
+ *                                HMAC digests of issued
+ *                                credentials)
+ *
+ * The two stores live on DIFFERENT Netlify sites and use
+ * DIFFERENT access models. The credentials store is on the
+ * GATEWAY itself, accessed via the local Netlify Blobs
+ * runtime context (no siteID, no token, no cross-site).
+ * The baseline store is on the PUBLIC site, accessed via
+ * Netlify Blobs' cross-site access (siteID + scoped
+ * read-only token). A token scoped to `tpr-baseline` does
+ * NOT authorize reading the gateway-local credentials
+ * store. The two stores are in two different Netlify
+ * sites and are gated by two different operator-controlled
+ * boundaries.
  */
 export async function handlePrivateSyncGateway({
   request,
   pepper,
   store = null,
   resolveStore = () => store,
+  resolveCredentialsStore = null,
   readStoreRecord = async (s, key) => readJson(s, key),
 }) {
   if (typeof pepper !== 'string' || pepper.length === 0) {
@@ -272,7 +341,8 @@ export async function handlePrivateSyncGateway({
 
   // Parse first so we can read the keyId from the credential
   // (without verifying yet). Then read the stored HMAC for that
-  // keyId, then verify. This is a single Blob read per request.
+  // keyId, then verify. This is a single Blob read per request,
+  // against the credentials store (NOT the baseline store).
   const parsed = parseCredential(credential);
   if (!parsed) return unauthorized();
 
@@ -286,9 +356,21 @@ export async function handlePrivateSyncGateway({
     return serverError('store not available');
   }
 
+  let credentialsStoreHandle;
+  try {
+    credentialsStoreHandle = resolveCredentialsStore
+      ? await resolveCredentialsStore()
+      : storeHandle;
+  } catch (err) {
+    return serverError('credentials store unavailable: ' + (err && err.message ? err.message : err));
+  }
+  if (!credentialsStoreHandle) {
+    return serverError('credentials store not available');
+  }
+
   let storeRecord;
   try {
-    storeRecord = await readStoreRecord(storeHandle, credentialBlobKey(parsed.keyId));
+    storeRecord = await readStoreRecord(credentialsStoreHandle, credentialBlobKey(parsed.keyId));
   } catch {
     storeRecord = null;
   }
@@ -322,22 +404,37 @@ export default async (request) => {
   return handlePrivateSyncGateway({
     request,
     pepper,
+    // Baseline data (manifests, shards, deltas, sources) is
+    // on the PUBLIC site; we read it via cross-site env vars.
     resolveStore: () => getCrossSiteBaselineStore(),
+    // Credential HMACs are on the GATEWAY site itself; we
+    // read them via the local Netlify Blobs runtime context
+    // (no siteID, no token). The public site cannot read
+    // this store.
+    resolveCredentialsStore: () => getCredentialsStore(),
   });
 };
 
 /**
  * Per amendment #5: rate limit and path are exported on the
- * function's config, NOT in netlify.toml. The path is the mount
+ * function's `config`, NOT in netlify.toml. The path is the mount
  * path of the gateway; the rate limit is a reasonable initial
- * rule (200 req / 60s aggregated by IP and domain). Per-client
- * hard quotas are deferred until an atomic counter store exists.
+ * rule (200 req / 60s, Netlify's default per-IP aggregation).
+ * Per-client hard quotas are deferred until an atomic counter
+ * store exists.
+ *
+ * Note: a previous version of this config included an
+ * `aggregateBy: ['ip', 'domain']` field. Netlify Functions v2
+ * only honors `windowLimit` and `windowSize`; the custom field
+ * was silently ignored, so the docstring claim of "aggregated by
+ * IP and domain" was misleading. The field is removed; the
+ * limit is whatever Netlify's default aggregation is. The doc
+ * now matches reality.
  */
 export const config = {
   path: '/private/v1/*',
   rateLimit: {
     windowLimit: 200,
     windowSize: 60,
-    aggregateBy: ['ip', 'domain'],
   },
 };

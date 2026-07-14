@@ -32,16 +32,70 @@ The full credential is sent in the `Authorization` header:
 Authorization: Bearer tpr_<keyId>_<randomSecret>
 ```
 
+## Where credentials are stored (V6.0 deployment-hardened)
+
+Credentials live in a **gateway-local Netlify Blobs store**,
+called `tpr-private-credentials`. The store is created on
+the **GATEWAY** site (not the public site) and is read by
+the gateway via the gateway's own local Netlify Blobs
+runtime context — no siteID, no access token, no
+cross-site access.
+
+```
+tpr-private-credentials/      ← lives on the GATEWAY site
+  credentials/<keyId>   →  { hmac, createdAt, label? }
+```
+
+The store is intentionally separate from the public site's
+`tpr-baseline` store (the canonical baseline data lives on
+the public site and is read by the gateway via cross-site
+env vars; see `docs/deployment.md`).
+
+Why a gateway-local store:
+
+- The gateway is the ONLY component that needs to verify
+  a consumer credential. Putting the store on the
+  gateway means the public-site operator does not have
+  read access to the credential records, and a compromise
+  of the public site cannot enumerate or attempt to
+  read credential HMACs.
+- The gateway's Netlify runtime has direct local-context
+  access to its own Blobs store. No token, no site ID,
+  no cross-site round trip. The auth check stays
+  server-side and uses the gateway's own authentication
+  boundary.
+- The blast-radius argument is reversed: a token scoped
+  to the public-site `tpr-baseline` cannot authorize
+  reading the gateway's `tpr-private-credentials`. The
+  two stores are in two different Netlify sites and are
+  gated by two different operator-controlled boundaries.
+- Audit and rotation can be done independently of the
+  public-site baseline.
+
+The store is created on the gateway site in the Netlify
+UI (Site settings → Blobs → store list). The name
+`tpr-private-credentials` is fixed by the gateway's
+`CREDENTIALS_STORE_NAME` constant in
+`netlify/gateway/src/_shared/baselineStore.mjs`.
+
 ## How the gateway verifies a credential
 
 For each request, the gateway:
 
 1. Reads the `Authorization: Bearer tpr_…` header.
 2. Parses the credential into `{ keyId, randomSecret }`.
-3. Reads `credentials/<keyId>` from the public site's
-   `tpr-baseline` Blob store. The stored value is the
+3. Reads `credentials/<keyId>` from the GATEWAY-LOCAL
+   `tpr-private-credentials` Blob store (NOT from the
+   public site's `tpr-baseline`). The stored value is the
    `HMAC-SHA256(THREATPULSE_CREDENTIAL_PEPPER, keyId + ":" + randomSecret)`
-   digest, as lowercase hex with no prefix.
+   digest, as lowercase hex with no prefix. The read uses
+   the gateway's local Netlify Blobs runtime context — no
+   env var, no token, no cross-site access.
+4. After the credential is verified, the gateway reads
+   the requested baseline artifacts from the public
+   site's `tpr-baseline` store via cross-site env vars
+   (`THREATPULSE_BASELINE_SITE_ID` and
+   `THREATPULSE_BLOBS_ACCESS_TOKEN`).
 4. Computes the same HMAC of the provided credential.
 5. Compares the two digests in constant time using
    `crypto.timingSafeEqual` over the 32-byte SHA-256 output
@@ -83,10 +137,13 @@ console.log(c.hmac);
 the consumer's threat model does not already cover. The
 consumer's job is to put it in their secret manager.
 
-**Step 3.** Write the `hmac` to the public site's
-`tpr-baseline` Blob store at `credentials/<keyId>`. In the
-Netlify UI, the Blobs tab lets you create a key with a JSON
-value:
+**Step 3.** Write the `hmac` to the GATEWAY-LOCAL
+`tpr-private-credentials` Blob store at
+`credentials/<keyId>`. The store lives on the gateway site
+(NOT the public site) and is read by the gateway's local
+Netlify Blobs runtime context. In the Netlify UI for the
+**gateway** site, the Blobs tab lets you create a key with
+a JSON value:
 
 ```json
 { "hmac": "<the 64-char hex from step 1>",

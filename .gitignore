@@ -31,3 +31,9 @@ scripts/.v57-build
 # script — only used to invoke every acceptance suite in one go
 # during verification).
 scripts/_run-all.mjs
+# V6.0: gateway deployment staging. Recreated on every
+# gateway-site build by scripts/copy-gateway-files.mjs. The
+# staging directory is the gateway site's `functions` source;
+# never edit files inside it directly — edit the source-of-truth
+# files in netlify/functions/ instead.
+netlify/gateway/functions-staging/

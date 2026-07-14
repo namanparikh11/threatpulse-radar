@@ -1,0 +1,106 @@
+# V6.0 — Private sync gateway Netlify site configuration.
+#
+# This file is for the GATEWAY Netlify site ONLY, not the
+# public ThreatPulse Radar site. The public site uses the
+# root `netlify.toml`. The two sites deploy from the same
+# repo but with different Netlify UI "Base directory"
+# settings; the public site's base is the repo root, the
+# gateway site's base is `netlify/gateway/`.
+#
+# Topology (encoded in the repo, not in operator memory):
+#
+#   Public site (base = repo root)
+#     - Vite dashboard (publish = "dist")
+#     - netlify.toml at repo root
+#     - netlify/functions/{dataset, refresh-dataset-*,
+#                         refresh-baseline-scheduled,
+#                         refresh-baseline-background}.mjs
+#     - Owns Blob stores: tpr-dataset, tpr-vulnrichment,
+#                         tpr-github-advisory, tpr-baseline
+#
+#   Gateway site (base = netlify/gateway/)  <-- this file
+#     - Functions-only (no static publish content)
+#     - netlify/gateway/netlify.toml   <-- you are here
+#     - Owns Blob store: tpr-private-credentials
+#       (GATEWAY-LOCAL; the public site never sees it)
+#     - Reads the public site's `tpr-baseline` store via
+#       cross-site env vars (THREATPULSE_BASELINE_SITE_ID,
+#       THREATPULSE_BLOBS_ACCESS_TOKEN). NEVER writes to
+#       any Blob store.
+#     - Does NOT run the Vite build, does NOT publish
+#       `dist`, does NOT deploy the public functions.
+#
+# To deploy this as a separate Netlify site:
+#   1. In the Netlify UI, create a new site ("threatpulse-gateway"
+#      or your chosen name) connected to this repository.
+#   2. Site settings -> Build & deploy -> Continuous
+#      deployment -> Base directory = `netlify/gateway/`.
+#   3. Leave Build command, Publish directory, and Functions
+#      directory at the values from this file (do not
+#      override them in the UI).
+#   4. Site settings -> Environment variables:
+#        - THREATPULSE_BASELINE_SITE_ID
+#            The public site's Netlify site ID. Used ONLY
+#            for the cross-site baseline read.
+#        - THREATPULSE_BLOBS_ACCESS_TOKEN
+#            Netlify Blobs access token scoped to the public
+#            site's `tpr-baseline` store, read-only. Used to
+#            read manifests, version manifests, shards,
+#            deltas, and source registry.
+#        - THREATPULSE_CREDENTIAL_PEPPER
+#            Long random string. Used to verify consumer
+#            credentials. Rotating it invalidates every
+#            issued credential. Server-side only.
+#
+#        The gateway does NOT need a token for
+#        tpr-private-credentials. The credentials store is
+#        accessed via the gateway site's local Netlify
+#        Blobs runtime context, which is provided
+#        automatically by the Netlify runtime. The operator
+#        creates the tpr-private-credentials store on the
+#        GATEWAY site via the Netlify Blobs UI and writes
+#        credentials/<keyId> records there directly. There
+#        is no env var that authorizes reading credential
+#        records, because no operator needs to authorize
+#        it: the gateway's own runtime context is the only
+#        access path.
+#
+#   5. Do NOT set THREATPULSE_REFRESH_TRIGGER_SECRET (gateway
+#      has no scheduled function). Do NOT set
+#      THREATPULSE_OSV_ECOSYSTEMS (gateway does not
+#      ingest). Do NOT set NVD_API_KEY or GITHUB_TOKEN
+#      (gateway does not call upstream providers; it only
+#      reads the baseline). Do NOT set
+#      THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN (there is
+#      no such env var: credentials are gateway-local).
+#   6. Trigger a deploy. The build command runs the staging
+#      script (see below), which copies the gateway function
+#      and its two required shared modules into the staging
+#      directory. Netlify bundles the staged functions
+#      and deploys them at /private/v1/*. Nothing else is
+#      deployed.
+
+[build]
+  # The build command runs the staging script BEFORE Netlify
+  # bundles the functions. The script wipes and rebuilds
+  # `functions-staging/functions/` from the source-of-truth
+  # files in `netlify/gateway/src/`. The staging directory
+  # is gitignored and recreated on every deploy. The public
+  # site does not run this script.
+  command = "node ../../scripts/copy-gateway-files.mjs"
+  # The publish directory must exist for Netlify. We use an
+  # empty `site/` directory inside the gateway subtree. The
+  # functions are deployed from `functions-staging/functions/`
+  # (separate from the publish directory), so the function
+  # source is never exposed as a static file at the gateway
+  # site's URL.
+  publish = "site"
+  functions = "functions-staging/functions"
+
+[functions]
+  # Match the public site's bundler so the same `_shared/*.mjs`
+  # relative imports are inlined into the gateway function
+  # output. External dependencies (only @netlify/blobs for
+  # the gateway) are left as runtime require()s and resolved
+  # from the gateway subtree's `node_modules/`.
+  node_bundler = "esbuild"

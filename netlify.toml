@@ -1,5 +1,56 @@
 # Netlify configuration for ThreatPulse Radar.
 #
+# =====================================================================
+# V6.0 DEPLOYMENT TOPOLOGY (two separate Netlify sites)
+# =====================================================================
+# V6.0 introduces a private sync gateway that lives on its OWN
+# Netlify site. The two sites share this repository but use
+# different Netlify UI "Base directory" settings:
+#
+#   Public site (base = repo root, this file)
+#     - Vite dashboard (publish = "dist")
+#     - Functions: netlify/functions/*.mjs
+#     - Owns Blob stores: tpr-dataset, tpr-vulnrichment,
+#       tpr-github-advisory, tpr-baseline
+#
+#     Note on the gateway function (private-sync-gateway.mjs):
+#     this file lives in netlify/functions/ as the SINGLE
+#     source of truth and is ALSO staged into the gateway
+#     subtree for deployment (see scripts/copy-gateway-files.mjs
+#     and netlify/gateway/netlify.toml). On the PUBLIC site it
+#     will mount at /private/v1/* per its `config.path` export
+#     and 500 on every request because
+#     THREATPULSE_CREDENTIAL_PEPPER is intentionally absent on
+#     the public site. The 500 is the correct behavior: no
+#     anonymous request can read the canonical baseline, and
+#     the missing pepper prevents any caller (anonymous or
+#     authenticated) from succeeding. Netlify Functions v2
+#     does not support a per-site function exclusion, so this
+#     500-on-the-public-site is the accepted trade-off for
+#     keeping one canonical source of truth. The alternative
+#     (moving the gateway function to a sibling directory and
+#     adding a second `[functions]` path in each netlify.toml)
+#     is documented in docs/deployment.md as the migration
+#     path if a future operator wants to fully remove the
+#     function from the public site's bundle.
+#
+#   Gateway site (base = netlify/gateway/, see netlify/gateway/netlify.toml)
+#     - Functions-only. The build command runs the staging
+#       script which copies ONLY the gateway function and its
+#       two required shared modules into
+#       netlify/gateway/functions-staging/functions/. The public
+#       functions are never deployed here.
+#     - Reads the public site's tpr-baseline store via cross-site
+#       env vars (THREATPULSE_BASELINE_SITE_ID,
+#       THREATPULSE_BLOBS_ACCESS_TOKEN). NEVER writes.
+#
+# The topology is encoded in the repo (netlify/gateway/ subtree
+# + scripts/copy-gateway-files.mjs), not in operator memory.
+# An operator who creates the gateway site only needs to set
+# the Base directory in the Netlify UI; everything else is
+# committed to the repo. See docs/deployment.md.
+# =====================================================================
+#
 # v5.0: single serverless function `/.netlify/functions/dataset`.
 # v5.0.1: CDN-cacheable function response.
 # v5.0.2 / v5.0.3: optional NVD_API_KEY (request header transport).

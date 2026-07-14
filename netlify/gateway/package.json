@@ -1,0 +1,10 @@
+{
+  "name": "threatpulse-radar-gateway",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "ThreatPulse Radar V6.0 \u2014 private sync gateway (separate Netlify site). Functions-only site; reads the public site's tpr-baseline Blob store via cross-site env vars and the gateway-local tpr-private-credentials store via the local Netlify Blobs runtime context. See netlify/gateway/netlify.toml for the full deployment topology.",
+  "dependencies": {
+    "@netlify/blobs": "^10.0.0"
+  }
+}
