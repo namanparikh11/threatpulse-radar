@@ -32,6 +32,35 @@ The full credential is sent in the `Authorization` header:
 Authorization: Bearer tpr_<keyId>_<randomSecret>
 ```
 
+## Where credentials are stored (V6.0 deployment-hardened)
+
+Credentials live in a **separate Netlify Blobs store** on the
+public site, called `tpr-private-credentials`. This is
+intentionally separate from the baseline data store
+(`tpr-baseline`).
+
+```
+tpr-private-credentials/
+  credentials/<keyId>   →  { hmac, createdAt, label? }
+```
+
+Why a separate store:
+
+- The credential lifecycle (issue, rotate, revoke) is
+  decoupled from the baseline publication lifecycle.
+- The operator can grant read access to `tpr-baseline` for
+  analysis without also exposing the credential digests.
+- The two stores use SEPARATE Netlify Blobs access tokens
+  on the gateway site, so the blast radius of either token
+  being compromised is limited to one store.
+- Audit and rotation can be done independently: deleting
+  `credentials/<keyId>` does not affect the baseline data.
+
+The store is created in the public site's Netlify UI
+(Site settings → Blobs → store list). The name `tpr-private-credentials`
+is fixed by the gateway's `PRIVATE_CREDENTIALS_STORE_NAME`
+constant in `netlify/gateway/src/_shared/baselineStore.mjs`.
+
 ## How the gateway verifies a credential
 
 For each request, the gateway:
@@ -39,7 +68,8 @@ For each request, the gateway:
 1. Reads the `Authorization: Bearer tpr_…` header.
 2. Parses the credential into `{ keyId, randomSecret }`.
 3. Reads `credentials/<keyId>` from the public site's
-   `tpr-baseline` Blob store. The stored value is the
+   `tpr-private-credentials` Blob store (NOT `tpr-baseline`).
+   The stored value is the
    `HMAC-SHA256(THREATPULSE_CREDENTIAL_PEPPER, keyId + ":" + randomSecret)`
    digest, as lowercase hex with no prefix.
 4. Computes the same HMAC of the provided credential.
@@ -84,8 +114,11 @@ the consumer's threat model does not already cover. The
 consumer's job is to put it in their secret manager.
 
 **Step 3.** Write the `hmac` to the public site's
-`tpr-baseline` Blob store at `credentials/<keyId>`. In the
-Netlify UI, the Blobs tab lets you create a key with a JSON
+`tpr-private-credentials` Blob store at `credentials/<keyId>`.
+The credentials live in a SEPARATE Blob store from
+`tpr-baseline` so the credential lifecycle (issue, rotate,
+revoke) is decoupled from the baseline data. In the Netlify
+UI, the Blobs tab lets you create a key with a JSON
 value:
 
 ```json

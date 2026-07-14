@@ -251,33 +251,50 @@ that visitors cannot reach it.
   reachable from the scheduled function with the correct
   trigger secret.
 - [x] **The private gateway is a separate Netlify site.**
-  `netlify/functions/private-sync-gateway.mjs` is the
-  function on the gateway site. The gateway site does NOT
-  have any of the V5.x public functions, the dataset
-  surface, or the V6.0 publisher functions. The split is
-  by deploy topology, not by function flag.
+  `netlify/gateway/src/private-sync-gateway.mjs` is the
+  function on the gateway site (the public site's
+  `netlify/functions/` directory does NOT contain the
+  gateway function). The gateway site has its own
+  `netlify.toml` (at `netlify/gateway/netlify.toml`),
+  its own `package.json`, and a deployment-only
+  `functions-staging/functions/` directory populated by
+  `scripts/copy-gateway-files.mjs`. The gateway site does
+  NOT run the Vite build, does NOT publish `dist`, and
+  only deploys the staged gateway function and its two
+  required shared modules. The split is encoded in the
+  repo, not in operator memory.
 - [x] **Cross-site access is server-side only.** The
-  `THREATPULSE_BASELINE_SITE_ID` and
-  `THREATPULSE_BLOBS_ACCESS_TOKEN` env vars live on the
-  private gateway, never on the public site, never in the
-  consumer's environment, never in client code or
-  screenshots or fixtures or docs.
+  `THREATPULSE_BASELINE_SITE_ID`,
+  `THREATPULSE_BLOBS_ACCESS_TOKEN`, AND
+  `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN` env vars
+  live on the private gateway, never on the public site,
+  never in the consumer's environment, never in client
+  code or screenshots or fixtures or docs. The
+  credentials token is a SEPARATE token from the
+  baseline token; an operator with a single multi-store
+  token can use one env var for both stores, but the
+  default deployment uses two.
 - [x] **The credential pepper is on the gateway only.**
   `THREATPULSE_CREDENTIAL_PEPPER` is read by the private
   gateway's auth check. The public site has no use for
   it; the consumer has no use for it; the public
-  functions never read it.
+  functions never read it. The env var MUST be scoped
+  to "Production" in the Netlify UI to prevent a
+  deploy-preview URL from being able to forge
+  credentials against the production
+  `tpr-private-credentials` store.
 
 ### Credential hygiene
 
 - [x] **No credential in source control.** The operator
   issues credentials with the
-  `_shared/credentials.mjs#generateCredential` helper
-  (or equivalent). The credential is handed to the
+  `netlify/gateway/src/_shared/credentials.mjs#generateCredential`
+  helper (or equivalent). The credential is handed to the
   consumer out-of-band. The HMAC digest is written to
-  `credentials/<keyId>` in the `tpr-baseline` store via
-  the Netlify Blobs UI or CLI. Nothing in this repository
-  contains a real credential.
+  `credentials/<keyId>` in the
+  `tpr-private-credentials` Blob store (NOT
+  `tpr-baseline`) via the Netlify Blobs UI or CLI.
+  Nothing in this repository contains a real credential.
 - [x] **No credential in fixtures or test data.** The
   acceptance test `acceptance-private-gateway.mjs` uses
   the helper to generate test credentials; the test
