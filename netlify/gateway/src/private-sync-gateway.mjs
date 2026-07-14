@@ -37,9 +37,12 @@
  *
  * Per amendment #5, the rate limit is configured via the
  * function's exported `config` (NOT in netlify.toml). The
- * initial rule is 200 requests per 60-second window, aggregated
- * by IP and domain. This is a reasonable initial cap; per-client
- * hard quotas are deferred until an atomic counter store exists.
+ * initial rule is 200 requests per 60-second window. Netlify
+ * Functions v2 applies this with its default per-IP
+ * aggregation; the previous `aggregateBy: ['ip', 'domain']`
+ * field was silently ignored by Netlify (not a real config
+ * key) and has been removed. Per-client hard quotas are
+ * deferred until an atomic counter store exists.
  */
 
 import {
@@ -55,6 +58,32 @@ import {
 const GATEWAY_PATH_PREFIX = '/private/v1';
 const AUTH_HEADER = 'authorization';
 const BEARER_PREFIX = 'Bearer ';
+
+/**
+ * Safe character set for baseline version strings. A version
+ * is interpolated into a Blob key (`manifests/versions/<v>.json`
+ * or `deltas/<from>__to__<to>.json`), so the pattern rejects
+ * path-traversal attempts (`..`, `/`, `\`, whitespace, and any
+ * character outside `[A-Za-z0-9._-]`). The maximum length is
+ * 128 — comfortably above any plausible version string while
+ * bounding the Blob-key length.
+ *
+ * Mirrors the per-shard `key` validation in `handleShard`
+ * (the shard key uses a richer alphabet because it includes
+ * the `objects/sha256/<hex>.json.gz` path).
+ */
+const VERSION_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+/**
+ * Validate a baseline-version string. Returns true iff the
+ * input is a non-empty string of length <= 128 containing only
+ * safe characters. Use this for the `version` path segment of
+ * `/manifest/{version}` and the `from` / `to` / `version`
+ * query parameters of `/delta` and `/snapshot`.
+ */
+function isValidVersionString(s) {
+  return typeof s === 'string' && VERSION_PATTERN.test(s);
+}
 
 const ROUTE = Object.freeze({
   MANIFEST: 'manifest',
@@ -152,7 +181,10 @@ function parseRoute(request) {
 /* ------------------------------------------------------------------ */
 
 async function handleManifest(store, { version }) {
-  if (version) {
+  if (version !== null) {
+    if (!isValidVersionString(version)) {
+      return badRequest('invalid version');
+    }
     const m = await readVersionManifest(store, version);
     if (!m) return notFound(`version '${version}' not found`);
     return jsonResponse(200, m, {
@@ -170,6 +202,9 @@ async function handleManifest(store, { version }) {
 
 async function handleDelta(store, { from, to }) {
   if (!from || !to) return badRequest('both from and to are required');
+  if (!isValidVersionString(from) || !isValidVersionString(to)) {
+    return badRequest('invalid from or to');
+  }
   const d = await readDelta(store, from, to);
   if (!d) return notFound(`no delta from '${from}' to '${to}'`);
   return jsonResponse(200, d, {
@@ -208,6 +243,9 @@ async function handleShard(store, { key }) {
 
 async function handleSnapshot(store, { version }) {
   if (!version) return badRequest('version parameter is required');
+  if (!isValidVersionString(version)) {
+    return badRequest('invalid version');
+  }
   const m = await readVersionManifest(store, version);
   if (!m) return notFound(`version '${version}' not found`);
   // Read all shards in the manifest and package them. The result
@@ -372,14 +410,22 @@ export default async (request) => {
  * Per amendment #5: rate limit and path are exported on the
  * function's `config`, NOT in netlify.toml. The path is the mount
  * path of the gateway; the rate limit is a reasonable initial
- * rule (200 req / 60s aggregated by IP and domain). Per-client
- * hard quotas are deferred until an atomic counter store exists.
+ * rule (200 req / 60s, Netlify's default per-IP aggregation).
+ * Per-client hard quotas are deferred until an atomic counter
+ * store exists.
+ *
+ * Note: a previous version of this config included an
+ * `aggregateBy: ['ip', 'domain']` field. Netlify Functions v2
+ * only honors `windowLimit` and `windowSize`; the custom field
+ * was silently ignored, so the docstring claim of "aggregated by
+ * IP and domain" was misleading. The field is removed; the
+ * limit is whatever Netlify's default aggregation is. The doc
+ * now matches reality.
  */
 export const config = {
   path: '/private/v1/*',
   rateLimit: {
     windowLimit: 200,
     windowSize: 60,
-    aggregateBy: ['ip', 'domain'],
   },
 };
