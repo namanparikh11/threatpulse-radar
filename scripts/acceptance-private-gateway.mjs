@@ -596,8 +596,13 @@ section('Gateway config: rate limit and path are exported');
   assert('config.rateLimit is set', config.rateLimit && typeof config.rateLimit === 'object');
   assert('rateLimit.windowLimit is a number', typeof config.rateLimit.windowLimit === 'number');
   assert('rateLimit.windowSize is a number', typeof config.rateLimit.windowSize === 'number');
-  assert('rateLimit.aggregateBy is an array',
-    Array.isArray(config.rateLimit.aggregateBy) && config.rateLimit.aggregateBy.includes('ip'));
+  // NOTE: a previous version of this config included a custom
+  // `aggregateBy: ['ip', 'domain']` field that Netlify Functions
+  // v2 silently ignored (not a real config key). The field was
+  // removed; the limit is whatever Netlify's default aggregation
+  // is. We assert only the documented Netlify fields here.
+  assert('rateLimit.aggregateBy is NOT set (was a non-Netlify field; removed)',
+    config.rateLimit.aggregateBy === undefined);
 }
 
 console.log();
