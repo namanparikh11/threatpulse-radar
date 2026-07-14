@@ -74,7 +74,7 @@ function buildCredentials() {
   const tscJs = join(root, 'node_modules', 'typescript', 'lib', 'tsc.js');
   execFileSync(
     process.execPath,
-    [tscJs, 'netlify/functions/_shared/credentials.mjs',
+    [tscJs, 'netlify/gateway/src/_shared/credentials.mjs',
      '--outDir', buildDir.replace(/\\/g, '/'), '--rootDir', '.',
      '--module', 'esnext', '--target', 'es2022', '--moduleResolution', 'node',
      '--skipLibCheck', '--allowJs', '--declaration', 'false'],
@@ -84,7 +84,7 @@ function buildCredentials() {
 
 buildCredentials();
 const buildLeaf = buildDir.split(/[\\/]/).pop();
-const credentials = await import(`./${buildLeaf}/netlify/functions/_shared/credentials.mjs`);
+const credentials = await import(`./${buildLeaf}/netlify/gateway/src/_shared/credentials.mjs`);
 const {
   CREDENTIAL_PREFIX, KEY_ID_MAX_LENGTH, KEY_ID_PATTERN, RANDOM_SECRET_BYTES,
   PEPPER_ENV_VAR, credentialBlobKey,
@@ -92,8 +92,11 @@ const {
   generateCredential, verifyCredential, getPepperFromEnv,
 } = credentials;
 
-// Import the gateway directly (it's pure ESM)
-const gatewayMod = await import(pathToFileURL(join(root, 'netlify', 'functions', 'private-sync-gateway.mjs')).href);
+// Import the gateway directly (it's pure ESM). The gateway
+// function lives at netlify/gateway/src/private-sync-gateway.mjs
+// — the public site's netlify/functions/ directory no longer
+// contains it (per the V6.0 deployment-hardening topology).
+const gatewayMod = await import(pathToFileURL(join(root, 'netlify', 'gateway', 'src', 'private-sync-gateway.mjs')).href);
 const { handlePrivateSyncGateway, config } = gatewayMod;
 
 const PEPPER = 'a-test-pepper-do-not-use-in-prod';

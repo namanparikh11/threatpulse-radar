@@ -1,0 +1,8 @@
+# Empty publish directory for the gateway Netlify site.
+#
+# This directory exists so `publish = "site"` in
+# `netlify/gateway/netlify.toml` resolves to a real
+# directory. The site serves no static content; the
+# gateway's only HTTP surface is the `/private/v1/*`
+# function routes. The .gitkeep file is the only file
+# ever committed to this directory.

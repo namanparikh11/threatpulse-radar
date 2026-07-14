@@ -106,9 +106,14 @@ export async function handleRefreshBaselineBackground({
   }
 
   // 2. Resolve the Blob store. The background function lives
-  //    on the private gateway (a different Netlify site). It
-  //    accesses the public site's `tpr-baseline` store via
-  //    cross-site env vars.
+  //    on the public ThreatPulse Radar site (the same site that
+  //    owns the `tpr-baseline` Blob store). The `resolveStore`
+  //    dependency is `getBaselineStore()` in production, which
+  //    uses the Netlify runtime's auto-detected local context —
+  //    no cross-site env vars are required. The private gateway
+  //    is a SEPARATE Netlify site and only READS the store via
+  //    cross-site env vars; it never runs the background
+  //    function.
   let store;
   try {
     store = await resolveStore();
