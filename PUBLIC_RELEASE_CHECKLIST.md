@@ -264,16 +264,14 @@ that visitors cannot reach it.
   required shared modules. The split is encoded in the
   repo, not in operator memory.
 - [x] **Cross-site access is server-side only.** The
-  `THREATPULSE_BASELINE_SITE_ID`,
-  `THREATPULSE_BLOBS_ACCESS_TOKEN`, AND
-  `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN` env vars
-  live on the private gateway, never on the public site,
-  never in the consumer's environment, never in client
-  code or screenshots or fixtures or docs. The
-  credentials token is a SEPARATE token from the
-  baseline token; an operator with a single multi-store
-  token can use one env var for both stores, but the
-  default deployment uses two.
+  `THREATPULSE_BASELINE_SITE_ID` and
+  `THREATPULSE_BLOBS_ACCESS_TOKEN` env vars live on the
+  private gateway, never on the public site, never in
+  the consumer's environment, never in client code or
+  screenshots or fixtures or docs. The baseline token
+  is scoped to `tpr-baseline` only; it does NOT
+  authorize reading the credentials store (which is
+  gateway-local, not cross-site).
 - [x] **The credential pepper is on the gateway only.**
   `THREATPULSE_CREDENTIAL_PEPPER` is read by the private
   gateway's auth check. The public site has no use for
@@ -291,10 +289,11 @@ that visitors cannot reach it.
   `netlify/gateway/src/_shared/credentials.mjs#generateCredential`
   helper (or equivalent). The credential is handed to the
   consumer out-of-band. The HMAC digest is written to
-  `credentials/<keyId>` in the
-  `tpr-private-credentials` Blob store (NOT
-  `tpr-baseline`) via the Netlify Blobs UI or CLI.
-  Nothing in this repository contains a real credential.
+  `credentials/<keyId>` in the GATEWAY-LOCAL
+  `tpr-private-credentials` Blob store (the public site
+  never sees this store) via the Netlify Blobs UI or CLI
+  on the gateway site. Nothing in this repository contains
+  a real credential.
 - [x] **No credential in fixtures or test data.** The
   acceptance test `acceptance-private-gateway.mjs` uses
   the helper to generate test credentials; the test

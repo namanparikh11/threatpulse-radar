@@ -1,49 +1,71 @@
 /**
- * V6.0 \u2014 Gateway-side Blob store helpers.
+ * V6.0 — Gateway-side Blob store helpers.
  *
  * The private sync gateway lives on a SEPARATE Netlify site
- * from the public ThreatPulse Radar site. It does not own any
- * Blob store; it only READS from two stores on the public
- * site via Netlify Blobs' server-to-server cross-site access:
+ * from the public ThreatPulse Radar site. It reads from TWO
+ * Blob stores, with two completely different access models:
  *
- *   1. `tpr-baseline` \u2014 the canonical baseline (manifests,
- *      version manifests, content-addressed shards, deltas,
- *      source registry). Read-only. Token env var:
- *      THREATPULSE_BLOBS_ACCESS_TOKEN.
+ *   1. `tpr-baseline` (the canonical baseline) lives on the
+ *      PUBLIC site. The gateway reads it via Netlify Blobs'
+ *      server-to-server cross-site access. The env vars
+ *      THREATPULSE_BASELINE_SITE_ID and
+ *      THREATPULSE_BLOBS_ACCESS_TOKEN carry the public
+ *      site's Netlify site ID and a Blobs access token scoped
+ *      to `tpr-baseline`, read-only.
  *
- *   2. `tpr-private-credentials` \u2014 a SEPARATE Blob store
- *      holding the HMAC digests of every issued consumer
- *      credential (one Blob per keyId at `credentials/<keyId>`).
- *      The public site does NOT mix credential records into
- *      the baseline store; they live in their own store so
- *      the credential lifecycle can be audited, rotated, and
- *      revoked independently of the baseline data. Read-only
- *      from the gateway. Token env var:
- *      THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN.
+ *   2. `tpr-private-credentials` (consumer credential HMACs)
+ *      lives on the GATEWAY site itself. The gateway reads it
+ *      via the local Netlify Blobs runtime context (no
+ *      siteID, no token, no cross-site access). The operator
+ *      creates the store on the gateway site via the Netlify
+ *      Blobs UI and writes `credentials/<keyId>` records there
+ *      directly. The public site never sees this store.
  *
- *   Both tokens must be Netlify Blobs access tokens for the
- *   PUBLIC site. The site ID is shared:
- *   THREATPULSE_BASELINE_SITE_ID.
+ *   Why gateway-local for credentials:
  *
- *   If THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN is unset,
- *   the gateway falls back to THREATPULSE_BLOBS_ACCESS_TOKEN
- *   so an operator with a single multi-store token can use
- *   one env var for both stores. The fallback is documented
- *   here as the explicit behavior; the default deployment
- *   (per docs/deployment.md) uses two separate tokens.
+ *     - The gateway is the ONLY component that needs to
+ *       verify a consumer credential. Putting the store on
+ *       the gateway means the public-site operator does not
+ *       have read access to the credential records, and a
+ *       compromise of the public site cannot enumerate or
+ *       attempt to read credential HMACs.
  *
- * This file is the GATEWAY's view of the public site's
- * stores. The public site's `netlify/functions/_shared/baselineStore.mjs`
+ *     - The gateway's Netlify runtime has direct local-
+ *       context access to its own Blobs store. No token, no
+ *       site ID, no cross-site round trip. The auth check
+ *       stays server-side and uses the gateway's own
+ *       authentication boundary.
+ *
+ *     - The blast-radius argument is REVERSED: a token
+ *       scoped to the public-site `tpr-baseline` cannot
+ *       authorize reading the gateway's `tpr-private-credentials`.
+ *       The two stores are in two different Netlify sites
+ *       and are gated by two different operator-controlled
+ *       boundaries.
+ *
+ *     - The HMAC pepper (`THREATPULSE_CREDENTIAL_PEPPER`) is
+ *       server-side only on the gateway. Even an attacker
+ *       with read access to the gateway's `tpr-private-credentials`
+ *       store cannot forge a credential without the pepper.
+ *
+ *   Only the canonical baseline store is cross-site. The
+ *   credentials store is gateway-local. The two never share
+ *   an access token.
+ *
+ * This file is the GATEWAY's view of its own stores. The
+ * public site's `netlify/functions/_shared/baselineStore.mjs`
  * is a different module that has the LOCAL-context helpers
- * used by the V6.0 publisher functions. The two files share
- * only the store-name constants.
+ * used by the V6.0 publisher functions on the public site.
+ * The two files share only the store-name constants.
  */
 
 import { getStore } from '@netlify/blobs';
 
-/** Public-site Blob store names \u2014 read-only from the gateway. */
+/** Public-site Blob store name (read-only cross-site from the gateway). */
 export const BASELINE_STORE_NAME = 'tpr-baseline';
-export const PRIVATE_CREDENTIALS_STORE_NAME = 'tpr-private-credentials';
+
+/** Gateway-local Blob store name for consumer credential HMACs. */
+export const CREDENTIALS_STORE_NAME = 'tpr-private-credentials';
 
 /** Key prefixes for the baseline store. */
 export const MANIFESTS_DIR = 'manifests';
@@ -53,11 +75,18 @@ export const SOURCE_REGISTRY_KEY = 'source-registry';
 /** Env var names. */
 export const BASELINE_SITE_ID_ENV_VAR = 'THREATPULSE_BASELINE_SITE_ID';
 export const BASELINE_BLOBS_ACCESS_TOKEN_ENV_VAR = 'THREATPULSE_BLOBS_ACCESS_TOKEN';
-export const CREDENTIALS_BLOBS_ACCESS_TOKEN_ENV_VAR = 'THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN';
 
 /**
  * Resolve a handle to the public site's `tpr-baseline` Blob
- * store. Reads only.
+ * store. Reads only. Requires the public site's Netlify site
+ * ID and a read-only access token scoped to `tpr-baseline`.
+ *
+ * The token MUST be scoped to `tpr-baseline` only. It does
+ * NOT authorize reads of any other store. In particular, it
+ * does NOT authorize reads of the gateway-local
+ * `tpr-private-credentials` store (which lives on a different
+ * Netlify site and is gated by a different operator-controlled
+ * boundary).
  */
 export function getCrossSiteBaselineStore() {
   const siteID = process.env[BASELINE_SITE_ID_ENV_VAR];
@@ -77,39 +106,26 @@ export function getCrossSiteBaselineStore() {
 }
 
 /**
- * Resolve a handle to the public site's `tpr-private-credentials`
- * Blob store. Reads only.
+ * Resolve a handle to the GATEWAY's own `tpr-private-credentials`
+ * Blob store. Reads only. Uses the GATEWAY site's local Netlify
+ * Blobs runtime context — no siteID, no access token, no
+ * cross-site access.
  *
- * Token precedence:
- *   1. THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN (preferred;
- *      allows the operator to scope this token to the credentials
- *      store only).
- *   2. THREATPULSE_BLOBS_ACCESS_TOKEN (fallback; works when the
- *      operator has a single multi-store token that covers both
- *      `tpr-baseline` and `tpr-private-credentials`).
+ * The local runtime context is provided by Netlify when the
+ * function is invoked on the gateway site. The
+ * `tpr-private-credentials` store is created on the gateway
+ * site in the Netlify UI; the public site never sees or
+ * touches it.
  *
- * If neither is set, throws. Failing closed (no anonymous
- * fallback) is the V6.0 security policy.
+ * The function reads NO env vars. This is intentional and is
+ * the security-critical property: there is no env var that
+ * authorizes reading the credential store, because no
+ * operator needs to authorize it — the gateway's own
+ * runtime context is the only access path.
  */
-export function getCrossSitePrivateCredentialsStore() {
-  const siteID = process.env[BASELINE_SITE_ID_ENV_VAR];
-  if (!siteID) {
-    throw new Error(
-      `getCrossSitePrivateCredentialsStore: ${BASELINE_SITE_ID_ENV_VAR} must be set`,
-    );
-  }
-  const token = process.env[CREDENTIALS_BLOBS_ACCESS_TOKEN_ENV_VAR]
-    || process.env[BASELINE_BLOBS_ACCESS_TOKEN_ENV_VAR];
-  if (!token) {
-    throw new Error(
-      `getCrossSitePrivateCredentialsStore: ${CREDENTIALS_BLOBS_ACCESS_TOKEN_ENV_VAR} ` +
-      `(or ${BASELINE_BLOBS_ACCESS_TOKEN_ENV_VAR} as fallback) must be set`,
-    );
-  }
+export function getCredentialsStore() {
   return getStore({
-    name: PRIVATE_CREDENTIALS_STORE_NAME,
-    siteID,
-    token,
+    name: CREDENTIALS_STORE_NAME,
     consistency: 'strong',
   });
 }

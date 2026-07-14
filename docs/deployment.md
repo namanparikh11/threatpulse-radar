@@ -8,6 +8,9 @@ environments:
    pipeline, and the V6.0 background function).
 2. The **private sync gateway** (a separate Netlify site
    that exposes the authenticated `/private/v1/*` routes).
+   Owns its own `tpr-private-credentials` store, accessed
+   via the gateway site's local Netlify Blobs runtime
+   context (no cross-site).
 3. The **consumer's site** (whatever the consumer's product
    is; not part of the ThreatPulse Radar repository).
 
@@ -23,10 +26,8 @@ publish-time verification steps.
 
 The public site is the V5.7 site plus the V6.0 OSV ingestion
 pipeline. It owns the `tpr-baseline` Blob store (canonical
-baseline data) AND the `tpr-private-credentials` Blob store
-(consumer credential HMACs). The two stores are intentionally
-separate so the credential lifecycle is decoupled from the
-baseline publication lifecycle.
+baseline data). It does NOT own the credentials store — that
+store lives on the gateway site (see section 2).
 
 ### Environment variables (public site)
 
@@ -67,7 +68,6 @@ other.
 | `tpr-vulnrichment` | V5.5 SSVC cache (unchanged) |
 | `tpr-github-advisory` | V5.6 GitHub Advisory cache (unchanged) |
 | `tpr-baseline` | **V6.0** canonical baseline (see layout below) |
-| `tpr-private-credentials` | **V6.0** consumer credential HMACs (separate store, see below) |
 
 ### `tpr-baseline` layout
 
@@ -84,22 +84,6 @@ tpr-baseline/
   publication-lock              ← transient publication lock
 ```
 
-### `tpr-private-credentials` layout
-
-```
-tpr-private-credentials/
-  credentials/{keyId}           ← stored HMAC for each consumer credential
-```
-
-The `tpr-private-credentials` store is intentionally separate
-from `tpr-baseline`. The gateway reads it via a SECOND
-Netlify Blobs access token (env var
-`THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN`), so the blast
-radius of either token being compromised is limited to one
-store. See section 6 for token creation.
-  source-health                 ← aggregate source health
-```
-
 **Do not write to `tpr-baseline` from anything other than the
 V6.0 publisher functions.** The publisher is the only
 component that should be writing to it. An operator that
@@ -110,11 +94,13 @@ do so via the UI as well.
 ## 2. Private sync gateway
 
 The private sync gateway is a SEPARATE Netlify site. It is
-the only component that holds the credential pepper and the
-cross-site Blob access token. It does NOT talk to OSV; it
-only reads from the public site's `tpr-baseline` store
-(for the canonical baseline) and `tpr-private-credentials`
-store (for consumer credential HMACs).
+the only component that holds the credential pepper. It
+does NOT talk to OSV; it only reads from the public site's
+`tpr-baseline` store (for the canonical baseline) via
+cross-site env vars, and from its own LOCAL
+`tpr-private-credentials` store (for consumer credential
+HMACs) via the local Netlify Blobs runtime context. The
+public site never sees the credentials store.
 
 ### Gateway topology (V6.0.1 deployment-hardened)
 
@@ -159,10 +145,18 @@ deploy. The public site does not run this script.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `THREATPULSE_BASELINE_SITE_ID` | yes | The public site's Netlify site ID. Used by both store handles. |
-| `THREATPULSE_BLOBS_ACCESS_TOKEN` | yes | A Netlify Blobs access token scoped to `tpr-baseline` on the public site. Read-only. |
-| `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN` | yes | A SEPARATE Netlify Blobs access token scoped to `tpr-private-credentials` on the public site. Read-only. Set this to a different token than `THREATPULSE_BLOBS_ACCESS_TOKEN` so the blast radius of either token being compromised is limited to one store. If unset, the gateway falls back to `THREATPULSE_BLOBS_ACCESS_TOKEN` (so an operator with a single multi-store token can use one env var for both stores); the default deployment uses two separate tokens. |
+| `THREATPULSE_BASELINE_SITE_ID` | yes | The public site's Netlify site ID. Used by the cross-site baseline read. |
+| `THREATPULSE_BLOBS_ACCESS_TOKEN` | yes | A Netlify Blobs access token scoped to `tpr-baseline` on the public site. Read-only. Used to read manifests, version manifests, shards, deltas, and source registry. |
 | `THREATPULSE_CREDENTIAL_PEPPER` | yes | The HMAC pepper. Long random string. MUST be identical to the value used by the operator script when issuing credentials. |
+
+The gateway does NOT need an env var to authorize reading
+the credentials store. The credentials store is gateway-
+local: it lives on the gateway's own Netlify Blobs runtime
+context, which is provided automatically by the Netlify
+runtime. There is no token, no site ID, and no cross-site
+round trip. The public site's `THREATPULSE_BLOBS_ACCESS_TOKEN`
+is scoped to `tpr-baseline` only and does NOT authorize
+reading the gateway-local `tpr-private-credentials` store.
 
 ### Environment variables that MUST NOT be set
 
@@ -186,11 +180,14 @@ hard quotas are deferred.
 
 ### Blobs (private gateway)
 
-The private gateway does NOT own any Blob store. It reads
-from the public site's `tpr-baseline` and
-`tpr-private-credentials` stores via the cross-site env
-vars. There is nothing to back up on the private gateway's
-side; the source of truth is the public site.
+The private gateway OWNS the `tpr-private-credentials`
+Blob store (gateway-local; the public site never sees or
+touches it) and READS from the public site's `tpr-baseline`
+store via cross-site env vars. The credentials store is
+the source of truth for consumer credentials; the baseline
+store is the source of truth for the canonical baseline.
+Back up the credentials store as part of the gateway site's
+Netlify Blobs backup process.
 
 ## 3. Consumer's site
 
@@ -281,35 +278,39 @@ To create one:
 4. Copy the token into the private gateway's env vars.
    The token is shown ONCE; lose it and you must rotate.
 
-### Token for `tpr-private-credentials` (THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN)
-
-The token for reading consumer credential HMACs.
-
-To create one:
-
-1. In the Netlify UI for the **public** site, go to
-   **Site settings → Blobs**.
-2. Click **Create access token**.
-3. Scope: **Store: tpr-private-credentials**, **Permissions: read**.
-4. Copy the token into the private gateway's env vars.
-
-If you do NOT create a separate token for
-`tpr-private-credentials`, you can re-use the
-`THREATPULSE_BLOBS_ACCESS_TOKEN` (or create one multi-store
-token that covers both stores) — the gateway falls back to
-`THREATPULSE_BLOBS_ACCESS_TOKEN` when
-`THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN` is unset. The
-default V6.0 deployment uses two separate tokens for
-defense in depth.
-
-**Never** put either token in the public site's env vars.
+**Never** put this token in the public site's env vars.
 The public site has direct local-context access via its
-own runtime context. The tokens only live on the private
+own runtime context. The token only lives on the private
 gateway.
 
-**Never** put either token in the consumer's environment.
+**Never** put this token in the consumer's environment.
 The consumer authenticates to the gateway with the HMAC
 credential, not with cross-site access.
+
+### Creating the gateway-local `tpr-private-credentials` store
+
+The credentials store lives on the GATEWAY site, not the
+public site. The gateway reads it via the local Netlify
+Blobs runtime context — no env var, no token, no
+cross-site access. To create the store:
+
+1. In the Netlify UI for the **private gateway** site, go
+   to **Site settings → Blobs**.
+2. The `tpr-private-credentials` store should be created
+   automatically when the first function call hits it
+   (or you can create it via the UI). Confirm it appears
+   in the site's Blobs list.
+3. The store has NO access tokens. It is read by the
+   gateway's own Netlify runtime, which is the only
+   access path.
+4. Write `credentials/<keyId>` records to the store via
+   the Netlify Blobs UI (or the CLI) on the GATEWAY site.
+   Each record is `{ hmac, createdAt, label? }` per
+   `docs/credentials.md`.
+
+The public site never sees this store. A token scoped to
+the public site's `tpr-baseline` does NOT authorize
+reading the gateway-local `tpr-private-credentials` store.
 
 ## 7. Cron timing
 
@@ -463,7 +464,10 @@ scope):
 - Do NOT set `THREATPULSE_CREDENTIAL_PEPPER` (gateway-only).
 - Do NOT set `THREATPULSE_BASELINE_SITE_ID` (gateway-only).
 - Do NOT set `THREATPULSE_BLOBS_ACCESS_TOKEN` (gateway-only).
-- Do NOT set `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN` (gateway-only).
+- Do NOT set `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN`
+  (no such env var exists; credentials are gateway-local).
+- Do NOT set `THREATPULSE_CREDENTIALS_SITE_ID` (no such env
+  var exists; credentials are gateway-local).
 
 **Private gateway site:**
 - `THREATPULSE_BASELINE_SITE_ID` — scope **Production** only.
@@ -473,25 +477,36 @@ scope):
 - `THREATPULSE_BLOBS_ACCESS_TOKEN` — scope **Production** only.
   Without this, a branch deploy of the gateway could read
   the production baseline.
-- `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN` — scope
-  **Production** only. Without this, a branch deploy of the
-  gateway could enumerate `credentials/<keyId>` in the
-  production `tpr-private-credentials` store. The digests
-  themselves are useless without the pepper, but the
-  enumeration is a leak of the keyId set.
 - `THREATPULSE_CREDENTIAL_PEPPER` — scope **Production** only.
   Without this, a branch deploy of the gateway could forge
-  credentials against the production `tpr-private-credentials`
-  store (the pepper + a guessed keyId lets an attacker
-  compute a valid HMAC). This is the highest-impact
-  scoping — never let a preview URL be able to read the
-  production pepper.
+  credentials against the production
+  `tpr-private-credentials` store (the pepper + a guessed
+  keyId lets an attacker compute a valid HMAC). This is
+  the highest-impact scoping — never let a preview URL
+  be able to read the production pepper.
+
+The `tpr-private-credentials` store is gateway-LOCAL —
+the gateway's Netlify runtime has direct access to it
+without any env var or token. A branch deploy of the
+gateway therefore has the SAME access to the credentials
+store as the production deploy (because the access path
+is the gateway's own runtime context, not an env-var
+scoped to a specific deploy context). The operator must
+NOT enable `Auto Publishing` for branch deploys that
+would expose the gateway to a public URL. Use Netlify's
+"Branch deploys" feature in a way that requires manual
+promotion, or disable branch deploys for the gateway
+site entirely.
 - Do NOT set `THREATPULSE_REFRESH_TRIGGER_SECRET` (gateway
   has no scheduled function).
 - Do NOT set `THREATPULSE_OSV_ECOSYSTEMS` (gateway does not
   ingest).
 - Do NOT set `NVD_API_KEY` or `GITHUB_TOKEN` (gateway does
   not call upstream providers).
+- Do NOT set `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN`
+  (no such env var exists; credentials are gateway-local).
+- Do NOT set `THREATPULSE_CREDENTIALS_SITE_ID` (no such env
+  var exists; credentials are gateway-local).
 
 For each site, set the env-var scope to "Production" by
 default; the Netlify UI exposes a "scopes" selector on each
