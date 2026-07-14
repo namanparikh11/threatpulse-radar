@@ -290,6 +290,44 @@ assert('public site netlify/functions/_shared/ does NOT contain credentials.mjs'
   !existsSync(publicSiteCredentialsFn),
   'public site should not deploy the credentials helper');
 
+// The public site must contain EXACTLY 5 function entry
+// files. Shared modules in netlify/functions/_shared/ are
+// NOT function entry points. The 5 are:
+//
+//   HTTP:
+//     - dataset.mjs
+//   Scheduled:
+//     - refresh-dataset-scheduled.mjs
+//     - refresh-baseline-scheduled.mjs
+//   Background:
+//     - refresh-dataset-background.mjs
+//     - refresh-baseline-background.mjs
+const publicEntryFiles = readdirSync(publicSrcFn, { withFileTypes: true })
+  .filter((e) => e.isFile() && e.name.endsWith('.mjs'))
+  .map((e) => e.name)
+  .sort();
+const expectedPublicEntries = [
+  'dataset.mjs',
+  'refresh-baseline-background.mjs',
+  'refresh-baseline-scheduled.mjs',
+  'refresh-dataset-background.mjs',
+  'refresh-dataset-scheduled.mjs',
+];
+assert('public site has exactly 5 function entry files (1 HTTP + 2 Scheduled + 2 Background)',
+  JSON.stringify(publicEntryFiles) === JSON.stringify(expectedPublicEntries),
+  `got: [${publicEntryFiles.join(', ')}], expected: [${expectedPublicEntries.join(', ')}]`);
+
+// Gateway staging must contain exactly 1 function entry file.
+if (existsSync(stagingDir)) {
+  const stagedEntryFiles = readdirSync(stagingDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.mjs'))
+    .map((e) => e.name)
+    .sort();
+  assert('gateway staging has exactly 1 function entry file (private-sync-gateway.mjs)',
+    JSON.stringify(stagedEntryFiles) === JSON.stringify(['private-sync-gateway.mjs']),
+    `got: [${stagedEntryFiles.join(', ')}]`);
+}
+
 if (existsSync(gatewayFnPath)) {
   const src = readText(gatewayFnPath);
 
@@ -555,48 +593,102 @@ for (const f of newFiles) {
 }
 
 /* --------------------------------------------------------------- */
-/* 11. Credential store separation: tpr-private-credentials         */
+/* 11. Credential store: gateway-local, no cross-site env var       */
 /* --------------------------------------------------------------- */
 console.log('');
-console.log('[11] Credential store separation (tpr-private-credentials)');
+console.log('[11] Credential store is gateway-local (no cross-site env var)');
 
 const gwBaselineStorePath = join(gatewayDir, 'src', '_shared', 'baselineStore.mjs');
 if (existsSync(gwBaselineStorePath)) {
   const src = readText(gwBaselineStorePath);
+  // Strip comments so the explanatory header does not match
+  // the negative checks below.
+  const codeOnly = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
 
-  assert('gateway baselineStore declares PRIVATE_CREDENTIALS_STORE_NAME = "tpr-private-credentials"',
-    /export const PRIVATE_CREDENTIALS_STORE_NAME\s*=\s*['"]tpr-private-credentials['"]/.test(src));
+  assert('gateway baselineStore declares CREDENTIALS_STORE_NAME = "tpr-private-credentials"',
+    /export const CREDENTIALS_STORE_NAME\s*=\s*['"]tpr-private-credentials['"]/.test(codeOnly));
 
-  assert('gateway baselineStore exports getCrossSitePrivateCredentialsStore()',
-    /export function getCrossSitePrivateCredentialsStore\s*\(/.test(src));
+  assert('gateway baselineStore exports getCredentialsStore() (local runtime context)',
+    /export function getCredentialsStore\s*\(/.test(codeOnly));
 
-  assert('gateway baselineStore reads THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN (new env var)',
-    /THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN/.test(src));
+  assert('gateway baselineStore getCredentialsStore uses local getStore (no siteID, no token)',
+    /getCredentialsStore[\s\S]{0,200}?return\s+getStore\s*\(\s*\{[\s\S]{0,300}?name:\s*CREDENTIALS_STORE_NAME[\s\S]{0,300}?consistency:\s*'strong'[\s\S]{0,300}?\}\s*\)/.test(codeOnly)
+    && !/getCredentialsStore[\s\S]{0,500}?siteID/.test(codeOnly)
+    && !/getCredentialsStore[\s\S]{0,500}?token/.test(codeOnly));
 
-  assert('gateway baselineStore falls back to THREATPULSE_BLOBS_ACCESS_TOKEN (multi-store token)',
-    /THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN[\s\S]{0,200}THREATPULSE_BLOBS_ACCESS_TOKEN/.test(src)
-    || /THREATPULSE_BLOBS_ACCESS_TOKEN[\s\S]{0,200}THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN/.test(src));
+  assert('gateway baselineStore does NOT export getCrossSitePrivateCredentialsStore',
+    !/export function getCrossSitePrivateCredentialsStore\s*\(/.test(codeOnly));
 
-  assert('gateway baselineStore getCrossSitePrivateCredentialsStore throws when both tokens are unset',
-    /getCrossSitePrivateCredentialsStore[\s\S]{0,800}must be set/i.test(src));
+  // The credentials store accessor MUST NOT read any env var
+  // (the local Netlify Blobs runtime context provides access
+  // automatically; no env var, no token, no cross-site).
+  assert('gateway baselineStore getCredentialsStore does NOT read any env var',
+    /export function getCredentialsStore[\s\S]{0,400}?getStore\s*\(\s*\{[\s\S]{0,300}?\}/.test(codeOnly)
+    && !/export function getCredentialsStore[\s\S]{0,400}?process\.env/.test(codeOnly));
+
+  // The baseline accessor MUST still require cross-site env
+  // vars (separate from the credentials path).
+  assert('gateway baselineStore getCrossSiteBaselineStore still requires siteID and token',
+    /export function getCrossSiteBaselineStore[\s\S]{0,800}?process\.env\[BASELINE_SITE_ID_ENV_VAR\][\s\S]{0,200}?process\.env\[BASELINE_BLOBS_ACCESS_TOKEN_ENV_VAR\]/.test(codeOnly));
+
+  // The baseline token MUST be scoped to tpr-baseline only.
+  // The cross-site baseline accessor must reference the
+  // baseline store name, not the credentials store name.
+  // Match the function's `return getStore({...name: BASELINE_STORE_NAME...})`
+  // specifically, not the whole module.
+  assert('gateway baselineStore getCrossSiteBaselineStore uses BASELINE_STORE_NAME (tpr-baseline), NOT CREDENTIALS_STORE_NAME',
+    /function getCrossSiteBaselineStore[\s\S]{0,400}?return\s+getStore\s*\(\s*\{[\s\S]{0,200}?name:\s*BASELINE_STORE_NAME/.test(codeOnly)
+    && !/function getCrossSiteBaselineStore[\s\S]{0,400}?name:\s*CREDENTIALS_STORE_NAME/.test(codeOnly));
 }
 
 if (existsSync(gatewayFnPath)) {
   const src = readText(gatewayFnPath);
+  const codeOnly = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
 
-  assert('gateway function imports getCrossSitePrivateCredentialsStore',
-    /import\s*\{[\s\S]{0,300}getCrossSitePrivateCredentialsStore[\s\S]{0,300}\}\s*from\s*['"]\.\/_shared\/baselineStore\.mjs['"]/.test(src));
+  assert('gateway function imports getCredentialsStore (LOCAL), not getCrossSitePrivateCredentialsStore',
+    /import\s*\{[\s\S]{0,300}getCredentialsStore[\s\S]{0,300}\}\s*from\s*['"]\.\/_shared\/baselineStore\.mjs['"]/.test(codeOnly)
+    && !/import\s*\{[\s\S]{0,300}getCrossSitePrivateCredentialsStore/.test(codeOnly));
 
-  assert('gateway function production handler wires resolveCredentialsStore separately from resolveStore',
-    /resolveCredentialsStore:\s*\(\)\s*=>\s*getCrossSitePrivateCredentialsStore\(\)/.test(src));
+  assert('gateway function production handler wires resolveCredentialsStore to getCredentialsStore (LOCAL)',
+    /resolveCredentialsStore:\s*\(\)\s*=>\s*getCredentialsStore\(\)/.test(codeOnly));
 
   assert('gateway function uses a separate handle for credentials (resolveCredentialsStore, not resolveStore)',
-    /resolveCredentialsStore\s*\?/.test(src) || /resolveCredentialsStore\(\)/.test(src));
+    /resolveCredentialsStore\s*\?/.test(codeOnly) || /resolveCredentialsStore\(\)/.test(codeOnly));
 }
 
-// Public-site baselineStore.mjs must NOT carry the cross-site helpers
-// (they moved to the gateway subtree).
+// Proof that the baseline token CANNOT be used as a
+// credential-store token: the gateway baselineStore.mjs
+// does not expose a helper that accepts the baseline token
+// and returns a credentials handle.
+if (existsSync(gwBaselineStorePath)) {
+  const src = readText(gwBaselineStorePath);
+  const codeOnly = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  assert('no helper accepts the baseline token and returns a credentials handle (blast-radius isolation)',
+    !/getCrossSitePrivateCredentials|getCredentialsStore\s*\([^)]*THREATPULSE_BLOBS_ACCESS_TOKEN/.test(codeOnly)
+    && !/getCredentialsStore\s*\([^)]*BASELINE_BLOBS_ACCESS_TOKEN/.test(codeOnly));
+}
+
+// No "credentials path" exists in tpr-baseline: the public
+// site's baselineStore.mjs (the writer) does NOT write a
+// `credentials/` key prefix.
 const publicBaselineStorePath = join(root, 'netlify', 'functions', '_shared', 'baselineStore.mjs');
+if (existsSync(publicBaselineStorePath)) {
+  const src = readText(publicBaselineStorePath);
+  const codeOnly = src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '');
+  assert('public-site baselineStore does NOT write a credentials/ key prefix',
+    !/credentials\//.test(codeOnly));
+}
+
+// Public-site baselineStore.mjs must NOT carry the cross-site
+// helpers (they moved to the gateway subtree).
 if (existsSync(publicBaselineStorePath)) {
   const src = readText(publicBaselineStorePath);
   // Strip comments so the explanatory header does not match
@@ -606,10 +698,49 @@ if (existsSync(publicBaselineStorePath)) {
     .replace(/^\s*\/\/.*$/gm, '');
   assert('public-site baselineStore does NOT export getCrossSiteBaselineStore',
     !/export function getCrossSiteBaselineStore\s*\(/.test(codeOnly));
-  assert('public-site baselineStore does NOT export getCrossSitePrivateCredentialsStore',
-    !/export function getCrossSitePrivateCredentialsStore\s*\(/.test(codeOnly));
+  assert('public-site baselineStore does NOT export getCredentialsStore',
+    !/export function getCredentialsStore\s*\(/.test(codeOnly));
   assert('public-site baselineStore does NOT reference tpr-private-credentials (in code, not comments)',
     !/tpr-private-credentials/.test(codeOnly));
+}
+
+// Proof: no THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN (or
+// similar credential-token env var) remains anywhere in the
+// source tree, the docs, the deployment configs, the
+// public-release checklist, or the changelog.
+const credentialTokenEnvVars = [
+  'THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN',
+  'THREATPULSE_CREDENTIALS_SITE_ID',
+];
+const scannedForCredentialToken = [
+  join(root, 'netlify', 'gateway', 'netlify.toml'),
+  join(root, 'netlify.toml'),
+  join(root, 'netlify', 'gateway', 'src', 'private-sync-gateway.mjs'),
+  join(root, 'netlify', 'gateway', 'src', '_shared', 'baselineStore.mjs'),
+  join(root, 'netlify', 'functions', '_shared', 'baselineStore.mjs'),
+  join(root, 'docs', 'deployment.md'),
+  join(root, 'docs', 'credentials.md'),
+  join(root, 'CHANGELOG.md'),
+  join(root, 'PUBLIC_RELEASE_CHECKLIST.md'),
+];
+for (const f of scannedForCredentialToken) {
+  if (!existsSync(f)) continue;
+  const content = readText(f);
+  // Strip the "no such env var exists" documentation
+  // comments that explicitly mention the env-var name to
+  // warn operators NOT to set it. The "Do NOT set" bullet
+  // is followed (possibly across newlines) by the env-var
+  // name in backticks and a parenthetical explanation.
+  // The longest such block is ~420 chars; use 600 to be
+  // safe. Match the trailing punctuation loosely.
+  const stripped = content
+    .replace(/Do NOT set[\s\S]{0,600}?credentials are gateway-local[)\s.\-]*/g, '')
+    .replace(/\(no such env var exists;[^)]*\)/g, '')
+    .replace(/\(no such env var\)[\s\S]*?\./g, '');
+  for (const envName of credentialTokenEnvVars) {
+    assert(`no "${envName}" env-var reference in ${relative(root, f)} (in code, not the "do not set" docs)`,
+      !new RegExp(envName.replace(/_/g, '_')).test(stripped));
+  }
 }
 
 /* --------------------------------------------------------------- */
@@ -760,16 +891,14 @@ if (existsSync(deploymentDoc)) {
   const src = readText(deploymentDoc);
   assert('docs/deployment.md describes tpr-private-credentials store',
     /tpr-private-credentials/.test(src));
-  assert('docs/deployment.md describes THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN env var',
-    /THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN/.test(src));
   assert('docs/deployment.md describes deploy-preview secret scoping (Production scope)',
     /Production.+scope|scope.+Production|scoping/.test(src));
-  assert('docs/deployment.md describes the two-token split for blast-radius isolation',
-    /blast radius|separate tokens|two.+tokens/.test(src));
   assert('docs/deployment.md describes the netlify/gateway/ topology',
     /netlify\/gateway/.test(src));
   assert('docs/deployment.md describes the copy-gateway-files.mjs staging script',
     /copy-gateway-files\.mjs/.test(src));
+  assert('docs/deployment.md describes the gateway-local credentials store (no cross-site env var)',
+    /gateway-local|local Netlify Blobs runtime context/.test(src));
 }
 
 const credentialsDoc = join(root, 'docs', 'credentials.md');
@@ -778,7 +907,7 @@ if (existsSync(credentialsDoc)) {
   assert('docs/credentials.md describes tpr-private-credentials (NOT tpr-baseline)',
     /tpr-private-credentials/.test(src) && !/credentials.+in `?tpr-baseline`?/.test(src));
   assert('docs/credentials.md explains the separate-store rationale',
-    /separate/i.test(src) && /(decouple|decoupling|isolation|blast radius)/i.test(src));
+    /separate/i.test(src) && /(decouple|decoupling|isolation|blast radius|gateway-local)/i.test(src));
 }
 
 const changelog = join(root, 'CHANGELOG.md');

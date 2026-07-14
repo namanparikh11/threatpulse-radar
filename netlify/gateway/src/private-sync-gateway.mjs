@@ -7,20 +7,20 @@
  * function (in a separate site, by deploy topology) that:
  *
  *   1. Authenticates the caller with an HMAC-SHA256 credential
- *      (see _shared/credentials.mjs).
+ *      (see _shared/credentials.mjs). The credential HMACs
+ *      are read from the GATEWAY's own `tpr-private-credentials`
+ *      Blob store via the local Netlify Blobs runtime context
+ *      (no siteID, no access token, no cross-site access). The
+ *      public site never sees this store.
  *   2. Reads the canonical baseline from the PUBLIC site's
  *      `tpr-baseline` Blob store using the cross-site env vars
- *      THREATPULSE_BASELINE_SITE_ID and THREATPULSE_BLOBS_ACCESS_TOKEN.
- *      These values must NEVER appear in client code, browser
- *      bundles, logs, fixtures, screenshots, or docs.
- *   3. Reads the consumer credential HMAC from the PUBLIC site's
- *      `tpr-private-credentials` Blob store (a SEPARATE store
- *      from `tpr-baseline`) using a separate cross-site access
- *      token (env var THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN).
- *      The two stores are decoupled so the credential lifecycle
- *      (issue, rotate, revoke) is independent of the baseline
- *      data lifecycle.
- *   4. Returns the requested artifact.
+ *      THREATPULSE_BASELINE_SITE_ID and
+ *      THREATPULSE_BLOBS_ACCESS_TOKEN. The token is scoped to
+ *      `tpr-baseline` only and does NOT authorize reading the
+ *      gateway-local credentials store. These values must
+ *      NEVER appear in client code, browser bundles, logs,
+ *      fixtures, screenshots, or docs.
+ *   3. Returns the requested artifact.
  *
  * Per amendment #1, there is NO anonymous function for the
  * canonical baseline. The only public endpoint is the existing
@@ -50,7 +50,7 @@ import {
   credentialBlobKey,
 } from './_shared/credentials.mjs';
 import {
-  getCrossSiteBaselineStore, getCrossSitePrivateCredentialsStore,
+  getCrossSiteBaselineStore, getCredentialsStore,
   readJson, readVersionManifest, readDelta,
   LATEST_MANIFEST_KEY, SOURCE_REGISTRY_KEY,
 } from './_shared/baselineStore.mjs';
@@ -305,20 +305,25 @@ async function handleSources(store) {
  *
  * The handler uses TWO store handles:
  *   - `resolveStore()`         → `tpr-baseline` (read-only,
- *                                baseline data: manifests,
- *                                shards, deltas, sources)
+ *                                cross-site from the public
+ *                                site: manifests, shards,
+ *                                deltas, sources)
  *   - `resolveCredentialsStore()` → `tpr-private-credentials`
- *                                (read-only, HMAC digests of
- *                                issued credentials)
+ *                                (read-only, GATEWAY-LOCAL:
+ *                                HMAC digests of issued
+ *                                credentials)
  *
- * The two stores live on the public site; the gateway is a
- * separate Netlify site that accesses them via Netlify Blobs'
- * server-to-server cross-site access. Splitting the credential
- * store from the baseline store means the credential lifecycle
- * (issue, rotate, revoke) is decoupled from the baseline
- * publication lifecycle, and the public-site operator can grant
- * read access to `tpr-baseline` for analysis without also
- * exposing the credential digests.
+ * The two stores live on DIFFERENT Netlify sites and use
+ * DIFFERENT access models. The credentials store is on the
+ * GATEWAY itself, accessed via the local Netlify Blobs
+ * runtime context (no siteID, no token, no cross-site).
+ * The baseline store is on the PUBLIC site, accessed via
+ * Netlify Blobs' cross-site access (siteID + scoped
+ * read-only token). A token scoped to `tpr-baseline` does
+ * NOT authorize reading the gateway-local credentials
+ * store. The two stores are in two different Netlify
+ * sites and are gated by two different operator-controlled
+ * boundaries.
  */
 export async function handlePrivateSyncGateway({
   request,
@@ -399,10 +404,14 @@ export default async (request) => {
   return handlePrivateSyncGateway({
     request,
     pepper,
-    // Baseline data: manifests, shards, deltas, sources.
+    // Baseline data (manifests, shards, deltas, sources) is
+    // on the PUBLIC site; we read it via cross-site env vars.
     resolveStore: () => getCrossSiteBaselineStore(),
-    // Credential HMACs: separate `tpr-private-credentials` store.
-    resolveCredentialsStore: () => getCrossSitePrivateCredentialsStore(),
+    // Credential HMACs are on the GATEWAY site itself; we
+    // read them via the local Netlify Blobs runtime context
+    // (no siteID, no token). The public site cannot read
+    // this store.
+    resolveCredentialsStore: () => getCredentialsStore(),
   });
 };
 

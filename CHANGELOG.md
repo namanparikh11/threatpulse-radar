@@ -61,21 +61,20 @@ the V5.7 public dashboard is unchanged.
 The V6.0 architecture has three Netlify environments:
 
 1. The **public ThreatPulse Radar site** (the V5.7 site
-   plus the V6.0 OSV ingestion pipeline). Owns TWO
-   Blob stores: `tpr-baseline` (canonical baseline data)
-   and `tpr-private-credentials` (consumer credential
-   HMACs). The two stores are intentionally separate
-   so the credential lifecycle is decoupled from the
-   baseline publication lifecycle.
+   plus the V6.0 OSV ingestion pipeline). Owns the
+   `tpr-baseline` Blob store (canonical baseline data).
+   The public site does NOT own the credentials store.
 2. The **private sync gateway** (a separate Netlify site,
    built from the `netlify/gateway/` subtree in this
-   repo). Reads the public site's `tpr-baseline` AND
-   `tpr-private-credentials` stores via cross-site env
-   vars. Holds the credential pepper. The public site
-   does NOT deploy the gateway function — the gateway
-   function source-of-truth lives in
-   `netlify/gateway/src/`, not in
-   `netlify/functions/`.
+   repo). Reads the public site's `tpr-baseline` store
+   via cross-site env vars. Owns its OWN
+   `tpr-private-credentials` store, accessed via the
+   gateway's local Netlify Blobs runtime context (no
+   siteID, no token, no cross-site). Holds the
+   credential pepper. The public site does NOT deploy
+   the gateway function — the gateway function
+   source-of-truth lives in `netlify/gateway/src/`, not
+   in `netlify/functions/`.
 3. The **consumer** (a third-party product). Authenticates
    to the gateway with the HMAC credential and pulls the
    baseline.
@@ -89,20 +88,25 @@ The V6.0 architecture has three Netlify environments:
 - `THREATPULSE_BASELINE_SITE_ID` and
   `THREATPULSE_BLOBS_ACCESS_TOKEN` (private gateway,
   Production scope) — cross-site access to the public
-  site's `tpr-baseline` store.
-- `THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN` (private
-  gateway, Production scope) — SEPARATE cross-site token
-  for the public site's `tpr-private-credentials` store.
-  The blast radius of either token being compromised is
-  limited to one store.
+  site's `tpr-baseline` store. The token is scoped to
+  `tpr-baseline` only; it does NOT authorize reading the
+  gateway-local `tpr-private-credentials` store.
 - `THREATPULSE_CREDENTIAL_PEPPER` (private gateway,
   Production scope) — the HMAC pepper. Server-side only.
   Identical to the value used by the operator script
   when issuing credentials. The Production-only scoping
   is critical: a deploy-preview URL with the production
-  pepper could forge credentials.
+  pepper could forge credentials against the
+  gateway-local `tpr-private-credentials` store.
 - `THREATPULSE_OSV_ECOSYSTEMS` (public site, optional) —
   JSON override of `config/osv-ecosystems.json`.
+
+The gateway does NOT need an env var to authorize reading
+the credentials store. The credentials store is
+gateway-local: it lives on the gateway's own Netlify
+Blobs runtime context, which is provided automatically
+by the Netlify runtime. There is no token, no site ID,
+and no cross-site round trip.
 
 ### V6.0 invariants (and the test names that verify them)
 
@@ -162,19 +166,23 @@ The V6.0 architecture has three Netlify environments:
   function. Tested by "public site netlify/functions/
   does NOT contain private-sync-gateway.mjs" in
   `acceptance-deployment-hardening.mjs`.
-- **Consumer credential records live in a SEPARATE Blob
-  store.** `credentials/<keyId>` is stored in
-  `tpr-private-credentials` on the public site, NOT in
-  `tpr-baseline`. The public site's `tpr-baseline` Blob
-  store contains only baseline/intelligence artifacts
-  (manifests, version manifests, content-addressed
-  shards, deltas, source registry, source health,
-  bootstrap state, publication lock). The credential
-  store is read by the gateway via a SEPARATE
-  cross-site access token, so the blast radius of
-  either token being compromised is limited to one
-  store. Tested by the credential-store-separation
-  section in `acceptance-deployment-hardening.mjs`.
+- **Consumer credential records live in a GATEWAY-LOCAL
+  Blob store.** `credentials/<keyId>` is stored in
+  `tpr-private-credentials` on the GATEWAY site, NOT on
+  the public site. The public site never sees this
+  store. The gateway reads it via the local Netlify
+  Blobs runtime context — no siteID, no access token,
+  no cross-site access. The public site's `tpr-baseline`
+  Blob store contains only baseline/intelligence
+  artifacts (manifests, version manifests, content-
+  addressed shards, deltas, source registry, source
+  health, bootstrap state, publication lock). The
+  baseline token (`THREATPULSE_BLOBS_ACCESS_TOKEN`,
+  scoped to `tpr-baseline`) cannot authorize reading
+  the credentials store, because the credentials store
+  is in a different Netlify site and uses a different
+  access path. Tested by the credential-store-
+  separation section in `acceptance-deployment-hardening.mjs`.
 - **Route version parameters are validated before
   Blob-key construction.** `version`, `from`, and `to`
   parameters on the gateway's manifest, snapshot, and
@@ -232,9 +240,12 @@ All 11 existing V5.x acceptance scripts pass unchanged.
   - `site/.gitkeep` — empty publish directory
   - `src/private-sync-gateway.mjs` — gateway function
   - `src/_shared/credentials.mjs` — HMAC credential format + verify
-  - `src/_shared/baselineStore.mjs` — cross-site store helpers
-    (incl. `getCrossSitePrivateCredentialsStore` for the
-    new `tpr-private-credentials` store)
+  - `src/_shared/baselineStore.mjs` — gateway-local
+    credential store helper (`getCredentialsStore`, no
+    siteID, no token) plus the cross-site baseline
+    store helper (`getCrossSiteBaselineStore`, requires
+    `THREATPULSE_BASELINE_SITE_ID` and
+    `THREATPULSE_BLOBS_ACCESS_TOKEN`)
 - **New deployment tooling**:
   `scripts/copy-gateway-files.mjs` — copies the gateway
   subtree's source-of-truth into a deployment-only
