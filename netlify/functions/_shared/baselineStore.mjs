@@ -1,29 +1,44 @@
 /**
- * V6.0 — Blob store helpers for the canonical baseline.
+ * V6.0 — Public-site Blob store helpers for the canonical baseline.
+ *
+ * This file is the PUBLIC SITE'S view of the baseline Blob
+ * store. The public site OWNS `tpr-baseline`; this file provides
+ * the LOCAL-context helpers used by the V6.0 publisher functions
+ * (refresh-baseline-background, the OSV orchestrator, etc.).
  *
  * The canonical baseline lives in the public ThreatPulse site's
- * `tpr-baseline` Blob store. The store is intentionally separate from
- * the existing dashboard caches (`tpr-dataset`, `tpr-vulnrichment`,
- * `tpr-github-advisory`) and the OSV ingestion cache (`tpr-osv`).
+ * `tpr-baseline` Blob store. The store is intentionally separate
+ * from the existing dashboard caches (`tpr-dataset`,
+ * `tpr-vulnrichment`, `tpr-github-advisory`) and the OSV
+ * ingestion cache (`tpr-osv`).
  *
- * The V6.0 amendment requires that there is exactly ONE mutable commit
- * point: `manifests/latest.json`. All other artifacts are immutable
- * and content-addressed.
+ * The V6.0 amendment requires that there is exactly ONE mutable
+ * commit point: `manifests/latest.json`. All other artifacts are
+ * immutable and content-addressed.
  *
  * Layout:
  *   tpr-baseline/
  *     manifests/latest.json               ← THE atomic commit point (mutable)
  *     manifests/versions/{version}.json   ← immutable version manifests
- *     objects/sha256/<hash>.json.gz       ← immutable content-addressed shards
+ *     objects/sha256/{hash}.json.gz       ← immutable content-addressed shards
  *     deltas/{from}__to__{to}.json         ← immutable deltas
  *     publication-lock                    ← transient publication lock
  *     source-health                       ← aggregate source health
  *     source-registry                     ← static source registry
  *
- * Cross-site access: the private gateway uses
- * `getStore({ name, siteID, token })` with the env vars
- * `THREATPULSE_BASELINE_SITE_ID` and `THREATPULSE_BLOBS_ACCESS_TOKEN`
- * to read this store server-side.
+ * The credential records do NOT live in this store. They live in
+ * the SEPARATE `tpr-private-credentials` Blob store, which the
+ * private gateway reads via cross-site env vars. See
+ * `netlify/gateway/src/_shared/baselineStore.mjs` for the
+ * gateway's view of both stores.
+ *
+ * Cross-site access helpers (the previous `getCrossSiteBaselineStore`
+ * function) are NOT in this file. They live in
+ * `netlify/gateway/src/_shared/baselineStore.mjs` because the
+ * public site does not need them; it has direct local-context
+ * access via the Netlify runtime. Only the gateway needs
+ * cross-site access, and the gateway is a separate Netlify site
+ * with its own copy of the helpers.
  */
 
 import { getStore } from '@netlify/blobs';
@@ -44,11 +59,11 @@ const ENTITY_TYPES = ['vulnerability', 'advisory', 'package', 'relationship', 't
 /**
  * Resolve a handle to the public site's `tpr-baseline` Blob store.
  *
- * When called from the public site, the standard Netlify Blobs context
- * (auto-detected from the function runtime) is used. When called from
- * the private gateway, the env vars `THREATPULSE_BASELINE_SITE_ID` and
- * `THREATPULSE_BLOBS_ACCESS_TOKEN` are passed via opts to enable
- * server-to-server access to the public site's store.
+ * The public site has direct local-context access via the
+ * Netlify runtime. The previous `getCrossSiteBaselineStore`
+ * helper was moved to `netlify/gateway/src/_shared/baselineStore.mjs`
+ * because only the gateway needs cross-site access; the public
+ * site uses the local runtime context via this function.
  */
 export function getBaselineStore(opts = {}) {
   const storeOpts = {
@@ -58,23 +73,6 @@ export function getBaselineStore(opts = {}) {
   if (opts.siteID) storeOpts.siteID = opts.siteID;
   if (opts.token) storeOpts.token = opts.token;
   return getStore(storeOpts);
-}
-
-/**
- * Resolve a handle using the cross-site access env vars. The function
- * never logs the token and the env vars never appear in source files
- * or fixtures.
- */
-export function getCrossSiteBaselineStore() {
-  const siteID = process.env.THREATPULSE_BASELINE_SITE_ID;
-  const token = process.env.THREATPULSE_BLOBS_ACCESS_TOKEN;
-  if (!siteID || !token) {
-    throw new Error(
-      'getCrossSiteBaselineStore: THREATPULSE_BASELINE_SITE_ID and ' +
-      'THREATPULSE_BLOBS_ACCESS_TOKEN must be set',
-    );
-  }
-  return getStore({ name: BASELINE_STORE_NAME, siteID, token, consistency: 'strong' });
 }
 
 /**

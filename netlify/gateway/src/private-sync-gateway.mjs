@@ -13,7 +13,14 @@
  *      THREATPULSE_BASELINE_SITE_ID and THREATPULSE_BLOBS_ACCESS_TOKEN.
  *      These values must NEVER appear in client code, browser
  *      bundles, logs, fixtures, screenshots, or docs.
- *   3. Returns the requested artifact.
+ *   3. Reads the consumer credential HMAC from the PUBLIC site's
+ *      `tpr-private-credentials` Blob store (a SEPARATE store
+ *      from `tpr-baseline`) using a separate cross-site access
+ *      token (env var THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN).
+ *      The two stores are decoupled so the credential lifecycle
+ *      (issue, rotate, revoke) is independent of the baseline
+ *      data lifecycle.
+ *   4. Returns the requested artifact.
  *
  * Per amendment #1, there is NO anonymous function for the
  * canonical baseline. The only public endpoint is the existing
@@ -40,7 +47,8 @@ import {
   credentialBlobKey,
 } from './_shared/credentials.mjs';
 import {
-  getCrossSiteBaselineStore, readJson, readVersionManifest, readDelta,
+  getCrossSiteBaselineStore, getCrossSitePrivateCredentialsStore,
+  readJson, readVersionManifest, readDelta,
   LATEST_MANIFEST_KEY, SOURCE_REGISTRY_KEY,
 } from './_shared/baselineStore.mjs';
 
@@ -255,13 +263,31 @@ async function handleSources(store) {
 
 /**
  * Inner handler. Takes all dependencies explicitly so the unit
- * tests can stub the store and the request.
+ * tests can stub the stores and the request.
+ *
+ * The handler uses TWO store handles:
+ *   - `resolveStore()`         → `tpr-baseline` (read-only,
+ *                                baseline data: manifests,
+ *                                shards, deltas, sources)
+ *   - `resolveCredentialsStore()` → `tpr-private-credentials`
+ *                                (read-only, HMAC digests of
+ *                                issued credentials)
+ *
+ * The two stores live on the public site; the gateway is a
+ * separate Netlify site that accesses them via Netlify Blobs'
+ * server-to-server cross-site access. Splitting the credential
+ * store from the baseline store means the credential lifecycle
+ * (issue, rotate, revoke) is decoupled from the baseline
+ * publication lifecycle, and the public-site operator can grant
+ * read access to `tpr-baseline` for analysis without also
+ * exposing the credential digests.
  */
 export async function handlePrivateSyncGateway({
   request,
   pepper,
   store = null,
   resolveStore = () => store,
+  resolveCredentialsStore = null,
   readStoreRecord = async (s, key) => readJson(s, key),
 }) {
   if (typeof pepper !== 'string' || pepper.length === 0) {
@@ -272,7 +298,8 @@ export async function handlePrivateSyncGateway({
 
   // Parse first so we can read the keyId from the credential
   // (without verifying yet). Then read the stored HMAC for that
-  // keyId, then verify. This is a single Blob read per request.
+  // keyId, then verify. This is a single Blob read per request,
+  // against the credentials store (NOT the baseline store).
   const parsed = parseCredential(credential);
   if (!parsed) return unauthorized();
 
@@ -286,9 +313,21 @@ export async function handlePrivateSyncGateway({
     return serverError('store not available');
   }
 
+  let credentialsStoreHandle;
+  try {
+    credentialsStoreHandle = resolveCredentialsStore
+      ? await resolveCredentialsStore()
+      : storeHandle;
+  } catch (err) {
+    return serverError('credentials store unavailable: ' + (err && err.message ? err.message : err));
+  }
+  if (!credentialsStoreHandle) {
+    return serverError('credentials store not available');
+  }
+
   let storeRecord;
   try {
-    storeRecord = await readStoreRecord(storeHandle, credentialBlobKey(parsed.keyId));
+    storeRecord = await readStoreRecord(credentialsStoreHandle, credentialBlobKey(parsed.keyId));
   } catch {
     storeRecord = null;
   }
@@ -322,13 +361,16 @@ export default async (request) => {
   return handlePrivateSyncGateway({
     request,
     pepper,
+    // Baseline data: manifests, shards, deltas, sources.
     resolveStore: () => getCrossSiteBaselineStore(),
+    // Credential HMACs: separate `tpr-private-credentials` store.
+    resolveCredentialsStore: () => getCrossSitePrivateCredentialsStore(),
   });
 };
 
 /**
  * Per amendment #5: rate limit and path are exported on the
- * function's config, NOT in netlify.toml. The path is the mount
+ * function's `config`, NOT in netlify.toml. The path is the mount
  * path of the gateway; the rate limit is a reasonable initial
  * rule (200 req / 60s aggregated by IP and domain). Per-client
  * hard quotas are deferred until an atomic counter store exists.
