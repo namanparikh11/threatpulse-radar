@@ -323,11 +323,27 @@ async function buildV61DefaultAdditions({ datasetEnvelope, vulnrichmentCache, gi
       suppressedAxes: [],
     };
   }
-  // Compute the current publicStateHash and compare.
-  const currentHash = computeCurrentPublicStateHash({
+  // Compute the current publicStateHash from the four
+  // precomputed, write-time-computed stored hashes. If
+  // any required stored hash is missing, the public
+  // intelligence is unavailable and we report it
+  // honestly. The request path NEVER re-hashes the full
+  // Vulnrichment or GitHub Advisory caches.
+  const hashResult = computeCurrentPublicStateHash({
     datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
   });
-  if (currentHash !== latest.publicStateHash) {
+  if (!hashResult.available) {
+    return {
+      publicIntelligenceStatus: 'unavailable',
+      publicIntelligenceVersion: null,
+      publicStateFingerprint: null,
+      sources: [],
+      changeSummary: null,
+      comparableAxes: [],
+      suppressedAxes: [],
+    };
+  }
+  if (hashResult.publicStateHash !== latest.publicStateHash) {
     return {
       publicIntelligenceStatus: 'mismatch',
       publicIntelligenceVersion: latest.publicIntelligenceVersion,

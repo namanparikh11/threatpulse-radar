@@ -44,8 +44,6 @@ import {
 } from './publicIntelligenceStore.mjs';
 import {
   computePublicStateHash,
-  computeDatasetPublicHash,
-  computeEnrichmentPublicHash,
   derivePublicIntelligenceVersion,
   PUBLIC_PROJECTION_SCHEMA_VERSION,
   PUBLIC_STATE_SCHEMA_VERSION,
@@ -76,26 +74,71 @@ async function readDatasetLatest(store) {
 
 /**
  * Compute the current publicStateHash from the four
- * currently-served state pieces. The dataset public
- * hash is read from the envelope's `datasetPublicHash`
- * internal field (already precomputed at write time);
- * the enrichment cache hashes are computed from the
- * publicly-projected `records` map.
+ * precomputed, write-time-computed hash inputs. The
+ * request path NEVER synchronously re-hashes the
+ * complete Vulnrichment or GitHub Advisory caches —
+ * the per-Blob public hashes are precomputed at write
+ * time (see `computeEnrichmentPublicHash` callers in
+ * `vulnrichmentRefresh.mjs` and
+ * `githubAdvisoryRefresh.mjs`, and
+ * `computeDatasetPublicHashForBlob` in `refresh.mjs`)
+ * and stored in the envelope.
+ *
+ * Returns a structured result:
+ *   {
+ *     publicStateHash: string | null,  // null when any required hash is missing
+ *     available: boolean,              // true iff all required hashes are present
+ *     missingHashes: string[],         // names of missing required hashes
+ *   }
+ *
+ * When any required stored hash is missing, the request
+ * path MUST treat the public intelligence as unavailable
+ * (`publicIntelligenceStatus: 'unavailable'` for the
+ * default response; 503 with a sanitized error code for
+ * the view modes). The full hash is NEVER recomputed
+ * from the full cache on a normal dashboard request.
+ *
+ * Pre-V6.1 envelopes without stored hashes are upgraded
+ * in the background dataset cycle (see
+ * `upgradeLegacyEnvelopes` in
+ * `v61BackgroundChain.mjs`); the next successful
+ * refresh writes the hash atomically with the content.
+ * Until that upgrade completes, the request path reports
+ * `unavailable` — it does NOT guess or attach a stale
+ * hash, and it does NOT perform full-cache
+ * canonicalization.
  */
 export function computeCurrentPublicStateHash({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection } = {}) {
-  return computePublicStateHash({
-    datasetPublicHash: datasetEnvelope && datasetEnvelope.datasetPublicHash
-      ? datasetEnvelope.datasetPublicHash
-      : computeDatasetPublicHash(datasetEnvelope),
-    vulnrichmentPublicHash: computeEnrichmentPublicHash(vulnrichmentCache),
-    githubAdvisoryPublicHash: computeEnrichmentPublicHash(githubAdvisoryCache),
-    referencedOsvProjectionVersion: osvProjection && osvProjection.osvProjectionVersion
-      ? osvProjection.osvProjectionVersion
-      : null,
-    referencedOsvProjectionContentHash: osvProjection && osvProjection.manifestContentHash
-      ? osvProjection.manifestContentHash
-      : null,
-  });
+  const missing = [];
+  const datasetPublicHash = (datasetEnvelope && typeof datasetEnvelope.datasetPublicHash === 'string')
+    ? datasetEnvelope.datasetPublicHash
+    : (missing.push('datasetPublicHash'), null);
+  const vulnrichmentPublicHash = (vulnrichmentCache && typeof vulnrichmentCache.vulnrichmentPublicHash === 'string')
+    ? vulnrichmentCache.vulnrichmentPublicHash
+    : (missing.push('vulnrichmentPublicHash'), null);
+  const githubAdvisoryPublicHash = (githubAdvisoryCache && typeof githubAdvisoryCache.githubAdvisoryPublicHash === 'string')
+    ? githubAdvisoryCache.githubAdvisoryPublicHash
+    : (missing.push('githubAdvisoryPublicHash'), null);
+  if (missing.length > 0) {
+    return { publicStateHash: null, available: false, missingHashes: missing };
+  }
+  const referencedOsvProjectionVersion = osvProjection && osvProjection.osvProjectionVersion
+    ? osvProjection.osvProjectionVersion
+    : null;
+  const referencedOsvProjectionContentHash = osvProjection && osvProjection.manifestContentHash
+    ? osvProjection.manifestContentHash
+    : null;
+  return {
+    publicStateHash: computePublicStateHash({
+      datasetPublicHash,
+      vulnrichmentPublicHash,
+      githubAdvisoryPublicHash,
+      referencedOsvProjectionVersion,
+      referencedOsvProjectionContentHash,
+    }),
+    available: true,
+    missingHashes: [],
+  };
 }
 
 /**
@@ -136,11 +179,17 @@ export async function readOsvView({
   }
 
   // 3. Compute the current publicStateHash from the four
-  //    currently-served state pieces.
-  const currentPublicStateHash = computeCurrentPublicStateHash({
+  //    precomputed, write-time-computed stored hashes. If
+  //    any required stored hash is missing, the public
+  //    intelligence is unavailable and we report 503. We
+  //    do NOT fall back to re-hashing the full caches.
+  const hashResult = computeCurrentPublicStateHash({
     datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
   });
-  if (currentPublicStateHash !== latest.publicStateHash) {
+  if (!hashResult.available) {
+    return jsonResponse(503, { error: 'public-intelligence-unavailable', reason: 'missing-stored-hash' });
+  }
+  if (hashResult.publicStateHash !== latest.publicStateHash) {
     return jsonResponse(503, { error: 'public-state-drift' });
   }
 
@@ -158,7 +207,7 @@ export async function readOsvView({
   if (!manifest) {
     return jsonResponse(503, { error: 'immutable-projection-unavailable' });
   }
-  if (manifest.publicStateHash !== currentPublicStateHash) {
+  if (manifest.publicStateHash !== hashResult.publicStateHash) {
     return jsonResponse(503, { error: 'immutable-projection-unavailable' });
   }
 
@@ -233,10 +282,13 @@ export async function readChangesView({
   if (!latest) {
     return jsonResponse(503, { error: 'public-intelligence-unavailable' });
   }
-  const currentPublicStateHash = computeCurrentPublicStateHash({
+  const hashResult = computeCurrentPublicStateHash({
     datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
   });
-  if (currentPublicStateHash !== latest.publicStateHash) {
+  if (!hashResult.available) {
+    return jsonResponse(503, { error: 'public-intelligence-unavailable', reason: 'missing-stored-hash' });
+  }
+  if (hashResult.publicStateHash !== latest.publicStateHash) {
     return jsonResponse(503, { error: 'public-state-drift' });
   }
   if (version !== latest.publicIntelligenceVersion) {

@@ -229,6 +229,11 @@ const datasetEnvelope = {
   epssStatus: 'first',
   vulnrichmentStatus: 'partial',
   githubAdvisoryStatus: 'partial',
+  // The dataset envelope carries the precomputed public
+  // hash (written by refresh.mjs at write time). The
+  // V6.1 contract is that the publisher reads the hash
+  // from the envelope — it does NOT recompute it.
+  datasetPublicHash: 'sha256:' + '1'.repeat(64),
   data: [
     { cveId: 'CVE-2024-1234', kev: true, kevDateAdded: '2026-07-10', severity: 'High', cvssSource: 'NVD', cvssVersion: 'CVSS_V3', cvssScore: 7.5, epssProbability: 0.48, ssvcExploitation: 'active', githubAdvisory: { ghsaId: 'GHSA-xxxx' } },
     { cveId: 'CVE-2024-5678', kev: false, severity: 'Medium', cvssSource: 'NVD', cvssVersion: 'CVSS_V3', cvssScore: 5.0, epssProbability: 0.12 },
@@ -240,6 +245,9 @@ const vulnrichmentCache = {
     'CVE-2024-9999': { ssvc: null, status: 'missing', cachedAt: 1, checkedAt: 1 },
   },
   updatedAt: '2026-07-15T03:50:00.000Z',
+  // The precomputed public hash (written by
+  // vulnrichmentRefresh.mjs at write time).
+  vulnrichmentPublicHash: 'sha256:' + '2'.repeat(64),
 };
 const githubAdvisoryCache = {
   records: {
@@ -247,6 +255,9 @@ const githubAdvisoryCache = {
     'CVE-2024-8888': { advisory: null, status: 'missing', cachedAt: 1, checkedAt: 1 },
   },
   updatedAt: '2026-07-15T03:50:00.000Z',
+  // The precomputed public hash (written by
+  // githubAdvisoryRefresh.mjs at write time).
+  githubAdvisoryPublicHash: 'sha256:' + '3'.repeat(64),
 };
 const osvProjection = {
   osvProjectionVersion: '2026-07-15T03-54-00Z-a1b2c3d4-7a3f2c8e1b9d',
@@ -286,19 +297,33 @@ console.log('[5] derivePublicState composite');
 const state1 = pubMod.derivePublicState({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection });
 assert('derivePublicState returns all four hashes', state1.datasetPublicHash && state1.vulnrichmentPublicHash && state1.githubAdvisoryPublicHash);
 assert('publicStateHash is deterministic', state1.publicStateHash === pubMod.derivePublicState({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection }).publicStateHash);
-// Cache change -> new publicStateHash
+// Cache change -> new publicStateHash. The V6.1 contract:
+// the per-Blob public hash is recomputed at WRITE TIME
+// when the cache content changes. We simulate a fresh
+// write by also updating the stored hash.
+const newVulnCache = {
+  ...vulnrichmentCache,
+  records: { ...vulnrichmentCache.records, 'CVE-2024-NEW': { ssvc: { ssvcExploitation: 'poc' } } },
+  // The new write-time hash reflects the new records.
+  vulnrichmentPublicHash: 'sha256:' + 'a'.repeat(64),
+};
 const state2 = pubMod.derivePublicState({
   datasetEnvelope,
-  vulnrichmentCache: { ...vulnrichmentCache, records: { ...vulnrichmentCache.records, 'CVE-2024-NEW': { ssvc: { ssvcExploitation: 'poc' } } } },
+  vulnrichmentCache: newVulnCache,
   githubAdvisoryCache,
   osvProjection,
 });
 assert('Cache change produces a new publicStateHash', state1.publicStateHash !== state2.publicStateHash);
-// Internal-only change -> SAME publicStateHash (V6.1 invariant: the
-// internal hash metadata fields do not affect the public content
-// hash; only the publicly projected fields do).
+// Truly-internal change -> SAME publicStateHash (V6.1
+// invariant: the internal operator-metadata fields do
+// not affect the public content hash; only the
+// publicly projected fields do). The datasetPublicHash
+// is NOT internal — it represents the public content of
+// the dataset envelope, so a change to it changes the
+// publicStateHash. We change `lastRefreshAttemptAt`
+// instead.
 const state3 = pubMod.derivePublicState({
-  datasetEnvelope: { ...datasetEnvelope, datasetPublicHash: 'sha256:' + 'f'.repeat(64) },
+  datasetEnvelope: { ...datasetEnvelope, lastRefreshAttemptAt: '2099-12-31T00:00:00.000Z' },
   vulnrichmentCache, githubAdvisoryCache, osvProjection,
 });
 assert('Internal-only change does NOT change publicStateHash',
@@ -371,7 +396,15 @@ assert('First publish produces a publicStateHash',
   pub3a.publicStateHash);
 const pub3b = await pubMod.publishDatasetBound(store3, {
   datasetEnvelope,
-  vulnrichmentCache: { ...vulnrichmentCache, records: { ...vulnrichmentCache.records, 'CVE-2024-NEW2': { ssvc: { ssvcExploitation: 'poc' } } } },
+  // Simulate a fresh write-time hash reflecting the
+  // updated records. The V6.1 contract is that the
+  // per-Blob public hash is recomputed at WRITE TIME
+  // when the cache content changes.
+  vulnrichmentCache: {
+    ...vulnrichmentCache,
+    records: { ...vulnrichmentCache.records, 'CVE-2024-NEW2': { ssvc: { ssvcExploitation: 'poc' } } },
+    vulnrichmentPublicHash: 'sha256:' + 'b'.repeat(64),
+  },
   githubAdvisoryCache,
   osvProjection,
   now,

@@ -77,6 +77,7 @@ export function stripForPublicHash(envelope) {
     'lastOsvProjectionRefresh',
     'lastChangeIntelligenceRefresh',
     'lastChangeIntelligenceBaseVersion',
+    'lastV61DatasetBoundRefresh',
     '_publicHash',
   ];
   for (const f of internal) delete out[f];

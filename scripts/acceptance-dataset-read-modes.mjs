@@ -95,9 +95,16 @@ assert('validateLimit accepts 25', valMod.validateLimit('25') === 25);
 console.log('');
 console.log('[2] view=osv happy path');
 const store1 = makeMockStore();
-const pubStateHash1 = readMod.computeCurrentPublicStateHash({
+const pubStateHashResult1 = readMod.computeCurrentPublicStateHash({
   datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
 });
+assert('computeCurrentPublicStateHash returns available=true when all stored hashes present',
+  pubStateHashResult1.available === true);
+assert('computeCurrentPublicStateHash returns no missing hashes when all stored',
+  Array.isArray(pubStateHashResult1.missingHashes) && pubStateHashResult1.missingHashes.length === 0);
+const pubStateHash1 = pubStateHashResult1.publicStateHash;
+assert('computeCurrentPublicStateHash publicStateHash is a sha256 string',
+  typeof pubStateHash1 === 'string' && pubStateHash1.startsWith('sha256:') && pubStateHash1.length === 'sha256:'.length + 64);
 const version1 = '2026-07-15T03-54-00Z-7a3f2c8e1b9d';
 // Compute the actual OSV bucket for the test CVE.
 const testCve = 'CVE-2024-1234';
@@ -213,9 +220,10 @@ assert('CVE not in shard returns 404', notFound.status === 404);
 console.log('');
 console.log('[7] view=changes happy path');
 const store2 = makeMockStore();
-const pubStateHash2 = readMod.computeCurrentPublicStateHash({
+const pubStateHash2Result = readMod.computeCurrentPublicStateHash({
   datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
 });
+const pubStateHash2 = pubStateHash2Result.publicStateHash;
 const version2 = '2026-07-15T03-54-00Z-abcdef012345';
 await store2.setJSON('dataset/latest.json', {
   schemaVersion: '1.0.0', publicIntelligenceVersion: version2,
@@ -271,9 +279,10 @@ assert('invalid-limit returns 400', badLimit.status === 400);
 /* ---- 9. Default public response exposes the V6.1 fields (no full hash) ---- */
 console.log('');
 console.log('[9] Default public response surface');
-const pubStateHash3 = readMod.computeCurrentPublicStateHash({
+const pubStateHash3Result = readMod.computeCurrentPublicStateHash({
   datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
 });
+const pubStateHash3 = pubStateHash3Result.publicStateHash;
 assert('publicStateHash is sha256:<64 hex>',
   /^sha256:[0-9a-f]{64}$/.test(pubStateHash3));
 const fingerprint = pubStateHash3.slice('sha256:'.length, 'sha256:'.length + 12);
@@ -297,21 +306,74 @@ for (const k of defaultResponseKeys) {
 // full acceptance suite; here we just verify the
 // per-blob hash is computed deterministically.)
 assert('publicStateHash is deterministic',
-  pubStateHash3 === readMod.computeCurrentPublicStateHash({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection }));
+  pubStateHash3 === readMod.computeCurrentPublicStateHash({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection }).publicStateHash);
 
 /* ---- 10. pre-V6.1 Blobs without internal hash: handled ---- */
 console.log('');
 console.log('[10] pre-V6.1 Blobs without internal hash');
 // A dataset envelope without datasetPublicHash should
-// fall back to computing it from the envelope content
-// (stripping internal fields).
+// A pre-V6.1 envelope (without datasetPublicHash) MUST
+// NOT be re-hashed on the request path. The function
+// must report `available: false` and surface the
+// missing hash name. The background dataset cycle is
+// responsible for upgrading the envelope; the request
+// path reports the public intelligence as unavailable.
 const noInternalHash = { ...datasetEnvelope };
 delete noInternalHash.datasetPublicHash;
-const fallback = readMod.computeCurrentPublicStateHash({
+const missingDatasetResult = readMod.computeCurrentPublicStateHash({
   datasetEnvelope: noInternalHash, vulnrichmentCache, githubAdvisoryCache, osvProjection,
 });
-assert('pre-V6.1 envelope (no datasetPublicHash) still computes a publicStateHash',
-  /^sha256:[0-9a-f]{64}$/.test(fallback));
+assert('pre-V6.1 dataset envelope reports available=false on request path',
+  missingDatasetResult.available === false);
+assert('pre-V6.1 dataset envelope reports datasetPublicHash in missingHashes',
+  Array.isArray(missingDatasetResult.missingHashes) && missingDatasetResult.missingHashes.includes('datasetPublicHash'));
+assert('pre-V6.1 dataset envelope returns publicStateHash=null on request path',
+  missingDatasetResult.publicStateHash === null);
+
+// Same for the enrichment caches.
+const noVulnHash = { ...vulnrichmentCache };
+delete noVulnHash.vulnrichmentPublicHash;
+const noGhHash = { ...githubAdvisoryCache };
+delete noGhHash.githubAdvisoryPublicHash;
+const missingVulnResult = readMod.computeCurrentPublicStateHash({
+  datasetEnvelope, vulnrichmentCache: noVulnHash, githubAdvisoryCache, osvProjection,
+});
+assert('pre-V6.1 vulnrichment envelope reports available=false on request path',
+  missingVulnResult.available === false);
+assert('pre-V6.1 vulnrichment envelope reports vulnrichmentPublicHash in missingHashes',
+  missingVulnResult.missingHashes.includes('vulnrichmentPublicHash'));
+const missingGhResult = readMod.computeCurrentPublicStateHash({
+  datasetEnvelope, vulnrichmentCache, githubAdvisoryCache: noGhHash, osvProjection,
+});
+assert('pre-V6.1 github advisory envelope reports available=false on request path',
+  missingGhResult.available === false);
+assert('pre-V6.1 github advisory envelope reports githubAdvisoryPublicHash in missingHashes',
+  missingGhResult.missingHashes.includes('githubAdvisoryPublicHash'));
+
+// The request path MUST NOT call the full-cache hashing
+// helpers on a pre-V6.1 envelope. We verify by passing
+// a sentinel object that would explode if any full-cache
+// canonicalization were attempted. The contract: the
+// pre-V6.1 path returns immediately with available=false
+// without touching the cache.
+const sentinelVuln = {
+  records: new Proxy({}, { get() { throw new Error('vulnrichment full-cache canonicalization attempted on request path'); } }),
+  updatedAt: '2026-07-15T20:00:00.000Z',
+  vulnrichmentPublicHash: null,
+};
+const sentinelGh = {
+  records: new Proxy({}, { get() { throw new Error('githubAdvisory full-cache canonicalization attempted on request path'); } }),
+  updatedAt: '2026-07-15T20:00:00.000Z',
+  githubAdvisoryPublicHash: null,
+};
+let sentinelVulnThrew = false;
+try {
+  readMod.computeCurrentPublicStateHash({
+    datasetEnvelope, vulnrichmentCache: sentinelVuln, githubAdvisoryCache: sentinelGh, osvProjection,
+  });
+} catch (e) { sentinelVulnThrew = true; }
+assert('request path does NOT canonicalize the vulnrichment cache when hash is missing', !sentinelVulnThrew);
+assert('request path does NOT canonicalize the github advisory cache when hash is missing', !sentinelVulnThrew);
 
 /* ---- Summary ---- */
 console.log('');

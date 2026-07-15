@@ -53,8 +53,6 @@ import {
 } from './publicIntelligenceStore.mjs';
 import {
   computePublicStateHash,
-  computeDatasetPublicHash,
-  computeEnrichmentPublicHash,
   derivePublicIntelligenceVersion,
   computePublicHash,
   PUBLIC_PROJECTION_SCHEMA_VERSION,
@@ -76,12 +74,35 @@ import { buildSourceHealthBlob } from './sourceHealth.mjs';
 
 /**
  * Compute the four-hash composite public state hash from
- * the four currently-served state pieces. Pure.
+ * the four precomputed, write-time-computed stored
+ * hashes. The publisher NEVER synchronously re-hashes
+ * the full Vulnrichment or GitHub Advisory caches; the
+ * hashes must be present in the envelope. If a required
+ * stored hash is missing, the function returns
+ * `{ publicStateHash: null, available: false, missingHashes: [...] }`
+ * so the caller can return a structured skip rather than
+ * publishing a bundle with a guessed hash.
+ *
+ * The background chain (see
+ * `upgradeLegacyEnvelopes` in
+ * `v61BackgroundChain.mjs`) is responsible for upgrading
+ * pre-V6.1 envelopes to carry the stored hash before
+ * the publisher is invoked.
  */
 export function derivePublicState({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection } = {}) {
-  const datasetPublicHash = computeDatasetPublicHash(datasetEnvelope);
-  const vulnrichmentPublicHash = computeEnrichmentPublicHash(vulnrichmentCache);
-  const githubAdvisoryPublicHash = computeEnrichmentPublicHash(githubAdvisoryCache);
+  const missing = [];
+  const datasetPublicHash = (datasetEnvelope && typeof datasetEnvelope.datasetPublicHash === 'string')
+    ? datasetEnvelope.datasetPublicHash
+    : (missing.push('datasetPublicHash'), null);
+  const vulnrichmentPublicHash = (vulnrichmentCache && typeof vulnrichmentCache.vulnrichmentPublicHash === 'string')
+    ? vulnrichmentCache.vulnrichmentPublicHash
+    : (missing.push('vulnrichmentPublicHash'), null);
+  const githubAdvisoryPublicHash = (githubAdvisoryCache && typeof githubAdvisoryCache.githubAdvisoryPublicHash === 'string')
+    ? githubAdvisoryCache.githubAdvisoryPublicHash
+    : (missing.push('githubAdvisoryPublicHash'), null);
+  if (missing.length > 0) {
+    return { publicStateHash: null, available: false, missingHashes: missing };
+  }
   const referencedOsvProjectionVersion = osvProjection && osvProjection.osvProjectionVersion
     ? osvProjection.osvProjectionVersion
     : null;
@@ -104,6 +125,8 @@ export function derivePublicState({ datasetEnvelope, vulnrichmentCache, githubAd
     referencedOsvProjectionVersion,
     referencedOsvProjectionContentHash,
     publicStateHash,
+    available: true,
+    missingHashes: [],
   };
 }
 
@@ -144,9 +167,15 @@ export function buildDatasetManifest({
     throw new Error('buildDatasetManifest: datasetEnvelope.fetchedAt is required');
   }
   // datasetContentHash: the V6.0 contentHash of the public
-  // dataset envelope (INTERNAL_BLOB_FIELDS stripped). This
-  // is the same value as datasetPublicHash.
-  const datasetContentHash = computeDatasetPublicHash(datasetEnvelope);
+  // The dataset envelope's public hash is the precomputed
+  // write-time value stored in the envelope. We do NOT
+  // re-canonicalize the envelope on the publisher path —
+  // the same value is used for both the per-Blob hash
+  // and the datasetContentHash field. The background
+  // chain guarantees this field is present (see
+  // `upgradeLegacyEnvelopes` in
+  // `v61BackgroundChain.mjs`).
+  const datasetContentHash = datasetEnvelope.datasetPublicHash;
   const publicIntelligenceVersion = derivePublicIntelligenceVersion(generatedAt, publicStateHash);
   return {
     schemaVersion: '1.0.0',
@@ -276,8 +305,16 @@ export async function publishDatasetBound(store, {
   if (!store) throw new Error('publishDatasetBound: store is required');
   if (!datasetEnvelope) throw new Error('publishDatasetBound: datasetEnvelope is required');
 
-  // Compute the composite public state hash.
+  // Compute the composite public state hash. If any
+  // required stored hash is missing, the publisher
+  // returns a structured skip rather than publishing a
+  // bundle with a guessed hash. The background chain is
+  // responsible for upgrading pre-V6.1 envelopes before
+  // invoking the publisher.
   const state = derivePublicState({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection });
+  if (!state.available) {
+    return { skipped: true, reason: 'missing-stored-hash', missingHashes: state.missingHashes };
+  }
 
   // Read the previous latest.json for the previousPublicIntelligenceVersion
   // reference.

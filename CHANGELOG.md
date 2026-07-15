@@ -166,10 +166,13 @@ existing Blob envelopes; no new env var carries them.
 
 ### Test summary
 
-V6.1 adds 6 new behavior suites with 437 total
-assertions. All 19 existing V5.x + V6.0 acceptance
-scripts pass unchanged. The V5.7 CSV column count
-remains exactly 21.
+V6.1 adds 8 new behavior suites across the seven
+logical commits: foundations, OSV projections,
+dataset-bound snapshots, change intelligence, dataset
+read modes, source health and changes UI, release
+limits, and production wiring. All 19 existing V5.x
++ V6.0 acceptance scripts pass unchanged. The V5.7
+CSV column count remains exactly 21.
 
 ### Files added or modified
 
