@@ -7,6 +7,240 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## V6.1 — Public intelligence, source transparency, OSV context, and change intelligence
+
+V6.1 makes the public dashboard honest about which data
+sources contribute to the current dataset, where each
+vulnerability came from, how OSV (the canonical
+baseline) describes it, and what has changed since the
+previous successful publication. The V5.7 public surface
+is preserved; the V6.0 canonical baseline is unchanged;
+the private gateway is byte-identical; the V5.7 CSV
+remains exactly 21 columns.
+
+### What this release adds
+
+- **Source Health panel.** A compact summary bar with
+  six source chips (CISA KEV, NVD, FIRST EPSS, CISA
+  Vulnrichment, GitHub Advisory Database, OSV). Each
+  chip shows a derived state (`unknown` / `fresh` /
+  `partial` / `stale` / `unavailable`) and a coverage
+  count. Clicking a chip expands a detail card with
+  purpose, limitations, official-source link, refresh
+  schedule, and threshold. No env-var names appear in
+  any field.
+- **"What changed" panel.** A six-category panel
+  (Newly tracked, No longer tracked, Fact newly
+  available, Fact changed, Fact no longer present,
+  Provider status changed) that surfaces a
+  deterministic diff between the previous successful
+  public-intelligence version and the current one. The
+  panel-local filter is isolated from the main
+  `VulnerabilityFilters`, the Defender Views presets,
+  the main table, and the CSV export.
+- **OSV section in the DetailDrawer.** A new third
+  context section (between SSVC and External references)
+  showing the bounded per-CVE public OSV projection:
+  OSV id, ecosystem, aliases, modified timestamp,
+  status (Active or Withdrawn), affected packages with
+  provider-native range events rendered verbatim, and
+  First fixed. The empty-state copy is locked:
+  "No OSV record is currently available in this
+  ThreatPulse snapshot."
+- **Composite publicStateHash.** A precomputed hash
+  of the dataset envelope + Vulnrichment cache + GitHub
+  Advisory cache + referenced OSV projection. The hash
+  is stored internally in each Blob envelope
+  (`datasetPublicHash`, `vulnrichmentPublicHash`,
+  `githubAdvisoryPublicHash` — all added to
+  `INTERNAL_BLOB_FIELDS`). The public request path
+  reads data and hash from the same Blob read; no
+  re-hashing on the read path.
+- **Bounded dataset function read modes.** The
+  existing `dataset.mjs` function is extended (no new
+  function entry file) with `view=osv` and
+  `view=changes` query modes. Both modes enforce the
+  current-compatible-version-only rule: the requested
+  version MUST equal the currently-attached
+  `publicIntelligenceVersion`. Arbitrary
+  retained-version browsing is not exposed.
+- **Mark-and-sweep OSV shard GC.** Content-addressed
+  OSV shards are never deleted based on timestamp or
+  age. Only unreferenced shards (not in any retained
+  manifest) are eligible for deletion. GC failure
+  leaves both latest pointers and all referenced
+  shards usable.
+- **Skip-unchanged publication.** When the
+  `publicStateHash` matches the previous version, the
+  publisher exits without writing any artifact. When
+  the OSV manifest hash matches, the OSV publisher
+  exits. This significantly reduces write operations
+  on quiet days.
+
+### What this release explicitly does NOT add
+
+- No new public function entry file. The dataset
+  function is extended; the public function entry
+  count remains 5.
+- No new gateway function entry file. The private
+  gateway subtree is byte-identical to V6.0.0.
+- No new Netlify environment variable.
+- No new cross-site access token.
+- No new top-level function entry file on the public
+  site or the gateway.
+- No new CSV column. The V5.7 CSV remains exactly 21
+  columns.
+- No new table column, header pill, or combined
+  score.
+- No browser-originated upstream provider request.
+  Official-source hyperlinks are rendered as
+  `<a target="_blank" rel="noopener noreferrer">`; the
+  browser never calls `fetch` to any provider host.
+- No new V6.0 canonical-baseline changes. The
+  canonical baseline, the private gateway, the
+  consumer client, and the consumer contract are
+  byte-identical to V6.0.0.
+- No new provider. V6.1 is a transparency + context
+  milestone; the next provider is a post-V6.1 concern.
+- No new V6.0 baseline write. The public-intelligence
+  bundle is independently versioned; the canonical
+  baseline manifest is unchanged.
+- No production deployment. The Netlify credit
+  allowance resets on August 7; production deploy is
+  deferred until then.
+
+### Topology
+
+V6.1 adds a single new Blob store (`tpr-public-intelligence`)
+on the public site. The store is owned by the public
+site's local Netlify Blobs runtime context; no cross-site
+access, no new env var, no new token. The store has
+two sub-trees:
+
+- `osv/` — content-addressed shards, per-version
+  manifest, latest pointer, publication lock. Published
+  from the V6.0 canonical pipeline (hourly cadence).
+- `dataset/` — per-version manifest, public comparison
+  snapshot (gzipped), source-health observations
+  (gzipped), changes items (gzipped), latest pointer,
+  publication lock, aggregate change summaries. Published
+  from the V5.2 dataset pipeline (30-min cadence).
+
+The canonical-baseline pipeline and the dataset
+pipeline each call their respective sub-step inside
+their existing publication lock windows. The
+publication locks are best-effort and never block
+publication.
+
+### Operational entries (V6.1)
+
+No new env vars. The V6.0 env-var contract is preserved
+in full. The precomputed public hashes are written into
+existing Blob envelopes; no new env var carries them.
+
+### V6.1 invariants (and the test names that verify them)
+
+- **The five public states are mutually exclusive and
+  exhaustive.** `acceptance-source-health.mjs`
+  verifies all 5 states.
+- **No env-var name appears in any public response.**
+  `acceptance-deployment-hardening.mjs` extends the
+  V6.0 check to all new fields.
+- **Official-source hyperlinks are `https://` only.**
+  `acceptance-source-health-and-changes-ui.mjs` asserts
+  the link policy.
+- **The browser never fetches upstream providers.**
+  `acceptance-source-health-and-changes-ui.mjs` greps
+  the bundled output for `fetch` / `XMLHttpRequest` /
+  `axios` calls to provider hosts.
+- **The OSV section's empty-state copy is locked.**
+  `acceptance-source-health-and-changes-ui.mjs` asserts
+  the exact copy and forbids "not in OSV" / "no fix".
+- **The panel-local filter does not modify the main
+  filters.** `acceptance-source-health-and-changes-ui.mjs`
+  asserts isolation.
+- **The default V6.1 response exposes the 5 documented
+  public fields and does NOT expose the full
+  publicStateHash.** `acceptance-dataset-read-modes.mjs`
+  asserts this.
+
+### Test summary
+
+V6.1 adds 6 new behavior suites with 437 total
+assertions. All 19 existing V5.x + V6.0 acceptance
+scripts pass unchanged. The V5.7 CSV column count
+remains exactly 21.
+
+### Files added or modified
+
+- **New shared modules**:
+  `netlify/functions/_shared/{publicIntelligenceStore,
+   publicIntelligenceHash, publicIntelligenceSize,
+   publicIntelligenceValidation,
+   publicIntelligenceCompression,
+   publicIntelligenceBucket,
+   osvPublicProjection, osvProjectionPublish,
+   osvProjectionGc, publicSnapshot,
+   datasetBoundPublish, changeIntelligence,
+   datasetPublicIntelligenceRead}.mjs`
+- **New schemas**:
+  `schemas/{osv-shard-v1, dataset-bundle-manifest-v1,
+   public-snapshot-v1, source-health-public-v1,
+   change-intelligence-v1}.schema.json`
+- **New source-registry 1.1.0** (additive over V6.0):
+  `schemas/source-registry-v1.1.schema.json`
+- **Modified existing modules**:
+  `netlify/functions/_shared/{refresh,
+   vulnrichmentRefresh, githubAdvisoryRefresh,
+   publicIntelligenceHash, publicIntelligenceStore}.mjs`
+  — precomputed public hashes added to the
+  respective Blob envelopes; `INTERNAL_BLOB_FIELDS`
+  extended with the V6.1 internal fields.
+- **Extended dataset function**:
+  `netlify/functions/dataset.mjs` — `view=osv` and
+  `view=changes` query modes; default mode carries the
+  V6.1 aggregate fields.
+- **New TypeScript types**:
+  `src/types/{osv,change,sourceHealth}.ts`
+- **New frontend components**:
+  `src/components/{SourceHealthPanel,SourceStatusChip,
+   SourceStatusCard,ChangeIntelligencePanel,
+   ChangeItemRow}.tsx` and
+  `src/components/drawer/OsvContext.tsx`
+- **Modified existing frontend files**:
+  `src/components/DetailDrawer.tsx` (OSV section),
+  `src/pages/DashboardPage.tsx` (panels wiring),
+  `src/services/vulnerabilityService.ts`
+  (V6.1 fetchers), `src/types/vulnerability.ts`
+  (V6.1 fields).
+- **New acceptance suites**:
+  `scripts/acceptance-{public-intelligence-foundations,
+   osv-public-projections, dataset-bound-snapshots,
+   change-intelligence, dataset-read-modes,
+   source-health-and-changes-ui}.mjs`
+- **New docs**:
+  `docs/{public-intelligence,source-transparency,
+   osv-context,change-intelligence}.md`
+- **CHANGELOG.md** — this entry.
+
+### Why this is a substantial release
+
+V6.1 changes the public dashboard's transparency and
+context surface without changing the V5.7 dashboard
+data plane. The new Source Health, What Changed, and
+OSV drawer sections are user-visible additions; the
+composite publicStateHash, the per-Blob internal hash
+metadata, the two-cadence publication model, the
+content-addressed OSV shards, the mark-and-sweep GC,
+the skip-unchanged publication, the bounded dataset
+function read modes, the deterministic change
+classifications, and the per-CVE observation states
+together represent a substantial internal-architecture
+milestone with a clear user-facing surface. The next
+release in this line will be V6.2, focused on
+long-term change intelligence (the 30-day rollup view
+that the V6.1 retention policy does not yet expose).
+
 ## V6.0 — Canonical baseline (private data plane)
 
 V6.0 introduces a **canonical baseline**: a content-addressed,
