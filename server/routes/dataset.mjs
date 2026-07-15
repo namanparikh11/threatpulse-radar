@@ -141,6 +141,19 @@ function emptyEnvelope() {
     source: 'portable-server',
     fetchedAt: null,
     data: [],
+    // The V6.1 fields are always present so the
+    // portable response shape is a superset of the
+    // Netlify public response. When there is no
+    // dataset envelope yet, the public intelligence
+    // status is `unavailable` — the same default the
+    // Netlify public function returns.
+    publicIntelligenceStatus: 'unavailable',
+    publicIntelligenceVersion: null,
+    publicStateFingerprint: null,
+    sources: [],
+    changeSummary: null,
+    comparableAxes: [],
+    suppressedAxes: [],
   };
 }
 

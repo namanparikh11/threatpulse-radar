@@ -147,7 +147,7 @@ function adapterFor(key) {
   if (key === 'latest-dataset') return datasetAdapter;
   if (key === 'cache') return null; // ambiguous; handled below
   if (key === 'manifests/latest.json') return baselineAdapter;
-  if (key === 'osv/latest.json' || key === 'dataset/latest.json' || key.startsWith('osv/shards/') || key.startsWith('dataset/versions/')) return intelAdapter;
+  if (key === 'osv/latest.json' || key === 'dataset/latest.json' || key.startsWith('osv/shards/') || key.startsWith('osv/versions/') || key.startsWith('dataset/versions/')) return intelAdapter;
   return null;
 }
 
@@ -167,9 +167,10 @@ for (const compositeKey of Object.keys(checksums)) {
   }
   const adapter = adapterFor(key);
   if (!adapter) { failed++; continue; }
-  // JSON values are stored as JSON, binary values as
-  // arrayBuffer.
-  if (key.startsWith('osv/shards/') || key.startsWith('dataset/versions/')) {
+  // OSV shards and dataset snapshot blobs are gzipped
+  // binaries; everything else in the public
+  // intelligence namespace is JSON.
+  if (key.startsWith('osv/shards/') || key.endsWith('.json.gz')) {
     await adapter.set(key, buf, { type: 'arrayBuffer' });
   } else {
     try {
@@ -207,8 +208,8 @@ function mapKeyToStagingPath(stagingRoot, entry) {
     const name = key.split('/').pop();
     return join(stagingRoot, 'public-intelligence', 'osv-shards', name);
   }
-  if (key.startsWith('dataset/versions/')) {
-    return join(stagingRoot, 'public-intelligence', 'dataset-versions', key.replace(/\//g, '__'));
+  if (key.startsWith('osv/versions/') || key.startsWith('dataset/versions/')) {
+    return join(stagingRoot, 'public-intelligence', key.split('/').join(sep));
   }
   return null;
 }

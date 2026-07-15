@@ -27,7 +27,7 @@
  */
 
 import { promises as fsp, mkdirSync, existsSync, writeFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
@@ -149,6 +149,19 @@ await maybeExport(baselineAdapter, 'manifests/latest.json', join(stagingDir, 'ba
 // Public intelligence
 await maybeExport(intelAdapter, 'osv/latest.json', join(stagingDir, 'public-intelligence', 'osv-latest.json'), 'osv-latest');
 await maybeExport(intelAdapter, 'dataset/latest.json', join(stagingDir, 'public-intelligence', 'dataset-latest.json'), 'dataset-latest');
+// List the OSV version manifests. The manifest at
+// `osv/versions/<v>/manifest.json` is the file the
+// public-intelligence latest pointer references; the
+// exporter MUST include it so the importer can
+// reconstruct the bundle.
+const osvVersionsList = await intelAdapter.list({ prefix: 'osv/versions/' });
+for (const entry of osvVersionsList.blobs || []) {
+  // Preserve the directory structure under staging so
+  // the importer can write the manifest back to its
+  // original key path.
+  const targetPath = join(stagingDir, 'public-intelligence', entry.key.split('/').join(sep));
+  await maybeExport(intelAdapter, entry.key, targetPath, `osv-version:${entry.key}`);
+}
 // List the OSV shards. The shard files are exported
 // into the tar under their full relative path so the
 // importer can reconstruct the original directory
@@ -162,12 +175,15 @@ for (const entry of osvList.blobs || []) {
   const targetPath = join(stagingDir, 'public-intelligence', 'osv-shards', fileName);
   await maybeExport(intelAdapter, entry.key, targetPath, `osv-shard:${entry.key}`, true);
 }
-// List the dataset bundle
+// List the dataset bundle. Preserve the directory
+// structure (dataset/versions/<v>/manifest.json,
+// dataset/versions/<v>/snapshot.json, ...) so the
+// importer can write the bundle back to its original
+// key paths.
 const datasetList = await intelAdapter.list({ prefix: 'dataset/versions/' });
 for (const entry of datasetList.blobs || []) {
-  // Keep the dataset/versions/ prefix in the tar entry
-  // name so the importer can reconstruct the layout.
-  await maybeExport(intelAdapter, entry.key, join(stagingDir, 'public-intelligence', 'dataset-versions', entry.key.split('/').slice(2).join('__')), `dataset-version:${entry.key}`, true);
+  const targetPath = join(stagingDir, 'public-intelligence', entry.key.split('/').join(sep));
+  await maybeExport(intelAdapter, entry.key, targetPath, `dataset-version:${entry.key}`);
 }
 
 // Write the checksums file and the metadata.
@@ -235,20 +251,35 @@ async function listFiles(dir) {
 function makeTarHeader(name, size, mtime) {
   // Standard ustar header. 512-byte block.
   const buf = Buffer.alloc(512, 0);
-  // name (100 bytes). Use the prefix extension for long names.
+  // Name (100 bytes at offset 0..99). When the name
+  // is longer than 100 bytes, the ustar extension
+  // stores the first path segment in the prefix field
+  // (offset 345..499, 155 bytes) and the remainder
+  // (everything after the first slash) in the name
+  // field. The prefix and name MUST be written to
+  // their canonical offsets; the previous version of
+  // this function wrote the prefix at offset 0, which
+  // the subsequent name write then overwrote —
+  // truncating the path on import.
   let nameField = name;
+  let prefixField = '';
   if (name.length > 100) {
     const idx = name.indexOf('/');
-    const prefix = idx >= 0 ? name.slice(0, idx) : '';
-    const remainder = idx >= 0 ? name.slice(idx + 1) : name;
-    if (prefix.length <= 155 && remainder.length <= 100) {
-      buf.write(prefix, 0, 155, 'utf8');
-      nameField = remainder;
+    if (idx >= 0) {
+      const head = name.slice(0, idx);
+      const tail = name.slice(idx + 1);
+      if (head.length <= 155 && tail.length <= 100) {
+        prefixField = head;
+        nameField = tail;
+      } else {
+        nameField = name.slice(0, 100);
+      }
     } else {
       nameField = name.slice(0, 100);
     }
   }
   buf.write(nameField, 0, 100, 'utf8');
+  if (prefixField) buf.write(prefixField, 345, 155, 'utf8');
   // mode
   buf.write('0000644', 100, 8, 'utf8');
   // uid

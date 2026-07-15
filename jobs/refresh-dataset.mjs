@@ -65,6 +65,19 @@ try {
   process.exit(EXIT_CODES.STORAGE_FAILURE);
 }
 
+if (args.dryRun) {
+  // Dry-run path: do NOT acquire the refresh lock or
+  // touch the storage adapter. The Netlify adapter
+  // throws when the runtime is missing; the dry-run
+  // path is purely informational.
+  logLine('refresh.dry-run', { backend: storage.backend });
+  console.log(`ThreatPulse refresh-dataset (dry-run)`);
+  console.log(`  backend: ${storage.backend}`);
+  console.log(`  data root: ${storage.dataRoot || '(netlify runtime)'}`);
+  console.log(`  would invoke runRefresh with the shared refresh module`);
+  process.exit(EXIT_CODES.SUCCESS);
+}
+
 installSignalHandlers(async () => {
   await releaseLock(storage.store, 'refresh-lock');
 });
@@ -79,16 +92,6 @@ if (!lock.acquired) {
 }
 
 logLine('refresh.start', { store: storage.backend, dryRun: args.dryRun, owner: lockOwner });
-
-if (args.dryRun) {
-  logLine('refresh.dry-run', { owner: lockOwner });
-  console.log(`ThreatPulse refresh-dataset (dry-run)`);
-  console.log(`  backend: ${storage.backend}`);
-  console.log(`  data root: ${storage.dataRoot || '(netlify runtime)'}`);
-  console.log(`  would invoke runRefresh with the shared refresh module`);
-  await releaseLock(storage.store, lockKey);
-  process.exit(EXIT_CODES.SUCCESS);
-}
 
 // The actual refresh logic lives in refresh.mjs. It
 // imports the store helpers which auto-detect the

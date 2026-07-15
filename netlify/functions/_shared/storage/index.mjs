@@ -28,6 +28,8 @@
 import { join as pathJoin } from 'node:path';
 
 import { InMemoryStorageAdapter } from './InMemoryStorageAdapter.mjs';
+import { FilesystemStorageAdapter } from './FilesystemStorageAdapter.mjs';
+import { NetlifyBlobsStorageAdapter } from './NetlifyBlobsStorageAdapter.mjs';
 
 export { StorageAdapter, STORAGE_TYPE, assertValidKey } from './StorageAdapter.mjs';
 export { NetlifyBlobsStorageAdapter } from './NetlifyBlobsStorageAdapter.mjs';
