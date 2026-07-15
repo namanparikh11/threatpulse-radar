@@ -436,6 +436,7 @@ export const INTERNAL_BLOB_FIELDS = new Set([
   'lastOsvProjectionRefresh',
   'lastChangeIntelligenceRefresh',
   'lastChangeIntelligenceBaseVersion',
+  'lastV61DatasetBoundRefresh',
 ]);
 
 /**
@@ -745,6 +746,57 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
     lastGithubAdvisoryRefresh: githubAdvisoryOutcome,
     datasetPublicHash,
   });
+
+  // v6.1: run the dataset-bound public-intelligence
+  // publication chain AFTER the main dataset write and
+  // BOTH enrichment cache writes. The chain reads the
+  // three envelopes back from the Blob stores and uses
+  // the precomputed per-Blob public hashes to compute
+  // the composite publicStateHash. A failure of the
+  // V6.1 chain NEVER downgrades the main refresh's
+  // 'completed' status; the main refresh remains
+  // successful.
+  let v61DatasetBoundOutcome = null;
+  try {
+    const { runDatasetPublicationChain } = await import('./v61BackgroundChain.mjs');
+    const vulnStore = getVulnrichmentStore();
+    const ghStore = getGithubAdvisoryStore();
+    v61DatasetBoundOutcome = await runDatasetPublicationChain({
+      datasetStore: store,
+      vulnrichmentStore: vulnStore,
+      githubAdvisoryStore: ghStore,
+      now,
+    });
+  } catch (err) {
+    // Defensive: the chain's contract is to never throw,
+    // but a defensive catch here keeps the main refresh's
+    // 'completed' status honest even if a future
+    // regression introduces a throw.
+    v61DatasetBoundOutcome = {
+      skipped: true,
+      reason: 'chain-threw',
+      error: err && err.message ? err.message : String(err),
+    };
+  }
+
+  // v6.1: stamp the V6.1 dataset-bound publication
+  // outcome on the dataset envelope so operators can see
+  // the chain's status without inspecting the Blobs
+  // store directly. The metadata is internal and is
+  // stripped from the public response.
+  try {
+    const latest = await readLatestDataset(store);
+    if (latest) {
+      await writeLatestDataset(store, {
+        ...latest,
+        lastV61DatasetBoundRefresh: v61DatasetBoundOutcome,
+      });
+    }
+  } catch {
+    // Best-effort metadata write; a failure here is
+    // non-fatal.
+  }
+
   if (!isNvdRateLimitedReason(envelope)) {
     await clearNvdCooldown(store);
   } else {

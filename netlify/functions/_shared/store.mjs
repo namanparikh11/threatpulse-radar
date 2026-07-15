@@ -470,6 +470,20 @@ export async function readVulnrichmentCache(store) {
     return {
       records: blob.records,
       updatedAt: typeof blob.updatedAt === 'string' ? blob.updatedAt : null,
+      // v6.1: surface the precomputed per-Blob public hash
+      // so the V6.1 dataset-bound publication can read it
+      // directly from the same Blob read that returned the
+      // data. The hash is a stable, write-time-computed
+      // fingerprint of the public projection; it MUST be
+      // stripped from public responses by the public-read
+      // path. Old envelopes without the hash are tolerated
+      // (returned with `vulnrichmentPublicHash: null`); the
+      // V6.1 chain treats null as a structured skip until
+      // the next successful refresh upgrades the envelope.
+      vulnrichmentPublicHash:
+        typeof blob.vulnrichmentPublicHash === 'string'
+          ? blob.vulnrichmentPublicHash
+          : null,
     };
   } catch {
     return null;
@@ -529,6 +543,21 @@ export async function readGithubAdvisoryCache(store) {
     return {
       records: blob.records,
       updatedAt: typeof blob.updatedAt === 'string' ? blob.updatedAt : null,
+      // v6.1: surface the precomputed per-Blob public hash
+      // so the V6.1 dataset-bound publication can read it
+      // directly from the same Blob read that returned the
+      // data. The hash is a stable, write-time-computed
+      // fingerprint of the public projection; it MUST be
+      // stripped from public responses by the public-read
+      // path. Old envelopes without the hash are tolerated
+      // (returned with `githubAdvisoryPublicHash: null`);
+      // the V6.1 chain treats null as a structured skip
+      // until the next successful refresh upgrades the
+      // envelope.
+      githubAdvisoryPublicHash:
+        typeof blob.githubAdvisoryPublicHash === 'string'
+          ? blob.githubAdvisoryPublicHash
+          : null,
     };
   } catch {
     return null;

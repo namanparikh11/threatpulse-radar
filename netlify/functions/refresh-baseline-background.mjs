@@ -38,6 +38,7 @@
 import { gzipSync } from 'node:zlib';
 import { getBaselineStore } from './_shared/baselineStore.mjs';
 import { runOsvBackground } from './_shared/osvBackground.mjs';
+import { runBaselinePublicationChain } from './_shared/v61BackgroundChain.mjs';
 import {
   TRIGGER_HEADER,
   TRIGGER_SECRET_ENV_VAR,
@@ -159,7 +160,11 @@ export async function handleRefreshBaselineBackground({
   }
 
   // 4. Build a compact summary. The full manifest is available
-  //    in the Blob store; we only include identifying fields here.
+  //    in the Blob store; we only include identifying fields
+  //    here. The V6.1 sub-result slots (v61OsvProjection,
+  //    v61OsvGc) are surfaced as compact, sanitized tags so
+  //    operators can see the chain outcome without exposing
+  //    hashes, Blob keys, or stack traces.
   const summary = {
     status: lastResult ? lastResult.status : 'failed',
     trigger: triggerName,
@@ -175,8 +180,18 @@ export async function handleRefreshBaselineBackground({
       totalRecords: lastResult.manifest.stats && lastResult.manifest.stats.totalRecords,
     } : null,
     errorCount: lastResult ? (lastResult.errors || []).length : 0,
+    v61: lastResult ? {
+      osvProjection: lastResult.v61OsvProjection && lastResult.v61OsvProjection.skipped === false
+        ? 'published'
+        : (lastResult.v61OsvProjection && lastResult.v61OsvProjection.skipped === true
+            ? `skipped:${lastResult.v61OsvProjection.reason || 'unspecified'}`
+            : 'not-run'),
+      osvGc: lastResult.v61OsvGc && lastResult.v61OsvGc.status === 'ok'
+        ? `ok:retained=${lastResult.v61OsvGc.retained || 0}:deleted=${(lastResult.v61OsvGc.deleted || []).length}`
+        : (lastResult.v61OsvGc ? `failed` : 'not-run'),
+    } : null,
   };
-  console.log(`${logPrefix} iterations=${iterations} totalProcessed=${totalProcessed} publishedCount=${publishedCount} elapsedMs=${summary.elapsedMs} status=${summary.status}`);
+  console.log(`${logPrefix} iterations=${iterations} totalProcessed=${totalProcessed} publishedCount=${publishedCount} elapsedMs=${summary.elapsedMs} status=${summary.status} v61=${summary.v61 ? `${summary.v61.osvProjection}/${summary.v61.osvGc}` : 'n/a'}`);
   return jsonResponse(202, summary);
 }
 
@@ -189,7 +204,7 @@ export default async (request) => {
     request,
     expectedSecret: getTriggerSecretFromEnv(),
     resolveStore: () => getBaselineStore(),
-    runOrchestrator: (args) => runOsvBackground(args),
+    runOrchestrator: (args) => runBaselinePublicationChain({ ...args, runOrchestrator: (a) => runOsvBackground(a) }),
     gzipFn: defaultGzipFn,
   });
 };
