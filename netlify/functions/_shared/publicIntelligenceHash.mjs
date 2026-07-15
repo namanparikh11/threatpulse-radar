@@ -60,15 +60,23 @@ export function computePublicHash(value) {
 export function stripForPublicHash(envelope) {
   if (!envelope || typeof envelope !== 'object') return envelope;
   const out = { ...envelope };
-  // V6.0 INTERNAL_BLOB_FIELDS, mirrored here so the V6.1
-  // hash helpers don't import the refresh module (which would
-  // create a circular import). The V6.0 module remains the
-  // canonical owner of the strip list.
+  // V6.0 + V6.1 INTERNAL_BLOB_FIELDS, mirrored here so the
+  // V6.1 hash helpers don't import the refresh module
+  // (which would create a circular import). The V6.0 module
+  // remains the canonical owner of the strip list.
   const internal = [
     'lastRefreshAttemptAt',
     'lastRefreshFailure',
     'lastVulnrichmentRefresh',
     'lastGithubAdvisoryRefresh',
+    'datasetPublicHash',
+    'vulnrichmentPublicHash',
+    'githubAdvisoryPublicHash',
+    'lastPublicIntelligenceRefresh',
+    'lastSourceHealthRefresh',
+    'lastOsvProjectionRefresh',
+    'lastChangeIntelligenceRefresh',
+    'lastChangeIntelligenceBaseVersion',
     '_publicHash',
   ];
   for (const f of internal) delete out[f];
