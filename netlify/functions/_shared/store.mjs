@@ -89,6 +89,7 @@
  * preserved on the happy path).
  */
 import { getStore } from '@netlify/blobs';
+import { createStorageAdapter, NetlifyBlobsStorageAdapter } from './storage/index.mjs';
 
 /** Netlify Blobs store name. Single source of truth. */
 export const STORE_NAME = 'tpr-dataset';
@@ -172,7 +173,20 @@ export const NVD_COOLDOWN_TTL_MS = 15 * 60 * 1000;
  */
 export function getDatasetStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
-  return getStore({ name: STORE_NAME, consistency });
+  // v6.2: the dataset store is now constructed via the
+  // portable storage adapter. The adapter exposes the
+  // same `get / set / getJSON / setJSON / setBinary /
+  // list / delete` surface that every call site
+  // already uses, so the migration is a no-op for
+  // existing call sites. The legacy `getStore` import
+  // is preserved for the few sites that still need
+  // direct access (e.g. bootstrap state which reads
+  // gzipped JSON in a custom shape).
+  return createStorageAdapter({
+    name: 'netlify',
+    storeName: STORE_NAME,
+    opts: { consistency },
+  });
 }
 
 /**
@@ -184,7 +198,11 @@ export function getDatasetStore(opts = {}) {
  */
 export function getVulnrichmentStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
-  return getStore({ name: VULNRICHMENT_STORE_NAME, consistency });
+  return createStorageAdapter({
+    name: 'netlify',
+    storeName: VULNRICHMENT_STORE_NAME,
+    opts: { consistency },
+  });
 }
 
 /**
@@ -196,7 +214,11 @@ export function getVulnrichmentStore(opts = {}) {
  */
 export function getGithubAdvisoryStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
-  return getStore({ name: GITHUB_ADVISORY_STORE_NAME, consistency });
+  return createStorageAdapter({
+    name: 'netlify',
+    storeName: GITHUB_ADVISORY_STORE_NAME,
+    opts: { consistency },
+  });
 }
 
 /**
