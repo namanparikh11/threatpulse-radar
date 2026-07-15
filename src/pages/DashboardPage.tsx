@@ -12,6 +12,8 @@ import ErrorState from '../components/ErrorState';
 import SeverityChart, { EpssChart } from '../components/charts/SeverityChart';
 import TrendChart from '../components/charts/TrendChart';
 import KevChart from '../components/charts/KevChart';
+import SourceHealthPanel from '../components/SourceHealthPanel';
+import ChangeIntelligencePanel from '../components/ChangeIntelligencePanel';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
 import {
   fetchVulnerabilities,
@@ -23,6 +25,7 @@ import type {
   Vulnerability,
   VulnerabilityFilters,
 } from '../types/vulnerability';
+import type { SourceStatus } from '../types/sourceHealth';
 import { DEFAULT_FILTERS, DEFAULT_SORT } from '../types/vulnerability';
 import {
   computeStats,
@@ -92,6 +95,12 @@ export default function DashboardPage() {
    * when the next poll returns `refreshInProgress: false`.
    */
   const [refreshStatus, setRefreshStatus] = useState<RefreshResult | null>(null);
+  /**
+   * v6.1: which source card to highlight in the Source
+   * Health panel (e.g. when the user clicks the "Provider
+   * status changed" chip in the What Changed panel).
+   */
+  const [highlightSourceId, setHighlightSourceId] = useState<string | null>(null);
   /**
    * v5.1: Refs that mirror the latest `state.meta.fetchedAt`
    * and `dismissedFetchedAt` so the polling closure (started
@@ -381,6 +390,28 @@ export default function DashboardPage() {
             </section>
 
             <TrendChart data={charts.trend} />
+
+            {state.meta.sources && state.meta.sources.length > 0 ? (
+              <SourceHealthPanel
+                sources={state.meta.sources as unknown as SourceStatus[]}
+                highlightId={highlightSourceId}
+              />
+            ) : null}
+
+            {state.meta.changeSummary ? (
+              <ChangeIntelligencePanel
+                changeSummary={state.meta.changeSummary as unknown as import('../types/change').ChangeSummary}
+                comparableAxes={state.meta.comparableAxes || []}
+                suppressedAxes={state.meta.suppressedAxes || []}
+                publicIntelligenceVersion={state.meta.publicIntelligenceVersion ?? null}
+                sources={state.meta.sources as unknown as SourceStatus[]}
+                onOpen={(cveId) => {
+                  const hit = all.find((v) => v.cveId === cveId);
+                  if (hit) setSelected(hit);
+                }}
+                onHighlightSource={(sourceId) => setHighlightSourceId(sourceId)}
+              />
+            ) : null}
 
             <DefenderViewsPanel
               rows={sorted}
