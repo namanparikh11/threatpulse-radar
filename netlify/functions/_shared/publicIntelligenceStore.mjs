@@ -105,6 +105,37 @@ export function getPublicIntelligenceStore(opts = {}) {
   return getStore({ name: PUBLIC_INTELLIGENCE_STORE_NAME, consistency });
 }
 
+/**
+ * Read a JSON value from the public-intelligence store. Returns
+ * null when the key is missing or the value is malformed.
+ * Defensive try/catch — a Blobs read error is treated as "missing"
+ * so the publisher can recover.
+ */
+export async function readJson(store, key) {
+  if (!store) return null;
+  try {
+    const v = await store.get(key, { type: 'json' });
+    return v ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write a JSON value to the public-intelligence store. Silent
+ * on Blobs write errors so a transient Blobs outage does not
+ * block the publication path.
+ */
+export async function writeJson(store, key, value) {
+  if (!store) return false;
+  try {
+    await store.setJSON(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** OSV publication lock TTL (ms). Mirrors the V6.0 baseline lock. */
 export const PUBLICATION_LOCK_TTL_MS = 5 * 60 * 1000;
 
