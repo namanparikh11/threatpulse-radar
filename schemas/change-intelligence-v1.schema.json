@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/change-intelligence-v1.schema.json",
+  "title": "ThreatPulse Radar V6.1 Change Intelligence",
+  "description": "Server-side change items for the dataset-bound public-intelligence bundle. The full items array is stored in versions/{v}/changes.json.gz; the manifest carries only the aggregate changeSummary. The browser receives per-category results through the view=changes query mode.",
+  "type": "object",
+  "required": ["schemaVersion", "publicIntelligenceVersion", "generatedAt", "comparesFreshBase", "items"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "publicIntelligenceVersion": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}Z-[0-9a-f]{12}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "comparesFreshBase": { "type": "boolean" },
+    "previousPublicIntelligenceVersion": {
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}Z-[0-9a-f]{12}$"
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/changeItem" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "changeItem": {
+      "type": "object",
+      "required": ["cveId", "classifications", "publicIntelligenceVersion"],
+      "properties": {
+        "cveId": { "type": "string", "pattern": "^CVE-\\d{4}-\\d{4,7}$" },
+        "classifications": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "cve-newly-tracked",
+              "cve-no-longer-tracked",
+              "kev-newly-present",
+              "kev-no-longer-present",
+              "severity-class-changed",
+              "cvss-source-or-version-changed",
+              "epss-materially-increased",
+              "epss-materially-decreased",
+              "ssvc-state-changed",
+              "ssvc-data-newly-available",
+              "github-advisory-newly-available",
+              "github-advisory-no-longer-available",
+              "first-patched-newly-available",
+              "first-patched-no-longer-available",
+              "osv-record-newly-correlated",
+              "osv-record-removed",
+              "osv-record-set-changed",
+              "affected-package-or-range-changed",
+              "withdrawn"
+            ]
+          },
+          "minItems": 1
+        },
+        "publicIntelligenceVersion": { "type": "string" },
+        "severityFrom": { "type": ["string", "null"] },
+        "severityTo":   { "type": ["string", "null"] },
+        "epssFrom":     { "type": ["number", "null"] },
+        "epssTo":       { "type": ["number", "null"] },
+        "kevFrom":      { "type": ["boolean", "null"] },
+        "kevTo":        { "type": ["boolean", "null"] },
+        "ssvcFrom":     { "type": ["string", "null"] },
+        "ssvcTo":       { "type": ["string", "null"] },
+        "githubAdvisoryFrom": { "type": ["string", "null"] },
+        "githubAdvisoryTo":   { "type": ["string", "null"] },
+        "osvFrom": { "type": ["object", "null"] },
+        "osvTo":   { "type": ["object", "null"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

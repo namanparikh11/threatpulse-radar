@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/osv-shard-v1.schema.json",
+  "title": "ThreatPulse Radar V6.1 OSV Shard",
+  "description": "One content-addressed OSV public projection shard. Contains the bounded public OSV context for up to ~100 CVEs that hash to the same first hex digit. The shard is immutable; a new version with different content produces a new shard under a different content-addressed key.",
+  "type": "object",
+  "required": ["schemaVersion", "bucket", "bucketContentHash", "byCve", "truncation"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "bucket": { "type": "string", "pattern": "^[0-9a-f]{1}$" },
+    "bucketContentHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "byCve": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/osvPublicContext" }
+    },
+    "truncation": {
+      "type": "object",
+      "required": ["recordsRemovedTotal"],
+      "properties": {
+        "recordsRemovedTotal": { "type": "number", "minimum": 0 },
+        "cvesTruncated": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "osvPublicContext": {
+      "type": "object",
+      "required": ["records", "truncation"],
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/osvPublicRecord" }
+        },
+        "truncation": {
+          "type": "object",
+          "required": ["recordsRemoved"],
+          "properties": {
+            "recordsRemoved": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "osvPublicRecord": {
+      "type": "object",
+      "required": ["osvId", "sourceDatabase", "aliases", "modifiedAt", "publishedAt", "withdrawn", "references", "severities", "affectedPackages", "truncation"],
+      "properties": {
+        "osvId": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" },
+        "sourceDatabase": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "modifiedAt": { "type": ["string", "null"] },
+        "publishedAt": { "type": ["string", "null"] },
+        "withdrawn": { "type": "boolean" },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "url"],
+            "properties": {
+              "type": { "type": "string" },
+              "url": { "type": "string", "format": "uri" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "severities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "score"],
+            "properties": {
+              "type": { "type": "string" },
+              "score": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "affectedPackages": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/osvPublicAffectedPackage" }
+        },
+        "truncation": {
+          "type": "object",
+          "required": ["aliasesRemoved", "referencesRemoved", "packagesRemoved"],
+          "properties": {
+            "aliasesRemoved": { "type": "number", "minimum": 0 },
+            "referencesRemoved": { "type": "number", "minimum": 0 },
+            "packagesRemoved": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "osvPublicAffectedPackage": {
+      "type": "object",
+      "required": ["ecosystem", "name", "purl", "ranges", "versions", "ecosystemSpecific", "truncation"],
+      "properties": {
+        "ecosystem": { "type": "string" },
+        "name": { "type": "string" },
+        "purl": { "type": ["string", "null"] },
+        "ranges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/osvPublicRange" }
+        },
+        "versions": { "type": "array", "items": { "type": "string" } },
+        "ecosystemSpecific": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "truncation": {
+          "type": "object",
+          "required": ["versionsRemoved", "rangesRemoved", "eventsTruncated"],
+          "properties": {
+            "versionsRemoved": { "type": "number", "minimum": 0 },
+            "rangesRemoved": { "type": "number", "minimum": 0 },
+            "eventsTruncated": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "osvPublicRange": {
+      "type": "object",
+      "required": ["type", "events", "databaseSpecific", "repo"],
+      "properties": {
+        "type": { "type": "string" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/osvPublicEvent" }
+        },
+        "databaseSpecific": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "repo": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "osvPublicEvent": {
+      "type": "object",
+      "properties": {
+        "introduced": { "type": "string" },
+        "fixed": { "type": "string" },
+        "last_affected": { "type": "string" },
+        "limit": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

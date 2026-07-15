@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/source-health-public-v1.schema.json",
+  "title": "ThreatPulse Radar V6.1 Source Health (Public)",
+  "description": "Persisted source-health observations. State is derived at request time from these observations; no state field is stored. The public response contains only this payload (plus registry-sourced static fields like authentication, refreshSchedule, provenanceUrl).",
+  "type": "object",
+  "required": ["schemaVersion", "generatedAt", "sources"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sourceHealthObservation" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sourceHealthObservation": {
+      "type": "object",
+      "required": [
+        "id",
+        "lastSuccessfulFetchAt",
+        "lastAttemptedFetchAt",
+        "lastAttemptOutcome",
+        "usableCoverage",
+        "totalCoverage",
+        "thresholdMinutes",
+        "sanitizedReason"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "enum": ["cisa_kev", "nvd", "first_epss", "cisa_vulnrichment", "github_advisory", "osv"]
+        },
+        "lastSuccessfulFetchAt": { "type": ["string", "null"], "format": "date-time" },
+        "lastAttemptedFetchAt":  { "type": ["string", "null"], "format": "date-time" },
+        "lastAttemptOutcome":    { "type": ["string", "null"], "enum": ["success", "soft-partial", "hard-failure", null] },
+        "usableCoverage":        { "type": "number", "minimum": 0 },
+        "totalCoverage":         { "type": "number", "minimum": 0 },
+        "thresholdMinutes":      { "type": "number", "minimum": 0 },
+        "sanitizedReason":       { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}
