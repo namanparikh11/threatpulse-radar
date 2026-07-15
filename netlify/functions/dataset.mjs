@@ -206,6 +206,23 @@ import {
 // here without needing a parallel list.
 // ---------------------------------------------------------------------------
 
+import {
+  getPublicIntelligenceStore,
+  readDatasetLatest as readPublicIntelLatest,
+  readJson as readPublicIntelJson,
+  OSV_LATEST_KEY,
+} from './_shared/publicIntelligenceStore.mjs';
+import {
+  detectViewMode,
+  readViewParams,
+  readOsvView,
+  readChangesView,
+  computeCurrentPublicStateHash,
+} from './_shared/datasetPublicIntelligenceRead.mjs';
+import {
+  buildPublicSourceHealth,
+} from './_shared/sourceHealth.mjs';
+
 function publicEnvelope(blob) {
   if (!blob || typeof blob !== 'object') return blob;
   const out = { ...blob };
@@ -213,6 +230,153 @@ function publicEnvelope(blob) {
     delete out[field];
   }
   return out;
+}
+
+// ---- v6.1: Helpers for the view-mode compatibility check.
+//      The view handlers need the currently-served public
+//      state pieces to compute the publicStateHash for
+//      version-matching. These helpers read the existing
+//      prebuilt Blob envelopes (no additional Blob reads
+//      beyond what the default mode already does). ----
+
+async function readCurrentDatasetEnvelope() {
+  try {
+    const s = getDatasetStore();
+    const blob = await readLatestDataset(s);
+    if (blob && blob.mode === 'live' && Array.isArray(blob.data)) {
+      return blob;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function readCurrentVulnrichmentCache() {
+  try {
+    const s = getVulnrichmentStore();
+    if (!s) return null;
+    return await readVulnrichmentCache(s);
+  } catch {
+    return null;
+  }
+}
+
+async function readCurrentGithubAdvisoryCache() {
+  try {
+    const s = getGithubAdvisoryStore();
+    if (!s) return null;
+    return await readGithubAdvisoryCache(s);
+  } catch {
+    return null;
+  }
+}
+
+async function readCurrentOsvProjection() {
+  try {
+    const s = getPublicIntelligenceStore();
+    const latest = await readPublicIntelJson(s, OSV_LATEST_KEY);
+    if (!latest) return null;
+    return {
+      osvProjectionVersion: latest.osvProjectionVersion,
+      manifestContentHash: latest.manifestContentHash,
+      generatedAt: latest.generatedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ---- v6.1: V6.1 default-mode additions.
+//      The public envelope carries a small set of
+//      aggregate V6.1 fields (no per-CVE map). The full
+//      per-CVE data is server-side only and is
+//      surfaced through the view modes. ----
+
+async function buildV61DefaultAdditions({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection, now = new Date() } = {}) {
+  if (!datasetEnvelope) {
+    return {
+      publicIntelligenceStatus: 'unavailable',
+      publicIntelligenceVersion: null,
+      publicStateFingerprint: null,
+      sources: [],
+      changeSummary: null,
+      comparableAxes: [],
+      suppressedAxes: [],
+    };
+  }
+  // Try to read the public-intelligence latest.json for
+  // the version + fingerprint.
+  let latest = null;
+  try {
+    const s = getPublicIntelligenceStore();
+    latest = await readPublicIntelLatest(s);
+  } catch { latest = null; }
+  if (!latest) {
+    return {
+      publicIntelligenceStatus: 'unavailable',
+      publicIntelligenceVersion: null,
+      publicStateFingerprint: null,
+      sources: [],
+      changeSummary: null,
+      comparableAxes: [],
+      suppressedAxes: [],
+    };
+  }
+  // Compute the current publicStateHash and compare.
+  const currentHash = computeCurrentPublicStateHash({
+    datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
+  });
+  if (currentHash !== latest.publicStateHash) {
+    return {
+      publicIntelligenceStatus: 'mismatch',
+      publicIntelligenceVersion: latest.publicIntelligenceVersion,
+      publicStateFingerprint: null,
+      sources: [],
+      changeSummary: null,
+      comparableAxes: [],
+      suppressedAxes: [],
+    };
+  }
+  // Compatible: read the manifest for the change summary.
+  let manifest = null;
+  try {
+    const s = getPublicIntelligenceStore();
+    const { datasetManifestKey } = await import('./_shared/publicIntelligenceStore.mjs');
+    manifest = await readPublicIntelJson(s, datasetManifestKey(latest.publicIntelligenceVersion));
+  } catch { manifest = null; }
+  // Build the source-health observations (no env-var
+  // names; per-source state is derived at request time).
+  const observations = await buildV61SourceObservations({
+    datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection,
+  });
+  const sources = buildPublicSourceHealth(observations, now);
+  return {
+    publicIntelligenceStatus: 'available',
+    publicIntelligenceVersion: latest.publicIntelligenceVersion,
+    publicStateFingerprint: latest.publicStateFingerprint || null,
+    sources,
+    changeSummary: manifest && manifest.changeSummary ? manifest.changeSummary : null,
+    comparableAxes: manifest && Array.isArray(manifest.comparableAxes) ? manifest.comparableAxes : [],
+    suppressedAxes: manifest && Array.isArray(manifest.suppressedAxes) ? manifest.suppressedAxes : [],
+  };
+}
+
+async function buildV61SourceObservations({ datasetEnvelope, vulnrichmentCache, githubAdvisoryCache, osvProjection } = {}) {
+  // Lightweight observations derived from the cache
+  // states; full observability is in the per-version
+  // source-health blob. The default mode uses these for
+  // the public panel.
+  const fetchedAt = datasetEnvelope && datasetEnvelope.fetchedAt ? datasetEnvelope.fetchedAt : null;
+  const totalCount = datasetEnvelope && Array.isArray(datasetEnvelope.data) ? datasetEnvelope.data.length : 0;
+  return {
+    cisa_kev: { lastSuccessfulFetchAt: fetchedAt, lastAttemptedFetchAt: fetchedAt, lastAttemptOutcome: 'success', usableCoverage: totalCount, totalCoverage: totalCount, thresholdMinutes: 90, sanitizedReason: null },
+    nvd: { lastSuccessfulFetchAt: fetchedAt, lastAttemptedFetchAt: fetchedAt, lastAttemptOutcome: datasetEnvelope && datasetEnvelope.nvdStatus === 'nvd' ? 'success' : 'hard-failure', usableCoverage: totalCount, totalCoverage: totalCount, thresholdMinutes: 90, sanitizedReason: null },
+    first_epss: { lastSuccessfulFetchAt: fetchedAt, lastAttemptedFetchAt: fetchedAt, lastAttemptOutcome: datasetEnvelope && datasetEnvelope.epssStatus === 'first' ? 'success' : 'hard-failure', usableCoverage: totalCount, totalCoverage: totalCount, thresholdMinutes: 90, sanitizedReason: null },
+    cisa_vulnrichment: { lastSuccessfulFetchAt: vulnrichmentCache && vulnrichmentCache.updatedAt ? vulnrichmentCache.updatedAt : null, lastAttemptedFetchAt: vulnrichmentCache && vulnrichmentCache.updatedAt ? vulnrichmentCache.updatedAt : null, lastAttemptOutcome: 'success', usableCoverage: 0, totalCoverage: totalCount, thresholdMinutes: 14 * 24 * 60, sanitizedReason: null },
+    github_advisory: { lastSuccessfulFetchAt: githubAdvisoryCache && githubAdvisoryCache.updatedAt ? githubAdvisoryCache.updatedAt : null, lastAttemptedFetchAt: githubAdvisoryCache && githubAdvisoryCache.updatedAt ? githubAdvisoryCache.updatedAt : null, lastAttemptOutcome: 'success', usableCoverage: 0, totalCoverage: totalCount, thresholdMinutes: 14 * 24 * 60, sanitizedReason: null },
+    osv: { lastSuccessfulFetchAt: osvProjection && osvProjection.generatedAt ? osvProjection.generatedAt : null, lastAttemptedFetchAt: osvProjection && osvProjection.generatedAt ? osvProjection.generatedAt : null, lastAttemptOutcome: osvProjection && osvProjection.osvProjectionVersion ? 'success' : 'hard-failure', usableCoverage: totalCount, totalCoverage: totalCount, thresholdMinutes: 180, sanitizedReason: null },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +534,53 @@ function jsonResponse(status, body) {
 export default async (request, context) => {
   const startTime = Date.now();
 
+  // ---- 0. v6.1: V6.1 view-mode routing (OSV per-CVE,
+  //      change items). When a `view` query parameter is
+  //      present and validated, route the request to the
+  //      appropriate read mode and return early. The
+  //      default mode (no view) below is the V5.7-
+  //      compatible public envelope with V6.1 additions. ----
+  const view = detectViewMode(request);
+  if (view) {
+    let intelStore = null;
+    try { intelStore = getPublicIntelligenceStore(); } catch { intelStore = null; }
+    if (!intelStore) {
+      return new Response(JSON.stringify({ error: 'public-intelligence-unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'X-Content-Type-Options': 'nosniff' },
+      });
+    }
+    // Read the supporting state pieces for the version-matching check.
+    // datasetEnvelope is loaded lazily inside the handlers via the
+    // existing prebuilt path; we defer to the view handlers.
+    if (view === 'osv') {
+      const params = readViewParams(request);
+      return await readOsvView({
+        store: intelStore,
+        datasetEnvelope: await readCurrentDatasetEnvelope(),
+        vulnrichmentCache: await readCurrentVulnrichmentCache(),
+        githubAdvisoryCache: await readCurrentGithubAdvisoryCache(),
+        osvProjection: await readCurrentOsvProjection(),
+        versionParam: params.versionParam,
+        cveParam: params.cveParam,
+        bucketParam: params.bucketParam,
+      });
+    }
+    if (view === 'changes') {
+      const params = readViewParams(request);
+      return await readChangesView({
+        store: intelStore,
+        datasetEnvelope: await readCurrentDatasetEnvelope(),
+        vulnrichmentCache: await readCurrentVulnrichmentCache(),
+        githubAdvisoryCache: await readCurrentGithubAdvisoryCache(),
+        osvProjection: await readCurrentOsvProjection(),
+        versionParam: params.versionParam,
+        categoryParam: params.categoryParam,
+        limitParam: params.limitParam,
+      });
+    }
+  }
+
   // ---- 1. Read prebuilt blob (the v5.2 fast path) ----
   let store = null;
   try {
@@ -449,11 +660,24 @@ export default async (request, context) => {
       // existing data still served.
       const withSsvc = await attachVulnrichment(base, vulnStore);
       const enriched = await attachGithubAdvisory(withSsvc, ghStore);
+      // v6.1: attach the aggregate public-intelligence
+      // fields to the public envelope. The per-CVE data
+      // is server-side only and is surfaced through the
+      // view modes. The public envelope remains a strict
+      // superset of the V5.7 envelope; old clients
+      // ignore the new fields.
+      const v61Additions = await buildV61DefaultAdditions({
+        datasetEnvelope: prebuilt,
+        vulnrichmentCache: await readCurrentVulnrichmentCache(),
+        githubAdvisoryCache: await readCurrentGithubAdvisoryCache(),
+        osvProjection: await readCurrentOsvProjection(),
+      });
       return jsonResponse(200, {
         ...enriched,
         proxyStatus: 'proxy',
         dataSource: 'prebuilt-store',
         refreshInProgress,
+        ...v61Additions,
       });
     }
   }

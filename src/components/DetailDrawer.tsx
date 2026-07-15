@@ -1,4 +1,4 @@
-import { ClipboardList, ExternalLink, Package, ShieldCheck, X } from 'lucide-react';
+import { ClipboardList, ExternalLink, Package, ShieldCheck, X, Box } from 'lucide-react';
 import { useEffect } from 'react';
 import type {
   GithubAdvisory,
@@ -10,6 +10,7 @@ import type {
 } from '../types/vulnerability';
 import { SEVERITY_BADGE } from '../utils/severity';
 import { formatAbsolute, formatCvss, formatDate, formatEpss, formatRelative } from '../utils/format';
+import OsvContext from './drawer/OsvContext';
 
 interface DetailDrawerProps {
   vuln: Vulnerability | null;
@@ -122,6 +123,13 @@ function DrawerBody({ vuln, onClose }: { vuln: Vulnerability; onClose: () => voi
           icon={<Package className="h-3.5 w-3.5 text-radar-accent" />}
         >
           <GithubAdvisoryContext vuln={vuln} />
+        </Section>
+
+        <Section
+          title="OSV package context"
+          icon={<Box className="h-3.5 w-3.5 text-radar-accent" />}
+        >
+          <OsvContext vuln={vuln} />
         </Section>
 
         <Section title="External references">
