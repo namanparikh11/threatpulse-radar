@@ -78,6 +78,40 @@ they are NOT fetched at render time.
 ## Honest empty states
 
 When the V6.1 public-intelligence bundle is not yet
+published for the first time, the Source Health panel
+renders ALL six sources as `unknown` (the documented
+default state) with the locked copy "No data yet —
+first deploy or fresh bootstrap." The transition to
+`fresh` happens only after each individual source
+records a successful observation in the first
+bundle. The first deploy MUST NOT be assumed to
+produce six green dots.
+
+During the first hour of a fresh deploy:
+
+- CISA KEV, NVD, FIRST EPSS: a scheduled refresh
+  cycle typically completes within 30 minutes;
+  sources transition `unknown` → `fresh` once the
+  observation is recorded.
+- CISA Vulnrichment, GitHub Advisory: incremental
+  backfill is in progress; the initial state is
+  `partial` with a sanitized warning
+  ("Incremental backfill in progress.") until the
+  backfill cycle completes. A 7-day cadence means
+  the source may stay `partial` for several days
+  on a fresh deploy.
+- OSV: the canonical baseline is bootstrapped
+  across many background function invocations. The
+  initial state is `unknown`; it transitions to
+  `fresh` only after the canonical baseline
+  publishes its first manifest. If a bootstrap
+  attempt hard-fails before any successful
+  observation, the state is `unavailable` (not
+  `unknown`) so a defender can tell the difference
+  between "not yet tried" and "tried and failed."
+
+The state derivation rule is documented in
+`netlify/functions/_shared/sourceHealth.mjs`.
 published, the Source Health panel renders the
 "Source health unavailable. The V6.1 public intelligence
 bundle is not yet published. Source health will appear

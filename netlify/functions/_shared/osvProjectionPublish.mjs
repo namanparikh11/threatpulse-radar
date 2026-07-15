@@ -16,27 +16,38 @@
  *   2. For each CVE in the public tracked universe, build
  *      the multi-record bounded OSV public context.
  *   3. Partition into 16 deterministic buckets.
- *   4. For each bucket:
+ *   4. Validate per-bucket uncompressed size against the
+ *      hard ceiling. A bucket that exceeds the ceiling
+ *      returns `{ skipped: true, reason: 'uncompressed-ceiling-exceeded', ... }`
+ *      BEFORE any Blob write.
+ *   5. Read retained manifests for skip-unchanged check.
+ *   6. For each bucket:
  *      a. Compute the bucket content hash.
  *      b. If a Blob with the same content hash already
  *         exists, reuse it (no write).
- *      c. Otherwise, gzipped-write the new bucket under
- *         its content-addressed key.
- *   5. Build the per-version manifest with the 16
+ *      c. Otherwise, gzip the bucket, validate the
+ *         compressed size against the hard ceiling, and
+ *         gzipped-write the new bucket under its
+ *         content-addressed key.
+ *   7. Build the per-version manifest with the 16
  *      bucket content hashes.
- *   6. Compute the manifest content hash.
- *   7. If the manifest content hash matches any retained
+ *   8. Compute the manifest content hash.
+ *   9. If the manifest content hash matches any retained
  *      version's manifest content hash, skip writing the
  *      manifest and `latest.json` (skip-unchanged
  *      publication). The previous `latest.json` remains
  *      valid.
- *   8. Write the immutable manifest.
- *   9. Write `osv/latest.json` LAST (atomic pointer).
+ *  10. Write the immutable manifest.
+ *  11. Write `osv/latest.json` LAST (atomic pointer).
  *
  * Atomicity: `latest.json` is the only mutable commit
  * point. All other artifacts are immutable. A failure at
  * any step preserves the previous `latest.json` and the
- * previous version directory.
+ * previous version directory. Size-ceiling violations
+ * return a structured `{skipped: true, reason: '...-ceiling-exceeded'}`
+ * result rather than throwing, so the canonical baseline
+ * publication is never invalidated by an OSV public
+ * projection overflow.
  *
  * Locking: the publisher is called inside the V6.0
  * canonical publication lock window. The V6.0 lock
@@ -244,10 +255,29 @@ export async function releaseOsvLock(store) {
 
 /**
  * Build the OSV public projection and write it to the
- * public-intelligence Blob store. Best-effort: returns
- * `{ skipped: true, reason: ... }` on size ceiling
- * violation or no-op cases; throws SizeCeilingExceededError
- * when an individual shard exceeds the hard ceiling.
+ * public-intelligence Blob store. Best-effort: ALWAYS
+ * returns a structured result. A size-ceiling violation
+ * is reported as
+ *   `{ skipped: true, reason: 'uncompressed-ceiling-exceeded' | 'compressed-ceiling-exceeded', bucket, sizeBytes, ceilingBytes, osvProjectionVersion }`
+ * rather than throwing. This is the deliberate contract
+ * because the canonical baseline publication MUST remain
+ * successful even when an OSV bucket happens to exceed a
+ * hard ceiling (OSV public projection is a best-effort
+ * derivation). The canonical baseline caller should log
+ * the structured failure but proceed.
+ *
+ * On a structured failure, the publication is fully
+ * rolled back by construction: no `osv/latest.json` is
+ * written, no manifest is written, and no oversized
+ * shard is written. The previous valid `osv/latest.json`
+ * and any retained immutable shards are preserved.
+ *
+ * We do NOT silently discard complete OSV records to
+ * make a bucket fit: the per-record field caps are the
+ * only truncation, and they are honest. If a bucket
+ * still exceeds the ceiling after the field caps, we
+ * refuse the publication and let the next run attempt
+ * a fresh baseline.
  *
  * Inputs:
  *   - store: the public-intelligence Blob store handle
@@ -274,9 +304,32 @@ export async function publishOsvProjection(store, canonicalEntities, options = {
 
   // Validate per-bucket uncompressed sizes. A bucket
   // that exceeds the hard ceiling aborts the publication
-  // (the previous latest.json is preserved).
+  // with a STRUCTURED result (no exception propagates to
+  // the caller — the canonical baseline publication must
+  // remain successful because OSV public projection is a
+  // best-effort derivation). The previous latest.json
+  // and any retained shards are preserved. We do NOT
+  // silently discard complete OSV records to make a
+  // bucket fit; if the per-record field caps already
+  // produced a bucket that still exceeds the ceiling,
+  // we refuse the publication and let the next run
+  // attempt a fresh baseline.
   for (let i = 0; i < buckets.length; i++) {
-    assertUncompressedSize(buckets[i], OSV_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES, `osv-shard-${i.toString(16)}`);
+    try {
+      assertUncompressedSize(buckets[i], OSV_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES, `osv-shard-${i.toString(16)}`);
+    } catch (err) {
+      if (err instanceof SizeCeilingExceededError) {
+        return {
+          skipped: true,
+          reason: 'uncompressed-ceiling-exceeded',
+          osvProjectionVersion: manifest.osvProjectionVersion,
+          bucket: i.toString(16),
+          sizeBytes: err && err.message ? Number((err.message.match(/size (\d+)/) || [])[1]) || null : null,
+          ceilingBytes: OSV_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES,
+        };
+      }
+      throw err;
+    }
   }
 
   // Skip-unchanged check: read the retained manifests
@@ -307,9 +360,23 @@ export async function publishOsvProjection(store, canonicalEntities, options = {
     if (!alreadyExists) {
       const gz = gzipValue(bucket);
       if (gz.length > OSV_SHARD_HARD_CEILING_COMPRESSED_BYTES) {
-        throw new SizeCeilingExceededError(
-          `osv-shard-${i.toString(16)} compressed size ${gz.length} exceeds ceiling ${OSV_SHARD_HARD_CEILING_COMPRESSED_BYTES}`,
-        );
+        // Compressed ceiling exceeded. Refuse to write
+        // the oversized shard. Return a structured
+        // failure result so the caller can react. The
+        // previous latest.json is preserved because we
+        // have not yet written the new manifest or
+        // latest.json. Any earlier (i.e. lower-index)
+        // shards that we have already written in this
+        // loop will be GC-eligible because no manifest
+        // references them yet.
+        return {
+          skipped: true,
+          reason: 'compressed-ceiling-exceeded',
+          osvProjectionVersion: manifest.osvProjectionVersion,
+          bucket: i.toString(16),
+          sizeBytes: gz.length,
+          ceilingBytes: OSV_SHARD_HARD_CEILING_COMPRESSED_BYTES,
+        };
       }
       try {
         await store.setBinary(key, gz);

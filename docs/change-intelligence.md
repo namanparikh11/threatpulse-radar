@@ -69,6 +69,21 @@ change from a failed run. The public envelope's
 `publicIntelligenceStatus` is `'unavailable'` until a
 successful run publishes a bundle.
 
+## First-bundle (no previous comparable version)
+
+The very first successful public-intelligence bundle
+has no previous comparable version. The manifest's
+`comparesFreshBase` field is `false`, the
+`previousPublicIntelligenceVersion` is `null`, and the
+per-CVE `items` array is empty regardless of how many
+CVEs are tracked in the current snapshot. The aggregate
+`changeSummary` is `{0, 0, 0, 0, 0, 0}` for this
+initial bundle. The "What changed" panel renders the
+locked copy: "No prior version yet — first comparison
+appears after the next scheduled bundle." The change
+intelligence step NEVER fabricates a diff against a
+non-existent previous version.
+
 ## Query modes (current-version-only)
 
 The dataset function exposes:
