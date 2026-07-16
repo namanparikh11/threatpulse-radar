@@ -18,7 +18,9 @@
     "cron:backup": "node hostinger/cron-backup.mjs",
     "backup:hostinger": "node hostinger/backup.mjs",
     "verify:backup": "node hostinger/verify-backup.mjs",
-    "restore:hostinger": "node hostinger/restore.mjs"
+    "restore:hostinger": "node hostinger/restore.mjs",
+    "diagnose:hostinger": "node hostinger/diagnose.mjs",
+    "manifest:hostinger": "node hostinger/manifest.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^10.0.0",
