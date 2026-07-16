@@ -12,6 +12,7 @@ import { SEVERITY_BADGE } from '../utils/severity';
 import { formatAbsolute, formatCvss, formatDate, formatEpss, formatRelative } from '../utils/format';
 import OsvContext from './drawer/OsvContext';
 import WorkspaceDrawerSection from './workspace/WorkspaceDrawerSection';
+import LocalRelevanceSection from './environment/LocalRelevanceSection';
 
 interface DetailDrawerProps {
   vuln: Vulnerability | null;
@@ -214,6 +215,11 @@ function DrawerBody({
               Build a local report for {vuln.cveId}
             </button>
           )}
+        </Section>
+
+        {/* V6.6: potential local relevance section. */}
+        <Section title="Potential local relevance">
+          <LocalRelevanceSection cveId={vuln.cveId} />
         </Section>
 
         <Section title="External references">

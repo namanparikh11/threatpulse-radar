@@ -25,7 +25,8 @@ import EnvironmentPanel from '../components/environment/EnvironmentPanel';
 import { exportReport } from '../reports/exporters/index.mjs';
 import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
 import { addHistoryEntry } from '../reports/history.mjs';
-import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
+import { useEnvironment } from '../state/EnvironmentContext';
+import { useVulnerabilityFilter, buildLocalRollup, type LocalRelevanceFilter } from '../hooks/useVulnerabilityFilter';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { buildCounts } from '../workspace/queueFilters.mjs';
 import { computeChangeSignatureSync as computeChangeSignature } from '../workspace/changeSignature.mjs';
@@ -132,6 +133,7 @@ export default function DashboardPage() {
   const [activeReportHistory, setActiveReportHistory] = useState(false);
   const [activeReportVerify, setActiveReportVerify] = useState<'verify' | 'compare' | null>(null);
   const workspace = useWorkspace();
+  const env = useEnvironment();
   /**
    * v6.4: keep the workspace's `changedSinceReview` count
    * in sync with the actual public-intelligence view. The
@@ -219,14 +221,23 @@ export default function DashboardPage() {
   // active" footer can name the active preset. The hook
   // also returns `filtered` (pre-sort) for callers that
   // need the un-ordered matching set; the table and the
-  // export use the sorted view.
+  // V6.6: local-relevance filter. The state is held in a
+  // separate hook (NOT in `filters`) so it is never
+  // serialised into the URL and never contaminates the
+  // public CSV / Defender Views / What Changed surfaces.
+  const [localRelevance, setLocalRelevance] = useState<LocalRelevanceFilter>('any');
+  const envState = env.state;
+  const localRollup = useMemo(
+    () => buildLocalRollup(envState.correlationsByInventory, envState.inventoriesByAsset, envState.assets),
+    [envState.correlationsByInventory, envState.inventoriesByAsset, envState.assets]
+  );
   const {
     sorted,
     isAnyFilterActive,
     isSearchActive,
     isSearching,
     activePreset,
-  } = useVulnerabilityFilter(all, filters, sort);
+  } = useVulnerabilityFilter(all, filters, sort, { localRelevance, localRollup });
 
   const handleReset = useCallback(() => {
     // DEFAULT_FILTERS already carries `presetId: null` and
@@ -523,6 +534,17 @@ export default function DashboardPage() {
               allVulnerabilities={all}
             />
 
+            {/* V6.6: local-relevance filter. The control is
+                separate from <FiltersPanel> so the local
+                state never enters the URL and never
+                contaminates the public CSV / Defender
+                Views / What Changed surfaces. */}
+            <LocalRelevanceFilterControl
+              value={localRelevance}
+              onChange={setLocalRelevance}
+              localRollup={localRollup}
+            />
+
             {sorted.length === 0 ? (
               <EmptyState
                 title="No vulnerabilities match your filters."
@@ -630,6 +652,49 @@ export default function DashboardPage() {
         <ReportVerifyDialog mode={activeReportVerify} onClose={() => setActiveReportVerify(null)} />
       )}
     </div>
+  );
+}
+
+function LocalRelevanceFilterControl({ value, onChange, localRollup }: { value: LocalRelevanceFilter; onChange: (v: LocalRelevanceFilter) => void; localRollup: ReturnType<typeof buildLocalRollup> }) {
+  const options: { value: LocalRelevanceFilter; label: string }[] = [
+    { value: 'any', label: 'All CVEs' },
+    { value: 'potentially-relevant', label: 'Potentially relevant locally' },
+    { value: 'affected-range', label: 'Affected-range match' },
+    { value: 'exact-version', label: 'Exact-version match' },
+    { value: 'identity-only', label: 'Identity-only potential' },
+    { value: 'version-not-evaluable', label: 'Version not evaluable' },
+    { value: 'no-local-data', label: 'No local correlation data' },
+  ];
+  const cveCount = Object.keys(localRollup).length;
+  return (
+    <section className="panel px-3 py-2 text-[11px] text-radar-text" aria-label="Local relevance filter">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-radar-muted">Local relevance</span>
+        <span className="text-radar-dim">({cveCount} CVE(s) with local correlation data)</span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1">
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onChange(o.value)}
+            className={[
+              'focus-ring inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] transition',
+              value === o.value
+                ? 'border-radar-accent/40 bg-radar-accent/10 text-radar-accent'
+                : 'border-radar-border bg-radar-panel2 text-radar-muted hover:border-radar-accent/40 hover:text-radar-text',
+            ].join(' ')}
+            data-testid={`local-relevance-filter-${o.value}`}
+            aria-pressed={value === o.value}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] text-radar-dim">
+        Filters here use only your local imported environment. Local filters are not serialised into the URL and are not mixed into the public CSV.
+      </p>
+    </section>
   );
 }
 
