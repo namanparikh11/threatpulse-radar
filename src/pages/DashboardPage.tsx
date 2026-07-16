@@ -15,7 +15,13 @@ import KevChart from '../components/charts/KevChart';
 import SourceHealthPanel from '../components/SourceHealthPanel';
 import ChangeIntelligencePanel from '../components/ChangeIntelligencePanel';
 import ConflictBanner from '../components/workspace/ConflictBanner';
+import WorkspacePanel from '../components/workspace/WorkspacePanel';
+import BulkActionBar from '../components/workspace/BulkActionBar';
+import WorkspaceDialogs, { type DialogKind } from '../components/workspace/WorkspaceDialogs';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
+import { useWorkspace } from '../state/WorkspaceContext';
+import { buildCounts } from '../workspace/queueFilters.mjs';
+import { computeChangeSignature } from '../workspace/changeSignature.mjs';
 import {
   fetchVulnerabilities,
   type FetchResult,
@@ -102,6 +108,42 @@ export default function DashboardPage() {
    * status changed" chip in the What Changed panel).
    */
   const [highlightSourceId, setHighlightSourceId] = useState<string | null>(null);
+  /**
+   * v6.4: local workspace UI state. The CVE ids the
+   * operator has selected in the workspace queue drive
+   * the BulkActionBar. The active dialog is one of
+   * 'export' | 'import' | 'clear-archived' |
+   * 'clear-workspace' | null.
+   */
+  const [selectedCveIds, setSelectedCveIds] = useState<string[]>([]);
+  const [activeDialog, setActiveDialog] = useState<DialogKind>(null);
+  const workspace = useWorkspace();
+  /**
+   * v6.4: keep the workspace's `changedSinceReview` count
+   * in sync with the actual public-intelligence view. The
+   * workspace's internal count is approximate; we replace
+   * it with the exact value derived from
+   * `buildCounts(...)` so the count tile and the
+   * `Changed since review` queue filter agree.
+   */
+  useEffect(() => {
+    if (state.kind !== 'ready') {
+      workspace.clearChangedSinceReview();
+      return;
+    }
+    const counts = buildCounts({
+      vulns: state.meta.data,
+      entriesByCve: workspace.state.entriesByCve,
+      publicIntelligenceVersion: state.meta.publicIntelligenceVersion ?? null,
+      computeSignature: computeChangeSignature,
+    });
+    workspace.incrementChangedSinceReview(counts.changedSinceReview);
+  }, [
+    state.kind === 'ready' ? state.meta : null,
+    workspace.state.entriesByCve,
+    workspace.incrementChangedSinceReview,
+    workspace.clearChangedSinceReview,
+  ]);
   /**
    * v5.1: Refs that mirror the latest `state.meta.fetchedAt`
    * and `dismissedFetchedAt` so the polling closure (started
@@ -384,6 +426,23 @@ export default function DashboardPage() {
 
             <ConflictBanner />
 
+            <BulkActionBar
+              selectedCveIds={selectedCveIds}
+              onClearSelection={() => setSelectedCveIds([])}
+            />
+
+            <WorkspacePanel
+              vulns={all}
+              publicIntelligenceVersion={state.meta.publicIntelligenceVersion ?? null}
+              selectedCveIds={selectedCveIds}
+              onSelectedCveIdsChange={setSelectedCveIds}
+              onOpenVuln={setSelected}
+              onExport={() => setActiveDialog('export')}
+              onImport={() => setActiveDialog('import')}
+              onClearArchived={() => setActiveDialog('clear-archived')}
+              onClearWorkspace={() => setActiveDialog('clear-workspace')}
+            />
+
             <StatsCards stats={charts.stats} />
 
             <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -473,6 +532,11 @@ export default function DashboardPage() {
       </main>
 
       <DetailDrawer vuln={selected} onClose={() => setSelected(null)} />
+
+      <WorkspaceDialogs
+        active={activeDialog}
+        onClose={() => setActiveDialog(null)}
+      />
     </div>
   );
 }
