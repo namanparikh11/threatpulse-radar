@@ -19,6 +19,8 @@ import WorkspacePanel from '../components/workspace/WorkspacePanel';
 import BulkActionBar from '../components/workspace/BulkActionBar';
 import WorkspaceDialogs, { type DialogKind } from '../components/workspace/WorkspaceDialogs';
 import ReportBuilder from '../components/reports/ReportBuilder';
+import { exportReport } from '../reports/exporters/index.mjs';
+import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { buildCounts } from '../workspace/queueFilters.mjs';
@@ -580,14 +582,29 @@ export default function DashboardPage() {
           publicMeta={state.kind === 'ready' ? state.meta : null}
           publicVulns={all}
           onClose={() => { setActiveReportDialog(false); setReportBuilderSeed(null); }}
-          onExport={() => {
-            // The export step will be wired in commit 4
-            // (the exporters module). For now the parent
-            // simply closes the dialog. The dialog already
-            // shows the preview + integrity pill; the
-            // operator can re-open the dialog to re-export.
-            setActiveReportDialog(false);
-            setReportBuilderSeed(null);
+          onExport={(report, format) => {
+            // V6.5: render the chosen format and trigger
+            // a local download (or open the print HTML in
+            // a new tab so the operator can use the
+            // browser's "Save as PDF" command).
+            try {
+              const out = exportReport(report, format);
+              if (format === 'print') {
+                const win = openHtmlInNewTab(out.body, '_blank');
+                if (!win) {
+                  // Pop-up blocked; fall back to a download.
+                  downloadFile(out.filename, out.body, out.mimeType);
+                }
+              } else {
+                downloadFile(out.filename, out.body, out.mimeType);
+              }
+            } catch (err) {
+              // Surface a minimal sanitized error in the
+              // console without leaking private content.
+              const msg = err instanceof Error ? err.message : 'export-failed';
+              // eslint-disable-next-line no-console
+              console.warn('[threatpulse] report export failed:', msg);
+            }
           }}
         />
       )}

@@ -185,8 +185,11 @@ export function validateReport(input) {
   if (!Array.isArray(input.sections)) {
     return { ok: false, reason: 'invalid-sections' };
   }
-  if (!isPlainObject(input.provenance)) {
+  if (!Array.isArray(input.provenance)) {
     return { ok: false, reason: 'invalid-provenance' };
+  }
+  for (const p of input.provenance) {
+    if (!isPlainObject(p)) return { ok: false, reason: 'invalid-provenance-item' };
   }
   if (!Array.isArray(input.limitations) || !input.limitations.every((l) => typeof l === 'string')) {
     return { ok: false, reason: 'invalid-limitations' };
