@@ -100,6 +100,9 @@ export async function verifyReport(report) {
   const check = validateReport(report);
   if (!check.ok) {
     if (check.reason === 'too-many-cves') return verdict(false, 'too-large', report);
+    if (check.reason === 'invalid-checksum' || check.reason === 'invalid-integrity') {
+      return verdict(false, 'incomplete', report);
+    }
     return verdict(false, 'corrupt', report);
   }
   // Verify the integrity block.
@@ -107,7 +110,7 @@ export async function verifyReport(report) {
     return verdict(false, 'incomplete', report);
   }
   if (!report.integrity.checksum.startsWith('sha256:')) {
-    return verdict(false, 'corrupt', report);
+    return verdict(false, 'incomplete', report);
   }
   let actual;
   try {
@@ -146,6 +149,9 @@ export function verifyShape(report) {
   const check = validateReport(report);
   if (!check.ok) {
     if (check.reason === 'too-many-cves') return verdict(false, 'too-large', report);
+    if (check.reason === 'invalid-checksum' || check.reason === 'invalid-integrity') {
+      return verdict(false, 'incomplete', report);
+    }
     return verdict(false, 'corrupt', report);
   }
   if (!report.integrity || typeof report.integrity.checksum !== 'string' || !report.integrity.checksum.startsWith('sha256:')) {

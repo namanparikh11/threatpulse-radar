@@ -180,12 +180,15 @@ function enforce(report) {
 export function renderHtml(report) {
   const r = enforce(report);
   const sections = Array.isArray(r.sections) ? r.sections.map(renderSection).join('\n') : '';
+  // Build the CSP without escaping single quotes so the
+  // directive keywords remain literal. We use a templated
+  // value that intentionally does NOT go through esc().
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="${esc(CSP)}">
+<meta http-equiv="Content-Security-Policy" content="${CSP}">
 <title>${esc(r.title || 'ThreatPulse report')}</title>
 <style>${SAFE_CSS}</style>
 </head>

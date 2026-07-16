@@ -63,6 +63,7 @@ export function modeHidesBody(mode) {
  *  "(provider fact)" / "(ThreatPulse-derived)" /
  *  "(user-authored)" label. */
 export function fieldKindOf(path) {
+  if (typeof path !== 'string' || path.length === 0) return FIELD_KIND.SYSTEM_METADATA;
   // Public-intelligence metadata is system-metadata.
   if (path === 'publicIntelligence' || path.startsWith('publicIntelligence.')) {
     return FIELD_KIND.SYSTEM_METADATA;
@@ -78,6 +79,19 @@ export function fieldKindOf(path) {
   // ThreatPulse classifications (action-required,
   // changed-since-review) are threatpulse-derived.
   if (path.startsWith('derived.')) return FIELD_KIND.THREATPULSE_DERIVED;
+  // For per-CVE row labels inside sections, the label
+  // string itself tells us the kind.
+  if (path.startsWith('sections.body.rows.') || path.endsWith('.label')) {
+    const label = path.split('.').pop() || '';
+    if (label.startsWith('Local ') || label.startsWith('User-')) return FIELD_KIND.USER_AUTHORED;
+    if (label === 'Watched') return FIELD_KIND.USER_AUTHORED;
+    if (label === 'ThreatPulse classification') return FIELD_KIND.THREATPULSE_DERIVED;
+    if (label === 'Public record' || label === 'Local workspace entry') return FIELD_KIND.UNAVAILABLE;
+    // Severity, CVSS, EPSS, KEV, SSVC, Vulnrichment,
+    // GitHub advisory, OSV record ids, Withdrawn, Published,
+    // Summary, Vendor / product, Source, Official link.
+    return FIELD_KIND.PROVIDER_FACT;
+  }
   return FIELD_KIND.SYSTEM_METADATA;
 }
 
