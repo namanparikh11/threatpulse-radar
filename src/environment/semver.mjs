@@ -81,8 +81,11 @@ export function compareSemver(a, b) {
 }
 
 /** True when `version` falls inside the inclusive
- *  `[lo, hi]` semver range. The range is open when
- *  `lo` or `hi` is `null`. */
+ *  `[lo, hi)` semver range (lo inclusive, hi
+ *  exclusive). This matches the standard caret /
+ *  tilde / hyphen semantics used in npm, crates.io,
+ *  and Composer. The range is open when `lo` or
+ *  `hi` is `null`. */
 export function semverInRange(version, lo, hi) {
   const v = typeof version === 'string' ? parseSemver(version) : version;
   if (!v) return false;
@@ -92,7 +95,7 @@ export function semverInRange(version, lo, hi) {
   }
   if (hi) {
     const c = compareSemver(v, hi);
-    if (c > 0) return false;
+    if (c >= 0) return false;
   }
   return true;
 }

@@ -28,9 +28,9 @@
 
 import { parseSemver, semverInRange } from './semver.mjs';
 
-const NPM_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\* xX]+$/;
-const COMPOSER_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\*\ ,xX]+$/;
-const CRATES_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\*\ ,]+$/;
+const NPM_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\* xX=><]+$/;
+const COMPOSER_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\*\ ,xX=><]+$/;
+const CRATES_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\*\ ,=><]+$/;
 
 /** Strip whitespace from a range expression. */
 function compact(s) {
@@ -65,7 +65,7 @@ function evaluateNpmRangeExpression(version, expr) {
   if (expr === '*' || expr === 'x' || expr === 'X' || expr === '') return { hit: true, kind: 'any' };
   if (expr.startsWith('>=') || expr.startsWith('<=') || expr.startsWith('>') || expr.startsWith('<')) {
     const op = expr.slice(0, expr.startsWith('>=') || expr.startsWith('<=') ? 2 : 1);
-    const rest = expr.slice(op.length);
+    const rest = expandSemverShorthand(expr.slice(op.length));
     const ref = parseSemver(rest);
     const v = parseSemver(version);
     if (!ref || !v) return { hit: false, kind: 'unsupported' };
@@ -79,7 +79,7 @@ function evaluateNpmRangeExpression(version, expr) {
   // Caret / tilde
   const ch = expr.charAt(0);
   if (ch === '^' || ch === '~') {
-    const ref = parseSemver(expr.slice(1));
+    const ref = parseSemver(expandSemverShorthand(expr.slice(1)));
     const v = parseSemver(version);
     if (!ref || !v) return { hit: false, kind: 'unsupported' };
     if (ch === '~') {
@@ -100,8 +100,8 @@ function evaluateNpmRangeExpression(version, expr) {
   // Range with hyphen: 1.2.3 - 2.3.4
   if (expr.includes(' - ')) {
     const [lo, hi] = expr.split(' - ').map((s) => s.trim());
-    const loV = parseSemver(lo);
-    const hiV = parseSemver(hi);
+    const loV = parseSemver(expandSemverShorthand(lo));
+    const hiV = parseSemver(expandSemverShorthand(hi));
     const v = parseSemver(version);
     if (!loV || !hiV || !v) return { hit: false, kind: 'unsupported' };
     return { hit: semverInRange(v, loV, hiV), kind: 'range' };
@@ -117,10 +117,20 @@ function evaluateNpmRangeExpression(version, expr) {
     return { hit: semverInRange(v, ref, upper), kind: 'range' };
   }
   // Fall back to exact
-  if (parseSemver(expr)) {
+  if (parseSemver(expandSemverShorthand(expr))) {
     return { hit: exactEqual(expr, version), kind: 'exact' };
   }
   return { hit: false, kind: 'unsupported' };
+}
+
+/** Expand a short semver form to its three-part
+ *  shape. Handles `0` -> `0.0.0` and `1.2` -> `1.2.0`. */
+function expandSemverShorthand(s) {
+  if (typeof s !== 'string') return s;
+  const parts = s.split('.');
+  if (parts.length === 1) return parts[0] + '.0.0';
+  if (parts.length === 2) return parts[0] + '.' + parts[1] + '.0';
+  return s;
 }
 
 /** Evaluate an npm package range. */
@@ -140,19 +150,27 @@ function evaluateNpm(version, rangeText) {
   if (parts.length === 1 && exactEqual(parts[0], version)) {
     return { state: 'exact-version-match', evaluatedRange: rangeText, explanation: 'exact version equality' };
   }
+  // Compound ranges are AND: every sub-expression
+  // must hit. A single miss returns no-supported-match.
+  // An unsupported sub-expression is reported as
+  // version-not-evaluable.
+  let anyUnsupported = false;
+  let exactHit = false;
   for (const expr of parts) {
     const r = evaluateNpmRangeExpression(version, expr);
-    if (r.hit && r.kind === 'exact') {
-      return { state: 'exact-version-match', evaluatedRange: rangeText, explanation: 'exact version equality' };
-    }
-    if (r.hit && r.kind !== 'unsupported') {
-      return { state: 'affected-range-match', evaluatedRange: rangeText, explanation: 'semver range match' };
-    }
-    if (r.kind === 'unsupported') {
-      return { state: 'version-not-evaluable', evaluatedRange: rangeText, explanation: 'unsupported sub-expression' };
+    if (r.kind === 'unsupported') { anyUnsupported = true; continue; }
+    if (r.hit && r.kind === 'exact') { exactHit = true; continue; }
+    if (!r.hit) {
+      return { state: 'no-supported-match', evaluatedRange: rangeText, explanation: 'sub-expression did not match' };
     }
   }
-  return { state: 'no-supported-match', evaluatedRange: rangeText, explanation: 'no range matched' };
+  if (anyUnsupported) {
+    return { state: 'version-not-evaluable', evaluatedRange: rangeText, explanation: 'unsupported sub-expression' };
+  }
+  if (exactHit) {
+    return { state: 'exact-version-match', evaluatedRange: rangeText, explanation: 'exact version equality' };
+  }
+  return { state: 'affected-range-match', evaluatedRange: rangeText, explanation: 'semver range match' };
 }
 
 /** Evaluate a crates.io range. Cargo uses a slightly
@@ -169,19 +187,23 @@ function evaluateCrates(version, rangeText) {
   // Cargo uses commas as AND and ^ caret for compatible.
   const parts = splitCompound(compact_, CRATES_RANGE_RE);
   if (!parts) return { state: 'version-not-evaluable', explanation: 'could not split compound range' };
+  let anyUnsupported = false;
+  let exactHit = false;
   for (const expr of parts) {
     const r = evaluateNpmRangeExpression(version, expr);
-    if (r.hit && r.kind === 'exact') {
-      return { state: 'exact-version-match', evaluatedRange: rangeText, explanation: 'exact version equality' };
-    }
-    if (r.hit && r.kind !== 'unsupported') {
-      return { state: 'affected-range-match', evaluatedRange: rangeText, explanation: 'semver range match' };
-    }
-    if (r.kind === 'unsupported') {
-      return { state: 'version-not-evaluable', evaluatedRange: rangeText, explanation: 'unsupported sub-expression' };
+    if (r.kind === 'unsupported') { anyUnsupported = true; continue; }
+    if (r.hit && r.kind === 'exact') { exactHit = true; continue; }
+    if (!r.hit) {
+      return { state: 'no-supported-match', evaluatedRange: rangeText, explanation: 'sub-expression did not match' };
     }
   }
-  return { state: 'no-supported-match', evaluatedRange: rangeText, explanation: 'no range matched' };
+  if (anyUnsupported) {
+    return { state: 'version-not-evaluable', evaluatedRange: rangeText, explanation: 'unsupported sub-expression' };
+  }
+  if (exactHit) {
+    return { state: 'exact-version-match', evaluatedRange: rangeText, explanation: 'exact version equality' };
+  }
+  return { state: 'affected-range-match', evaluatedRange: rangeText, explanation: 'semver range match' };
 }
 
 /** Evaluate a Packagist (Composer) range. */
@@ -195,19 +217,23 @@ function evaluatePackagist(version, rangeText) {
   }
   const parts = splitCompound(compact_, COMPOSER_RANGE_RE);
   if (!parts) return { state: 'version-not-evaluable', explanation: 'could not split compound range' };
+  let anyUnsupported = false;
+  let exactHit = false;
   for (const expr of parts) {
     const r = evaluateNpmRangeExpression(version, expr);
-    if (r.hit && r.kind === 'exact') {
-      return { state: 'exact-version-match', evaluatedRange: rangeText, explanation: 'exact version equality' };
-    }
-    if (r.hit && r.kind !== 'unsupported') {
-      return { state: 'affected-range-match', evaluatedRange: rangeText, explanation: 'semver range match' };
-    }
-    if (r.kind === 'unsupported') {
-      return { state: 'version-not-evaluable', evaluatedRange: rangeText, explanation: 'unsupported sub-expression' };
+    if (r.kind === 'unsupported') { anyUnsupported = true; continue; }
+    if (r.hit && r.kind === 'exact') { exactHit = true; continue; }
+    if (!r.hit) {
+      return { state: 'no-supported-match', evaluatedRange: rangeText, explanation: 'sub-expression did not match' };
     }
   }
-  return { state: 'no-supported-match', evaluatedRange: rangeText, explanation: 'no range matched' };
+  if (anyUnsupported) {
+    return { state: 'version-not-evaluable', evaluatedRange: rangeText, explanation: 'unsupported sub-expression' };
+  }
+  if (exactHit) {
+    return { state: 'exact-version-match', evaluatedRange: rangeText, explanation: 'exact version equality' };
+  }
+  return { state: 'affected-range-match', evaluatedRange: rangeText, explanation: 'semver range match' };
 }
 
 /** Generic exact-equality evaluator used when no
@@ -219,6 +245,13 @@ function evaluateGenericExact(version, rangeText) {
   // Only treat the range as "exact" if it looks like a
   // single token, not a compound expression.
   if (rangeText.includes(',') || rangeText.includes(' ') || rangeText.includes('||') || rangeText.includes('|')) {
+    return { state: 'version-not-evaluable', explanation: 'unsupported range syntax for this ecosystem' };
+  }
+  // Range text that starts with an operator is a
+  // range expression this generic evaluator does
+  // not understand. The provider is supplying a
+  // range, not an exact version.
+  if (/^[<>=~^]/.test(rangeText)) {
     return { state: 'version-not-evaluable', explanation: 'unsupported range syntax for this ecosystem' };
   }
   if (exactEqual(rangeText, version)) {
