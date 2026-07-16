@@ -46,6 +46,7 @@ const root = resolve(here, '..');
 import { resolveHostingerConfig, sanitizeError, isPathInside } from './_lib.mjs';
 import { createLogger, dailyLogPath } from './logger.mjs';
 import { checkReadiness, sanitizeReadinessForPublic } from './readiness.mjs';
+import { serveStatic, applySecurityHeaders, MAX_PATH_LENGTH } from './static.mjs';
 
 import { resolveConfig as resolvePortableConfig } from '../server/config.mjs';
 import { handleHealth } from '../server/routes/health.mjs';
@@ -170,6 +171,16 @@ const server = createServer(async (req, res) => {
     return;
   }
   try {
+    // Reject requests whose URL exceeds the bound.
+    // The Hostinger control panel imposes a limit
+    // of its own; the application-level bound is a
+    // defense in depth.
+    if (typeof req.url !== 'string' || req.url.length > MAX_PATH_LENGTH) {
+      res.statusCode = 414;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: 'uri-too-long' }));
+      return;
+    }
     // Guard against malformed URLs: bad percent
     // encoding or control characters throw on
     // `new URL()`. Surface a sanitized 400 instead
@@ -184,12 +195,12 @@ const server = createServer(async (req, res) => {
       return;
     }
     const path = url.pathname;
-    // Method allowlist per path. Anything else is a
-    // sanitized 405. This protects the storage
+    // Method allowlist: only GET and HEAD are
+    // supported on every endpoint. Any other method
+    // is a sanitized 405. This protects the storage
     // adapter from accidental writes via, e.g.,
-    // POST /health.
-    const allowMethod = (m) => m === 'GET' || m === 'HEAD';
-    if (!allowMethod(req.method)) {
+    // POST /health or PUT /api/dataset.
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.statusCode = 405;
       res.setHeader('Allow', 'GET, HEAD');
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -220,7 +231,17 @@ const server = createServer(async (req, res) => {
       writeResponse(res, r);
       return;
     }
-    // Unknown path.
+    // Static + SPA fallback. API routes are above
+    // this branch so they always win precedence.
+    const staticRes = serveStatic({
+      path, publicDir: cfg.publicDir, dataDir: cfg.dataRoot,
+      isProduction: cfg.isProduction,
+    });
+    if (staticRes) {
+      writeResponse(res, staticRes);
+      return;
+    }
+    // No public dist; serve a sanitized 404.
     res.statusCode = 404;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.end(JSON.stringify({ error: 'not-found' }));
@@ -237,16 +258,31 @@ const server = createServer(async (req, res) => {
 function writeResponse(res, response) {
   try {
     res.statusCode = response.status;
-    for (const [k, v] of response.headers.entries()) {
-      // Cache-Control is the most important override:
-      // we force no-store on every API response.
-      if (k.toLowerCase() === 'cache-control' && !v) continue;
+    const headers = new Headers(response.headers);
+    applySecurityHeaders(headers, { isProduction: cfg.isProduction });
+    for (const [k, v] of headers.entries()) {
       res.setHeader(k, v);
     }
     if (!res.getHeader('Cache-Control')) {
       res.setHeader('Cache-Control', 'no-store');
     }
-    response.text().then((body) => res.end(body)).catch(() => res.end());
+    // The response body may be a ReadableStream
+    // (for static assets) or a string. Handle both.
+    if (response.body) {
+      // Body is a ReadableStream of bytes.
+      const reader = response.body.getReader();
+      const pump = () => reader.read().then((r) => {
+        if (r.done) { res.end(); return; }
+        if (!res.write(r.value)) {
+          res.once('drain', pump);
+        } else {
+          pump();
+        }
+      }).catch(() => res.end());
+      pump();
+    } else {
+      response.text().then((body) => res.end(body)).catch(() => res.end());
+    }
   } catch (err) {
     try { res.statusCode = 500; res.end(); } catch { /* noop */ }
   }
