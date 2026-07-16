@@ -64,7 +64,12 @@ import {
 } from '../workspace/UnavailableWorkspaceAdapter.mjs';
 import {
   buildExportPayload,
+  applyMerge,
+  applyReplace,
 } from '../workspace/exportImport.mjs';
+import { validateImportPayload } from '../workspace/schema.mjs';
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _validationHelper = validateImportPayload;
 export {};
 
 export type WorkspaceStatus =
@@ -585,11 +590,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const importWorkspace = useCallback(async (payload: any, mode: 'merge' | 'replace') => {
     const adapter = adapterRef.current;
     if (!adapter) return { ok: false, reason: 'unavailable' };
-    const { applyMerge, applyReplace } = await import('../workspace/exportImport.mjs');
     // Re-validate first; the dialog already ran a
     // synchronous check, but the async path is the
     // single source of truth.
-    const v = (await import('../workspace/schema.mjs')).validateImportPayload(payload);
+    const v = _validationHelper(payload);
     if (!v.ok) return { ok: false, reason: v.reason };
     if (mode === 'merge') {
       const r = await applyMerge(adapter, v.entries);

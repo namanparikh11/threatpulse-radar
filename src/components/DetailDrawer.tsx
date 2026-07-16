@@ -11,6 +11,7 @@ import type {
 import { SEVERITY_BADGE } from '../utils/severity';
 import { formatAbsolute, formatCvss, formatDate, formatEpss, formatRelative } from '../utils/format';
 import OsvContext from './drawer/OsvContext';
+import WorkspaceDrawerSection from './workspace/WorkspaceDrawerSection';
 
 interface DetailDrawerProps {
   vuln: Vulnerability | null;
@@ -131,6 +132,8 @@ function DrawerBody({ vuln, onClose }: { vuln: Vulnerability; onClose: () => voi
         >
           <OsvContext vuln={vuln} />
         </Section>
+
+        <WorkspaceDrawerSection vuln={vuln} />
 
         <Section title="External references">
           <ul className="space-y-1.5">

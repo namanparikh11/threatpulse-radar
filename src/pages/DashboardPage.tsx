@@ -14,6 +14,7 @@ import TrendChart from '../components/charts/TrendChart';
 import KevChart from '../components/charts/KevChart';
 import SourceHealthPanel from '../components/SourceHealthPanel';
 import ChangeIntelligencePanel from '../components/ChangeIntelligencePanel';
+import ConflictBanner from '../components/workspace/ConflictBanner';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
 import {
   fetchVulnerabilities,
@@ -380,6 +381,8 @@ export default function DashboardPage() {
               state.meta.epssStatus === 'unavailable' && (
                 <EpssUnavailableBanner reason={state.meta.epssReason} />
               )}
+
+            <ConflictBanner />
 
             <StatsCards stats={charts.stats} />
 
