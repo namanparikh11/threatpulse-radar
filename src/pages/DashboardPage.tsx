@@ -19,8 +19,11 @@ import WorkspacePanel from '../components/workspace/WorkspacePanel';
 import BulkActionBar from '../components/workspace/BulkActionBar';
 import WorkspaceDialogs, { type DialogKind } from '../components/workspace/WorkspaceDialogs';
 import ReportBuilder from '../components/reports/ReportBuilder';
+import ReportHistoryDialog from '../components/reports/ReportHistoryDialog';
+import ReportVerifyDialog from '../components/reports/ReportVerifyDialog';
 import { exportReport } from '../reports/exporters/index.mjs';
 import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
+import { addHistoryEntry } from '../reports/history.mjs';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { buildCounts } from '../workspace/queueFilters.mjs';
@@ -125,6 +128,8 @@ export default function DashboardPage() {
   // drawer, "what changed" panel, local queue).
   const [reportBuilderSeed, setReportBuilderSeed] = useState<{ cveIds: string[]; reportType?: string; title?: string } | null>(null);
   const [activeReportDialog, setActiveReportDialog] = useState(false);
+  const [activeReportHistory, setActiveReportHistory] = useState(false);
+  const [activeReportVerify, setActiveReportVerify] = useState<'verify' | 'compare' | null>(null);
   const workspace = useWorkspace();
   /**
    * v6.4: keep the workspace's `changedSinceReview` count
@@ -586,7 +591,9 @@ export default function DashboardPage() {
             // V6.5: render the chosen format and trigger
             // a local download (or open the print HTML in
             // a new tab so the operator can use the
-            // browser's "Save as PDF" command).
+            // browser's "Save as PDF" command). The
+            // successful export is recorded in the local
+            // history (summary-only — no full report).
             try {
               const out = exportReport(report, format);
               if (format === 'print') {
@@ -598,6 +605,7 @@ export default function DashboardPage() {
               } else {
                 downloadFile(out.filename, out.body, out.mimeType);
               }
+              void addHistoryEntry(report, { redactionMode: (report.selection && (report.selection as any).redactionMode) || 'none', exportFormat: format, exportStatus: 'exported' });
             } catch (err) {
               // Surface a minimal sanitized error in the
               // console without leaking private content.
@@ -606,7 +614,17 @@ export default function DashboardPage() {
               console.warn('[threatpulse] report export failed:', msg);
             }
           }}
+          onOpenHistory={() => { setActiveReportDialog(false); setReportBuilderSeed(null); setActiveReportHistory(true); }}
+          onOpenVerify={(m) => { setActiveReportDialog(false); setReportBuilderSeed(null); setActiveReportVerify(m); }}
         />
+      )}
+
+      {activeReportHistory && (
+        <ReportHistoryDialog onClose={() => setActiveReportHistory(false)} />
+      )}
+
+      {activeReportVerify && (
+        <ReportVerifyDialog mode={activeReportVerify} onClose={() => setActiveReportVerify(null)} />
       )}
     </div>
   );

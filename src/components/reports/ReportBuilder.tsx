@@ -62,6 +62,14 @@ export interface ReportBuilderProps {
    *  + the selected export format. The parent invokes
    *  the exporter and the download helper. */
   onExport?: (report: any, format: 'markdown' | 'html' | 'print' | 'json') => void;
+  /** V6.5: open the report history dialog. The parent
+   *  closes the builder dialog and opens the history
+   *  dialog. The builder never touches history itself. */
+  onOpenHistory?: () => void;
+  /** V6.5: open the verify/compare dialog for a JSON
+   *  report file. The parent closes the builder dialog
+   *  and opens the verifier. */
+  onOpenVerify?: (mode: 'verify' | 'compare') => void;
 }
 
 export default function ReportBuilder({
@@ -72,6 +80,8 @@ export default function ReportBuilder({
   publicVulns = null,
   onClose,
   onExport,
+  onOpenHistory,
+  onOpenVerify,
 }: ReportBuilderProps) {
   const workspace = useWorkspace();
 
@@ -361,6 +371,28 @@ export default function ReportBuilder({
           >
             Cancel
           </button>
+          {onOpenHistory && (
+            <button
+              type="button"
+              onClick={onOpenHistory}
+              className="focus-ring inline-flex items-center gap-1 rounded-md border border-radar-border bg-radar-panel2 px-3 py-1.5 text-xs text-radar-muted hover:border-radar-accent/40 hover:text-radar-text"
+              data-testid="report-builder-open-history"
+              title="Open local report history"
+            >
+              History
+            </button>
+          )}
+          {onOpenVerify && (
+            <button
+              type="button"
+              onClick={() => onOpenVerify('verify')}
+              className="focus-ring inline-flex items-center gap-1 rounded-md border border-radar-border bg-radar-panel2 px-3 py-1.5 text-xs text-radar-muted hover:border-radar-accent/40 hover:text-radar-text"
+              data-testid="report-builder-open-verify"
+              title="Verify or compare JSON report files"
+            >
+              Verify…
+            </button>
+          )}
           <button
             type="button"
             onClick={handleBuild}
