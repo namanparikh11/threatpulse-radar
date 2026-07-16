@@ -10,7 +10,7 @@
  * JavaScript heap.
  */
 
-import { makeEntry, validateEntry, compareUpdatedAt, applyPatch } from './schema.mjs';
+import { makeEntry, validateEntry, compareUpdatedAt, applyPatch, stampCommitted, newMutationId } from './schema.mjs';
 
 const STORAGE_VERSION = '1.0.0';
 
@@ -63,7 +63,11 @@ export class InMemoryWorkspaceAdapter {
     this._checkOpen();
     const cur = this._store.get(String(cveId).toUpperCase());
     if (!cur) return { ok: false, reason: 'not-found' };
-    const next = applyPatch({ ...cur }, patch || {});
+    const patched = applyPatch({ ...cur }, patch || {});
+    // Stamp a fresh mutationId and increment
+    // revision. Failed writes (above) never
+    // increment revision.
+    const next = stampCommitted(patched, { newMutationId: newMutationId() });
     this._store.set(cur.cveId, next);
     this._notify({ type: 'patch', cveId: cur.cveId });
     return { ok: true, record: next };
@@ -116,7 +120,8 @@ export class InMemoryWorkspaceAdapter {
     for (const id of set) {
       const cur = this._store.get(id);
       if (!cur) continue;
-      const next = applyPatch({ ...cur }, patch || {});
+      const patched = applyPatch({ ...cur }, patch || {});
+      const next = stampCommitted(patched, { newMutationId: newMutationId() });
       this._store.set(id, next);
       updated++;
     }

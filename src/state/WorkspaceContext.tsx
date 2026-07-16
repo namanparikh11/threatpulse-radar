@@ -6,13 +6,14 @@
  * multi-tab synchronization through a BroadcastChannel.
  *
  * Public state shape:
- *   status: 'initializing' | 'ready' | 'read-only' |
- *           'unavailable' | 'error'
+ *   status: 'initializing' | 'persistent' | 'session-only'
+ *           | 'unavailable' | 'error'
  *   entriesByCve: { [cveId]: WorkspaceEntry }
  *   counts: { watched, unreviewed, actionRequired,
  *             changedSinceReview, resolved, archived }
  *   lastError: string | null
  *   conflict: { cveId, reason } | null
+ *   hasPendingWrites: boolean
  *
  * The context NEVER merges a workspace entry into the
  * public vulnerability dataset. Every action is
@@ -23,12 +24,28 @@
  *   - Per-CVE writes are serialised through a tiny
  *     in-memory queue so a single tab cannot lose an
  *     update because two components fired at once.
+ *   - Every successful mutation increments `revision`
+ *     exactly once and stamps a fresh `mutationId`.
  *   - A multi-tab edit is detected by comparing the
- *     on-disk updatedAt with the in-memory updatedAt
+ *     on-disk revision/updatedAt with the local one
  *     after every commit; a newer disk record that
- *     was not written by THIS tab surfaces a
- *     visible conflict warning that the operator can
- *     dismiss or resolve.
+ *     was not written by THIS tab surfaces a visible
+ *     conflict warning that the operator can dismiss
+ *     or resolve.
+ *
+ * Storage fallback (v6.4 hardened):
+ *   - persistent:     IndexedDB available, normal.
+ *   - session-only:   IndexedDB unavailable, in-memory
+ *                    adapter is writable for the
+ *                    current tab. Data disappears when
+ *                    the tab closes.
+ *   - unavailable:    neither persistent nor safe
+ *                    session storage is available.
+ *   - error:          unexpected storage failure.
+ *   The fallback never silently downgrades from
+ *   persistent to session-only: once committed
+ *   persistent data has been observed, a later
+ *   downgrade surfaces an explicit warning.
  */
 
 import {
@@ -45,12 +62,15 @@ import {
 import {
   applyPatch,
   compareUpdatedAt,
+  isNewerThan,
   makeEntry,
   normaliseCveId,
   normalisePriority,
   normaliseTags,
   normaliseText,
   normaliseTriageStatus,
+  newMutationId,
+  stampCommitted,
   WORKSPACE_SCHEMA_VERSION,
 } from '../workspace/schema.mjs';
 import {
@@ -63,19 +83,16 @@ import {
   UnavailableWorkspaceAdapter,
 } from '../workspace/UnavailableWorkspaceAdapter.mjs';
 import {
-  buildExportPayload,
   applyMerge,
   applyReplace,
+  buildExportPayload,
+  dryRunImport,
 } from '../workspace/exportImport.mjs';
-import { validateImportPayload } from '../workspace/schema.mjs';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _validationHelper = validateImportPayload;
-export {};
 
 export type WorkspaceStatus =
   | 'initializing'
-  | 'ready'
-  | 'read-only'
+  | 'persistent'
+  | 'session-only'
   | 'unavailable'
   | 'error';
 
@@ -89,9 +106,12 @@ export interface WorkspaceEntry {
   note: string;
   addedAt: string;
   updatedAt: string;
+  revision: number;
+  mutationId: string;
   lastReviewedAt: string | null;
   lastSeenPublicIntelligenceVersion: string | null;
   lastSeenChangeSignature: string | null;
+  lastSeenPublicProjectionSchemaVersion: string | null;
   archived: boolean;
 }
 
@@ -109,6 +129,9 @@ export interface WorkspaceConflict {
   cveId: string;
   reason: 'updated' | 'deleted' | 'replaced';
   remote: WorkspaceEntry | null;
+  remoteRevision?: number;
+  remoteUpdatedAt?: string;
+  remoteMutationId?: string;
 }
 
 export interface WorkspaceState {
@@ -119,6 +142,14 @@ export interface WorkspaceState {
   conflict: WorkspaceConflict | null;
   warning: boolean;
   backend: 'indexeddb' | 'memory' | 'unavailable' | 'initializing';
+  /**
+   * True when at least one write is in flight. The
+   * drawer's debounce lifecycle also marks a write
+   * "pending" between the keystroke and the actual
+   * commit, but that is local to the drawer; this
+   * flag tracks in-flight context writes.
+   */
+  hasPendingWrites: boolean;
 }
 
 const EMPTY_COUNTS: WorkspaceCounts = {
@@ -143,15 +174,6 @@ function computeCounts(entries: WorkspaceEntry[]): WorkspaceCounts {
     if (e.triageStatus === 'unreviewed') counts.unreviewed++;
     if (e.triageStatus === 'action-required') counts.actionRequired++;
     if (e.triageStatus === 'resolved') counts.resolved++;
-    if (e.lastSeenChangeSignature && e.lastSeenPublicIntelligenceVersion) {
-      // The change-since-review check is performed
-      // in the React component that has access to
-      // the public dataset. The count is approximated
-      // by the heuristic "has any review checkpoint";
-      // the live classifier runs in the component.
-      // For now the count is 0 unless the component
-      // overrides it. The component does that.
-    }
   }
   return counts;
 }
@@ -165,8 +187,6 @@ function defaultAdapterFactory(): { adapter: any; backend: WorkspaceState['backe
       // fall through to in-memory
     }
   }
-  // Fall back to the in-memory adapter. The session is
-  // ephemeral but the dashboard still works.
   return { adapter: new InMemoryWorkspaceAdapter(), backend: 'memory' };
 }
 
@@ -179,18 +199,22 @@ interface BroadcastMessage {
 const WorkspaceContext = createContext<{
   state: WorkspaceState;
   saveError: string | null;
+  /** True iff any in-flight write is pending. */
+  hasPendingWrites: boolean;
+  /** Resolve once every in-flight write has settled. */
+  flushPendingWrites: () => Promise<void>;
   toggleWatch: (cveId: string, on?: boolean) => Promise<{ ok: boolean; reason?: string }>;
   setTriage: (cveId: string, status: string) => Promise<{ ok: boolean; reason?: string }>;
   setPriority: (cveId: string, priority: string) => Promise<{ ok: boolean; reason?: string }>;
   addTag: (cveId: string, tag: string) => Promise<{ ok: boolean; reason?: string }>;
   removeTag: (cveId: string, tag: string) => Promise<{ ok: boolean; reason?: string }>;
   setNote: (cveId: string, note: string) => Promise<{ ok: boolean; reason?: string }>;
-  markReviewed: (cveId: string, publicIntelligenceVersion: string, changeSignature: string) => Promise<{ ok: boolean; reason?: string }>;
+  markReviewed: (cveId: string, publicIntelligenceVersion: string, changeSignature: string, publicProjectionSchemaVersion?: string | null) => Promise<{ ok: boolean; reason?: string }>;
   archive: (cveId: string, on?: boolean) => Promise<{ ok: boolean; reason?: string }>;
   getEntry: (cveId: string) => WorkspaceEntry | null;
   listEntries: (filters?: any) => Promise<WorkspaceEntry[]>;
   bulkUpdate: (cveIds: string[], patch: Record<string, unknown>) => Promise<{ ok: boolean; updated?: number; reason?: string }>;
-  exportWorkspace: () => { format: string; schemaVersion: string; exportedAt: string; applicationVersion: string; entryCount: number; entries: WorkspaceEntry[]; checksum: string };
+  exportWorkspace: () => Promise<{ format: string; schemaVersion: string; exportedAt: string; applicationVersion: string; entryCount: number; entries: WorkspaceEntry[]; checksum: string }>;
   importWorkspace: (payload: any, mode: 'merge' | 'replace') => Promise<{ ok: boolean; reason?: string; added?: number; updated?: number; unchanged?: number; written?: number; removed?: number }>;
   validateImport: (payload: any) => { ok: boolean; reason?: string; entries?: WorkspaceEntry[]; dropped?: any[] };
   clearArchived: () => Promise<{ ok: boolean; removed?: number; reason?: string }>;
@@ -216,11 +240,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     conflict: null,
     warning: false,
     backend: 'initializing',
+    hasPendingWrites: false,
   });
   const [saveError, setSaveError] = useState<string | null>(null);
   const [changedSinceReviewOverride, setChangedSinceReviewOverride] = useState<number | null>(null);
 
   const adapterRef = useRef<any | null>(null);
+  /**
+   * Tracks the storage mode we STARTED in for this
+   * session. A silent downgrade from persistent to
+   * session-only after committed persistent data
+   * already exists would be a data-loss trap. We
+   * surface an explicit warning when that happens.
+   */
+  const startedAsPersistentRef = useRef<boolean | null>(null);
   const backendRef = useRef<WorkspaceState['backend']>('initializing');
   const channelRef = useRef<BroadcastChannel | null>(null);
   // Per-CVE serialised write queue. The map is
@@ -228,6 +261,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // chain onto the existing promise; writes for
   // different CVEs do not block each other.
   const writeQueuesRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  /** Set of in-flight write promises (not per-cve). */
+  const inflightRef = useRef<Set<Promise<unknown>>>(new Set());
 
   const broadcastLocal = useCallback((msg: BroadcastMessage) => {
     try {
@@ -260,7 +295,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     for (const e of list.entries) byCve[e.cveId] = e as WorkspaceEntry;
     setState((s) => ({
       ...s,
-      status: backendRef.current === 'unavailable' ? 'unavailable' : (s.status === 'error' ? 'error' : 'ready'),
+      status: s.status === 'error' ? 'error' : (backendRef.current === 'unavailable' ? 'unavailable' : (backendRef.current === 'memory' ? 'session-only' : 'persistent')),
       entriesByCve: byCve,
       counts: { ...computeCounts(Object.values(byCve)), changedSinceReview: changedSinceReviewOverride ?? s.counts.changedSinceReview },
       warning: Object.values(byCve).length >= WARNING_ENTRIES,
@@ -278,11 +313,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const init = await adapter.initialize();
       if (cancelled) return;
       if (!init.ok) {
-        // IndexedDB blocked or unsupported → in-memory
-        // session adapter OR unavailable adapter. We
-        // always try the in-memory adapter next so the
-        // operator can still use the workspace for the
-        // session; the diagnostic shows "session-only".
         if (backend === 'indexeddb') {
           const fallback = new InMemoryWorkspaceAdapter();
           const fallbackInit = await fallback.initialize();
@@ -290,18 +320,31 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           if (fallbackInit.ok) {
             adapterRef.current = fallback;
             backendRef.current = 'memory';
-            setState((s) => ({
-              ...s,
-              status: 'read-only',
-              backend: 'memory',
-              lastError: 'IndexedDB unavailable; using session-only workspace.',
-            }));
+            // We started by attempting IndexedDB. If
+            // it had committed data and the upgrade
+            // failed AFTER startup, the operator's
+            // existing data is lost. We mark the
+            // session as a graceful fallback, not as
+            // a "persistent session" because the data
+            // is now in-memory only.
+            if (startedAsPersistentRef.current === true) {
+              setState((s) => ({
+                ...s,
+                status: 'session-only',
+                backend: 'memory',
+                lastError: 'IndexedDB became unavailable after a successful open. Recent data is not persisted. Export a backup.',
+              }));
+            } else {
+              setState((s) => ({
+                ...s,
+                status: 'session-only',
+                backend: 'memory',
+                lastError: 'IndexedDB unavailable; using a session-only workspace that will be lost on tab close.',
+              }));
+            }
             await refreshAll();
             return;
           }
-          // Even in-memory failed. The Unavailable
-          // adapter renders a clear "workspace is
-          // disabled" state.
           const none = new UnavailableWorkspaceAdapter();
           await none.initialize();
           adapterRef.current = none;
@@ -314,8 +357,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           }));
           return;
         }
-        // In-memory or some other backend failed. Use
-        // the Unavailable adapter.
         const none = new UnavailableWorkspaceAdapter();
         await none.initialize();
         adapterRef.current = none;
@@ -329,12 +370,18 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         return;
       }
       // Successful init.
-      setState((s) => ({ ...s, status: 'ready', backend, lastError: null }));
+      startedAsPersistentRef.current = true;
+      setState((s) => ({
+        ...s,
+        status: backend === 'memory' ? 'session-only' : 'persistent',
+        backend,
+        lastError: backend === 'memory'
+          ? 'Session-only workspace. Data is not persisted and will be lost on tab close.'
+          : null,
+      }));
       await refreshAll();
     })();
-    // BroadcastChannel: a tab-local write fires a
-    // message; a remote tab re-fetches the affected
-    // record (or refreshes the whole list for bulk).
+
     let channel: BroadcastChannel | null = null;
     try {
       if (typeof BroadcastChannel !== 'undefined') {
@@ -344,8 +391,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           const msg = ev.data;
           if (!msg || typeof msg !== 'object') return;
           if (msg.type === 'delete' && typeof msg.cveId === 'string') {
-            // A remote tab deleted the entry. Re-fetch
-            // the list to keep ours in sync.
             await refreshAll();
             return;
           }
@@ -354,19 +399,36 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             if (!adapter) return;
             const remote = await adapter.getEntry(msg.cveId);
             const local = state.entriesByCve?.[msg.cveId];
-            if (remote && (!local || compareUpdatedAt(remote as WorkspaceEntry, local) > 0)) {
+            if (remote && (!local || isNewerThan(remote as WorkspaceEntry, local))) {
               ingestEntry(remote as WorkspaceEntry);
-              // Surface a conflict if our in-memory
-              // version is newer than the remote one
-              // (rare; usually both tabs converge).
-              if (local && compareUpdatedAt(remote as WorkspaceEntry, local) < 0) {
-                setState((s) => ({ ...s, conflict: { cveId: msg.cveId, reason: 'replaced', remote: remote as WorkspaceEntry } }));
+              if (local && isNewerThan(local, remote as WorkspaceEntry)) {
+                // Local is newer than remote. The
+                // conflict banner surfaces this so
+                // the operator can decide.
+                setState((s) => ({
+                  ...s,
+                  conflict: {
+                    cveId: msg.cveId,
+                    reason: 'replaced',
+                    remote: remote as WorkspaceEntry,
+                    remoteRevision: (remote as any).revision,
+                    remoteUpdatedAt: (remote as any).updatedAt,
+                    remoteMutationId: (remote as any).mutationId,
+                  },
+                }));
               }
             } else if (!remote && local) {
-              // The remote tab deleted our record. We
-              // do NOT auto-delete ours (we only mirror
-              // forward). Surface a conflict instead.
-              setState((s) => ({ ...s, conflict: { cveId: msg.cveId, reason: 'deleted', remote: null } }));
+              setState((s) => ({
+                ...s,
+                conflict: {
+                  cveId: msg.cveId,
+                  reason: 'deleted',
+                  remote: null,
+                  remoteRevision: undefined,
+                  remoteUpdatedAt: undefined,
+                  remoteMutationId: undefined,
+                },
+              }));
             }
             return;
           }
@@ -383,12 +445,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       channelRef.current = null;
       try { adapterRef.current?.close?.(); } catch { /* noop */ }
     };
-    // refreshAll and ingestEntry are stable (useRef'd
-    // queue). The effect runs once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep the counts in sync when the override changes.
   useEffect(() => {
     setState((s) => {
       const entries = Object.values(s.entriesByCve);
@@ -399,20 +458,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   }, [changedSinceReviewOverride]);
 
-  // Per-CVE serialised write. The function:
-  //   1. reads the current record
-  //   2. applies the patch
-  //   3. writes via the adapter
-  //   4. re-reads to verify the committed record
-  //   5. ingests the committed record into local state
-  //   6. broadcasts the change
+  const trackInflight = useCallback(<T,>(p: Promise<T>): Promise<T> => {
+    inflightRef.current.add(p as Promise<unknown>);
+    setState((s) => (s.hasPendingWrites ? s : { ...s, hasPendingWrites: true }));
+    p.finally(() => {
+      inflightRef.current.delete(p as Promise<unknown>);
+      if (inflightRef.current.size === 0) {
+        setState((s) => (s.hasPendingWrites ? { ...s, hasPendingWrites: false } : s));
+      }
+    });
+    return p;
+  }, []);
+
   const writeWithQueue = useCallback(async <T,>(cveId: string, op: () => Promise<T>): Promise<T> => {
     const prev = writeQueuesRef.current.get(cveId) || Promise.resolve();
     const next = prev.then(op, op);
     writeQueuesRef.current.set(cveId, next.catch(() => undefined));
-    return next;
-  }, []);
+    return trackInflight(next);
+  }, [trackInflight]);
 
+  /**
+   * The single source of truth for "this write
+   * committed". The function:
+   *   1. serialises the per-cve write queue
+   *   2. reads the current record (or builds a fresh
+   *      one)
+   *   3. applies the patch
+   *   4. stamps the next revision + a fresh mutationId
+   *      (stampCommitted)
+   *   5. writes via the adapter
+   *   6. re-reads to verify the committed record
+   *   7. ingests the committed record into local state
+   *   8. broadcasts the change (cveId only; no note /
+   *      tag content)
+   * On any failure (adapter error, verify mismatch)
+   * the revision is NOT incremented.
+   */
   const applyMutation = useCallback(async (
     cveId: string,
     patch: Record<string, unknown>,
@@ -427,7 +508,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       // Read current; if missing, build a fresh entry.
       const cur = (await adapter.getEntry(id)) as WorkspaceEntry | null;
       const base = cur || makeEntry(id, {});
-      const next = applyPatch({ ...base }, patch);
+      const patched = applyPatch({ ...base }, patch);
+      // Stamp a fresh mutationId + next revision. The
+      // mutationId is the runtime per-mutation
+      // identifier; revision is the monotonically
+      // increasing integer counter.
+      const next = stampCommitted(patched, { newMutationId: newMutationId() });
       const r = await adapter.putEntry(next);
       if (!r.ok) {
         const message = humanizeWriteError(r.reason);
@@ -500,13 +586,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return applyMutation(id, { note: normaliseText(note, { max: 8000 }) }, 'patch');
   }, [applyMutation]);
 
-  const markReviewed = useCallback(async (cveId: string, publicIntelligenceVersion: string, changeSignature: string) => {
+  const markReviewed = useCallback(async (
+    cveId: string,
+    publicIntelligenceVersion: string,
+    changeSignature: string,
+    publicProjectionSchemaVersion: string | null = null,
+  ) => {
     const id = normaliseCveId(cveId);
     if (!id) return { ok: false, reason: 'invalid-cveId' };
     return applyMutation(id, {
       lastReviewedAt: new Date().toISOString(),
       lastSeenPublicIntelligenceVersion: publicIntelligenceVersion,
       lastSeenChangeSignature: changeSignature,
+      lastSeenPublicProjectionSchemaVersion: publicProjectionSchemaVersion,
       triageStatus: 'reviewing',
     }, 'patch');
   }, [applyMutation]);
@@ -541,34 +633,34 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       return { ok: false, reason: r.reason };
     }
     if (r.updated && r.updated > 0) {
-      // Re-fetch every affected record to capture the
-      // updated updatedAt timestamps and any normalisation
-      // effects.
+      // Stamp a fresh mutationId on every affected
+      // record so multi-tab conflict detection has a
+      // per-bulk discriminator.
       for (const id of ids) {
-        const fresh = (await adapter.getEntry(id)) as WorkspaceEntry | null;
-        if (fresh) ingestEntry(fresh);
+        const cur = (await adapter.getEntry(id)) as WorkspaceEntry | null;
+        if (cur) {
+          const next = stampCommitted(cur, { newMutationId: newMutationId() });
+          await adapter.putEntry(next);
+          const fresh = (await adapter.getEntry(id)) as WorkspaceEntry | null;
+          if (fresh) ingestEntry(fresh);
+        }
       }
       broadcastLocal({ type: 'bulk', ts: Date.now() });
     }
     return { ok: true, updated: r.updated || 0 };
   }, [ingestEntry, broadcastLocal]);
 
-  const exportWorkspace = useCallback(() => {
+  const exportWorkspace = useCallback(async () => {
     const entries = Object.values(state.entriesByCve);
-    return buildExportPayload(entries, { applicationVersion: WORKSPACE_SCHEMA_VERSION });
+    return await buildExportPayload(entries, { applicationVersion: WORKSPACE_SCHEMA_VERSION });
   }, [state.entriesByCve]);
 
   const validateImport = useCallback((payload: any) => {
-    // Reuse the exportImport dry-run path via the
-    // InMemoryWorkspaceAdapter's validateImport (a
-    // passthrough in the current implementation). The
-    // real validation lives in exportImport.dryRunImport
-    // and is used here.
-    // The exported dryRunImport is async, but
-    // validateImport is expected to be sync here for
-    // UI ergonomics. We mirror the behaviour with a
-    // shallow shape check; the actual structural
-    // validation runs in importWorkspace.
+    // The exported dryRunImport is async (it
+    // recomputes the checksum). The dialog runs a
+    // synchronous shape check here for UX; the async
+    // path is the single source of truth at import
+    // time.
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return { ok: false, reason: 'payload-not-object' as string };
     }
@@ -590,10 +682,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const importWorkspace = useCallback(async (payload: any, mode: 'merge' | 'replace') => {
     const adapter = adapterRef.current;
     if (!adapter) return { ok: false, reason: 'unavailable' };
-    // Re-validate first; the dialog already ran a
-    // synchronous check, but the async path is the
-    // single source of truth.
-    const v = _validationHelper(payload);
+    // The async path is the single source of truth
+    // (it re-validates the checksum).
+    const v = await dryRunImport(payload);
     if (!v.ok) return { ok: false, reason: v.reason };
     if (mode === 'merge') {
       const r = await applyMerge(adapter, v.entries);
@@ -602,7 +693,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       broadcastLocal({ type: 'bulk', ts: Date.now() });
       return { ok: true, added: r.added || 0, updated: r.updated || 0, unchanged: r.unchanged || 0 };
     }
-    // Replace.
     const r = await applyReplace(adapter, v.entries);
     if (!r.ok) { setSaveError(humanizeWriteError(r.reason)); return { ok: false, reason: r.reason }; }
     await refreshAll();
@@ -653,8 +743,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     setChangedSinceReviewOverride(0);
   }, []);
 
+  const flushPendingWrites = useCallback(async () => {
+    // Wait for every in-flight write to settle.
+    const inflight = Array.from(inflightRef.current) as Promise<unknown>[];
+    if (inflight.length === 0) return;
+    // We don't care about the result of any individual
+    // write; we just need them all to settle before
+    // the caller proceeds (e.g. a destructive dialog).
+    await Promise.allSettled(inflight);
+    // After settling, the per-cve queue tail might
+    // still have a final microtask queued. Wait one
+    // more tick to be safe.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }, []);
+
   const value = useMemo(() => ({
-    state, saveError,
+    state,
+    saveError,
+    hasPendingWrites: state.hasPendingWrites,
+    flushPendingWrites,
     toggleWatch, setTriage, setPriority, addTag, removeTag, setNote, markReviewed, archive,
     getEntry, listEntries, bulkUpdate,
     exportWorkspace, importWorkspace, validateImport,
@@ -664,6 +771,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [
     state, saveError,
+    flushPendingWrites,
     toggleWatch, setTriage, setPriority, addTag, removeTag, setNote, markReviewed, archive,
     getEntry, listEntries, bulkUpdate,
     exportWorkspace, importWorkspace, validateImport,
@@ -689,6 +797,8 @@ function humanizeWriteError(reason: string | undefined): string {
     case 'too-many-tags': return 'Too many tags (20 per CVE limit).';
     case 'invalid-cveId': return 'Invalid CVE identifier.';
     case 'verify-failed': return 'Storage did not commit the change. Try again.';
+    case 'checksum-mismatch': return 'The import file failed its checksum. The file may be corrupted.';
+    case 'session-only': return 'The workspace is session-only. Data is not persisted.';
     default: return 'Could not save the change. Try again.';
   }
 }

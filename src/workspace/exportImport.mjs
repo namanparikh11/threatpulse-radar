@@ -14,30 +14,31 @@
  *     updated / left alone, plus a list of any
  *     dropped records and their reason. The existing
  *     workspace is NEVER touched.
- *   - merge: newer updatedAt wins per CVE. Ties are
- *     broken by deterministic cveId order. The merge
- *     happens in a single batch (the existing entries
- *     are NOT deleted first; merge is additive).
+ *   - merge: newer updatedAt wins per CVE. The
+ *     comparison uses the three-level
+ *     (updatedAt, revision, mutationId) tie-breaker
+ *     from schema.compareUpdatedAt.
  *   - replace: every existing entry is replaced by
  *     the imported set. The import is staged FIRST
  *     (validated end-to-end) and only then promoted
  *     to the live adapter. If validation fails, the
  *     existing workspace is preserved.
  *
- * The export function is intentionally a PURE function
- * of the entry list. The import function takes the
- * adapter as an argument so it can stage the new
- * workspace in memory before promoting it.
+ * The export and import helpers are ASYNC. The
+ * browser production path uses Web Crypto so the
+ * main thread is never blocked by a 5 MiB payload.
+ * The Node test runner uses node:crypto as the
+ * fallback. No remote hashing service is used.
  */
 
-import { sha256Hex } from './sha256.mjs';
+import { sha256HexAsync, sha256HexSync } from './sha256.mjs';
 import {
   WORKSPACE_SCHEMA_VERSION,
   WORKSPACE_EXPORT_FORMAT,
   LIMITS,
   validateImportPayload,
-  validateEntry,
   compareUpdatedAt,
+  migrationMutationId,
 } from './schema.mjs';
 
 function sortByCveId(a, b) {
@@ -58,29 +59,46 @@ function canonicaliseEntries(entries) {
     note: e.note || '',
     addedAt: e.addedAt,
     updatedAt: e.updatedAt,
+    revision: typeof e.revision === 'number' ? e.revision : 0,
+    mutationId: e.mutationId || migrationMutationId(e.cveId),
     lastReviewedAt: e.lastReviewedAt || null,
     lastSeenPublicIntelligenceVersion: e.lastSeenPublicIntelligenceVersion || null,
     lastSeenChangeSignature: e.lastSeenChangeSignature || null,
+    lastSeenPublicProjectionSchemaVersion: e.lastSeenPublicProjectionSchemaVersion || null,
     archived: !!e.archived,
   }));
 }
 
-function computeChecksum(canonicalEntries) {
+async function computeChecksumAsync(canonicalEntries) {
   // Stable stringification: the entries are already
   // sorted by cveId and the field order is fixed.
-  return sha256Hex(JSON.stringify(canonicalEntries));
+  return await sha256HexAsync(JSON.stringify(canonicalEntries));
+}
+
+function computeChecksumSync(canonicalEntries) {
+  // The sync path returns the same prefixed
+  // form as the async path: 'sha256:<hex>'. The
+  // export format document is unambiguous about
+  // the prefix; both paths must produce an
+  // identical payload for the same input.
+  return `sha256:${sha256HexSync(JSON.stringify(canonicalEntries))}`;
 }
 
 /**
  * Build an exportable payload. The result is
  * deterministic for a given entry list (cveId
  * ascending, tags ascending, fields in fixed order).
- * The checksum is computed over the canonical entry
- * list.
+ *
+ * The checksum is async on the browser production
+ * path so a 5 MiB workspace file never blocks the
+ * main thread. The Node test runner uses the same
+ * async path; if Web Crypto is unavailable, the
+ * async call throws a sanitized `ShaUnavailableError`
+ * which the caller surfaces.
  */
-export function buildExportPayload(entries, { applicationVersion = 'unknown' } = {}) {
+export async function buildExportPayload(entries, { applicationVersion = 'unknown' } = {}) {
   const canonical = canonicaliseEntries(entries || []);
-  const checksum = computeChecksum(canonical);
+  const checksum = await computeChecksumAsync(canonical);
   return {
     format: WORKSPACE_EXPORT_FORMAT,
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
@@ -92,17 +110,75 @@ export function buildExportPayload(entries, { applicationVersion = 'unknown' } =
   };
 }
 
+/** Sync variant for unit tests and small fixtures.
+ *  The browser production path always uses
+ *  buildExportPayload. */
+export function buildExportPayloadSync(entries, { applicationVersion = 'unknown' } = {}) {
+  const canonical = canonicaliseEntries(entries || []);
+  return {
+    format: WORKSPACE_EXPORT_FORMAT,
+    schemaVersion: WORKSPACE_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    applicationVersion,
+    entryCount: canonical.length,
+    entries: canonical,
+    checksum: computeChecksumSync(canonical),
+  };
+}
+
 /**
  * Validate a payload without touching the live
  * adapter. Returns either `{ ok: false, reason }` or
- * `{ ok: true, entries, dropped, stats }`.
+ * `{ ok: true, entries, dropped, stats }`. The
+ * async path also re-validates the checksum when a
+ * checksum is present.
  */
-export function dryRunImport(payload) {
+export async function dryRunImport(payload) {
   const v = validateImportPayload(payload, {
     maxBytes: LIMITS.IMPORT_MAX_BYTES,
     maxEntries: LIMITS.IMPORT_MAX_ENTRIES,
   });
   if (!v.ok) return { ok: false, reason: v.reason, schemaVersion: v.schemaVersion };
+  // Verify the embedded checksum, if present. We
+  // recompute the canonical checksum from the
+  // normalised entries (after validation) and
+  // compare it to the payload's `checksum`. A
+  // mismatch means the file was tampered with.
+  if (payload && typeof payload.checksum === 'string' && payload.checksum.length > 0) {
+    const canonical = canonicaliseEntries(v.entries);
+    const actual = await computeChecksumAsync(canonical);
+    if (actual !== payload.checksum) {
+      return { ok: false, reason: 'checksum-mismatch' };
+    }
+  }
+  return {
+    ok: true,
+    entries: v.entries,
+    dropped: v.dropped,
+    stats: {
+      add: v.entries.length,
+      update: 0,
+      leave: 0,
+      skip: 0,
+      drop: v.dropped.length,
+    },
+  };
+}
+
+/** Sync dry-run for unit tests. */
+export function dryRunImportSync(payload) {
+  const v = validateImportPayload(payload, {
+    maxBytes: LIMITS.IMPORT_MAX_BYTES,
+    maxEntries: LIMITS.IMPORT_MAX_ENTRIES,
+  });
+  if (!v.ok) return { ok: false, reason: v.reason, schemaVersion: v.schemaVersion };
+  if (payload && typeof payload.checksum === 'string' && payload.checksum.length > 0) {
+    const canonical = canonicaliseEntries(v.entries);
+    const actual = computeChecksumSync(canonical);
+    if (actual !== payload.checksum) {
+      return { ok: false, reason: 'checksum-mismatch' };
+    }
+  }
   return {
     ok: true,
     entries: v.entries,
@@ -123,30 +199,10 @@ export function dryRunImport(payload) {
  * (after validation + per-record normalisation) and
  * is the same regardless of `merge` vs `replace`.
  */
-function stageEntries(payload) {
-  const v = validateImportPayload(payload, {
-    maxBytes: LIMITS.IMPORT_MAX_BYTES,
-    maxEntries: LIMITS.IMPORT_MAX_ENTRIES,
-  });
-  if (!v.ok) {
-    return { ok: false, reason: v.reason, schemaVersion: v.schemaVersion };
-  }
+async function stageEntries(payload) {
+  const v = await dryRunImport(payload);
+  if (!v.ok) return v;
   return { ok: true, entries: v.entries, dropped: v.dropped };
-}
-
-/**
- * Compute the merge result against the live
- * adapter. The merge is determined ENTIRELY from
- * the current live state and the staged entries;
- * no partial application happens here. The caller
- * (the WorkspaceContext) performs the writes.
- */
-export async function computeMerge(adapter) {
-  const current = (await adapter.listEntries({})).entries || [];
-  const currentByCve = new Map(current.map((e) => [e.cveId, e]));
-  return {
-    add: [], update: [], leave: [], remove: [],
-  };
 }
 
 /**
@@ -154,6 +210,14 @@ export async function computeMerge(adapter) {
  * level: every patch is written through the
  * adapter; on any write failure the operation is
  * halted and a partial result is returned.
+ *
+ * v6.4: the comparison uses the three-level
+ * (updatedAt, revision, mutationId) tie-breaker
+ * from compareUpdatedAt. The merge is "newer
+ * wins" — a record with a strictly newer
+ * updatedAt/revision/mutationId overrides the
+ * existing record; a record that is older or
+ * equal is left alone.
  */
 export async function applyMerge(adapter, stagedEntries) {
   if (!Array.isArray(stagedEntries) || stagedEntries.length === 0) {
@@ -190,22 +254,9 @@ export async function applyMerge(adapter, stagedEntries) {
  * is preserved.
  */
 export async function applyReplace(adapter, stagedEntries) {
-  // 1. Stage every new entry into a temp namespace.
-  //    We do this by writing through a temporary
-  //    "stage" set on the adapter (the in-memory
-  //    adapter supports this; the IndexedDB adapter
-  //    uses an isolated transaction below).
-  // 2. Validate by reading the staged entries back.
-  // 3. Clear the live store.
-  // 4. Promote the staged entries into the live store.
-  // 5. On any failure between steps, leave the live
-  //    store untouched.
   if (!Array.isArray(stagedEntries)) {
     return { ok: false, reason: 'invalid-payload' };
   }
-  // For the in-memory adapter, a simple put+clear
-  // works. For IndexedDB, we must do this in a single
-  // transaction. The adapter-level method does that.
   if (typeof adapter.replaceAll === 'function') {
     return await adapter.replaceAll(stagedEntries);
   }

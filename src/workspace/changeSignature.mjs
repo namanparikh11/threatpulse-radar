@@ -14,6 +14,7 @@
  *
  * Components of the signature (all normalized):
  *   - publicIntelligenceVersion (string)
+ *   - publicProjectionSchemaVersion (string)
  *   - severity
  *   - cvssScore
  *   - epssProbability (4-decimal fixed)
@@ -30,27 +31,13 @@
  * `|`, then hashed with SHA-256. The output is a
  * lowercase hex digest prefixed with `sha256:`.
  *
- * The SHA-256 implementation is the pure-JS sync
- * implementation in ./sha256.mjs. The Web Crypto API
- * is async and would force every change-detection
- * comparison through a Promise boundary.
+ * The SHA-256 implementation is the async Web Crypto
+ * helper in ./sha256.mjs. A pure-JS sync fallback is
+ * used for unit tests; the export and import paths
+ * always go through the async API.
  */
 
-import { sha256Hex } from './sha256.mjs';
-
-const FIELDS = [
-  'severity',
-  'cvssScore',
-  'epssProbability',
-  'kev',
-  'ssvcExploitation',
-  'ssvcAutomatable',
-  'ssvcTechnicalImpact',
-  'vulnrichment',
-  'githubAdvisory',
-  'osvRecordIds',
-  'withdrawn',
-];
+import { sha256HexAsync, sha256HexSync } from './sha256.mjs';
 
 function fixed4(n) {
   if (typeof n !== 'number' || !Number.isFinite(n)) return '0.0000';
@@ -71,10 +58,16 @@ function bool01(b) {
  * present for this CVE) are encoded as empty strings
  * so two views with the same absence signature the
  * same.
+ *
+ * The function accepts the public-projection schema
+ * version as a separate parameter so the signature
+ * is bound to the schema that produced it. The
+ * signature changes when the public-projection schema
+ * changes even if every other field is identical.
  */
-export function computeChangeSignature(vuln, publicIntelligenceVersion) {
+export async function computeChangeSignature(vuln, publicIntelligenceVersion, publicProjectionSchemaVersion) {
   if (!vuln || typeof vuln !== 'object') {
-    return sha256Hex('__empty__');
+    return `sha256:${await sha256HexAsync('__empty__')}`;
   }
   const v = vuln;
   const ssvc = v.ssvc || {};
@@ -82,6 +75,7 @@ export function computeChangeSignature(vuln, publicIntelligenceVersion) {
   const osvIds = Array.isArray(osv.recordIds) ? osv.recordIds.slice().sort().join(',') : '';
   const parts = [
     `v=${publicIntelligenceVersion || ''}`,
+    `schema=${publicProjectionSchemaVersion || ''}`,
     `severity=${v.severity || ''}`,
     `cvss=${fixed4(typeof v.cvssScore === 'number' ? v.cvssScore : 0)}`,
     `epss=${fixed4(typeof v.epssProbability === 'number' ? v.epssProbability : 0)}`,
@@ -95,57 +89,114 @@ export function computeChangeSignature(vuln, publicIntelligenceVersion) {
     `wd=${bool01(!!v.withdrawn)}`,
   ];
   const data = parts.join('|');
-  return sha256Hex(data);
+  return `sha256:${await sha256HexAsync(data)}`;
+}
+
+/** Sync helper for unit tests and small per-CVE
+ *  computations where the async path is impractical.
+ *  The browser production path always uses
+ *  computeChangeSignature. */
+export function computeChangeSignatureSync(vuln, publicIntelligenceVersion, publicProjectionSchemaVersion) {
+  if (!vuln || typeof vuln !== 'object') {
+    return `sha256:${sha256HexSync('__empty__')}`;
+  }
+  const v = vuln;
+  const ssvc = v.ssvc || {};
+  const osv = v.osv || {};
+  const osvIds = Array.isArray(osv.recordIds) ? osv.recordIds.slice().sort().join(',') : '';
+  const parts = [
+    `v=${publicIntelligenceVersion || ''}`,
+    `schema=${publicProjectionSchemaVersion || ''}`,
+    `severity=${v.severity || ''}`,
+    `cvss=${fixed4(typeof v.cvssScore === 'number' ? v.cvssScore : 0)}`,
+    `epss=${fixed4(typeof v.epssProbability === 'number' ? v.epssProbability : 0)}`,
+    `kev=${bool01(!!v.kev)}`,
+    `ssvcE=${ssvc.exploitation || ''}`,
+    `ssvcA=${ssvc.automatable || ''}`,
+    `ssvcT=${ssvc.technicalImpact || ''}`,
+    `vr=${bool01(!!v.vulnrichment)}`,
+    `gh=${bool01(!!v.githubAdvisory)}`,
+    `osv=${osvIds}`,
+    `wd=${bool01(!!v.withdrawn)}`,
+  ];
+  const data = parts.join('|');
+  return `sha256:${sha256HexSync(data)}`;
 }
 
 /**
- * Compute a public-intelligence version fingerprint
- * (independent of the workspace record). Used to
- * detect a newer compatible public-intelligence
- * version: a workspace record whose
- * `lastSeenPublicIntelligenceVersion` differs from
- * the current `publicIntelligenceVersion` is a
- * candidate for "changed since review". The actual
- * change is then decided by comparing change
- * signatures on the same version.
+ * Determine whether two public-intelligence versions
+ * are directly comparable.
+ *
+ * v6.4 hardened: the V6.1 version id is a timestamp
+ * + hash form (`<fs-safe-iso>-<short-hex>`), NOT a
+ * semver. The compat check is therefore EXACT
+ * equality. Two records with different version ids
+ * are NEVER treated as compatible, even when the
+ * prefix strings happen to share characters.
+ *
+ * The "compat" notion we DO need is on the
+ * projection schema version, not the dataset
+ * version: two records produced by the same
+ * projection schema version can be compared
+ * directly. The two checks are decoupled; the
+ * caller passes the projection schema version
+ * separately.
  */
-export function versionsAreCompatible(a, b) {
-  // Two versions are considered compatible when they
-  // share a major + minor (e.g. v6-1-... and v6-1-...
-  // are compatible; v6-1-... and v6-2-... are not).
-  // The format in use is `v<MAJOR>-<MINOR>-<HASH>`.
+export function publicVersionsEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const ca = a.split('-'); const cb = b.split('-');
-  if (ca.length < 2 || cb.length < 2) return false;
-  return ca[0] === cb[0] && ca[1] === cb[1];
+  if (a.length === 0 || b.length === 0) return false;
+  return a === b;
 }
 
 /**
  * Compare the current CVE view (with a current
- * `publicIntelligenceVersion`) against the workspace
- * record's `lastSeenPublicIntelligenceVersion` and
- * `lastSeenChangeSignature`. Returns a label:
+ * publicIntelligenceVersion) against the workspace
+ * record's `lastSeenPublicIntelligenceVersion`,
+ * `lastSeenChangeSignature`, and
+ * `lastSeenPublicProjectionSchemaVersion`. Returns:
  *   - 'unavailable': missing change intelligence OR
- *     versions are not comparable
- *   - 'no-newer': current signature equals the last
- *     seen signature at the SAME compatible version
+ *     the current bundle is not directly comparable
+ *     to the review checkpoint
+ *   - 'no-newer': current signature equals the
+ *     last-seen signature at the EXACT same
+ *     public-intelligence version and projection
+ *     schema version
  *   - 'changed': current signature differs from the
- *     last-seen signature at the SAME compatible
- *     version
+ *     last-seen signature at the EXACT same
+ *     public-intelligence version and projection
+ *     schema version
  *   - 'newly-tracked': the workspace record has no
  *     `lastSeenPublicIntelligenceVersion` yet
  *   - 'no-longer-tracked': the CVE is no longer in
- *     the public dataset (caller supplies this signal)
+ *     the public dataset (caller supplies this
+ *     signal)
+ *
+ * An older or mismatched bundle (different version
+ * or different projection schema) means "Change
+ * status unavailable" — never a fabricated change
+ * claim.
  */
-export function classifyChange({ currentVersion, currentSignature, record, presentInPublic = true }) {
+export function classifyChange({
+  currentVersion,
+  currentProjectionSchemaVersion,
+  currentSignature,
+  record,
+  presentInPublic = true,
+}) {
   if (!record) return 'unavailable';
   if (!presentInPublic) return 'no-longer-tracked';
   if (!record.lastSeenPublicIntelligenceVersion) return 'newly-tracked';
   if (!record.lastSeenChangeSignature) return 'unavailable';
-  if (!versionsAreCompatible(record.lastSeenPublicIntelligenceVersion, currentVersion)) {
+  // Exact-equality compat on the version id
+  // (timestamp + short hash, NOT semver).
+  if (!publicVersionsEqual(record.lastSeenPublicIntelligenceVersion, currentVersion)) {
     return 'unavailable';
   }
-  if (currentVersion !== record.lastSeenPublicIntelligenceVersion) {
+  // Projection schema must match exactly too.
+  // A record that was stamped under an older
+  // schema is not directly comparable to a
+  // current bundle produced under a newer schema.
+  if (!publicVersionsEqual(record.lastSeenPublicProjectionSchemaVersion || '', currentProjectionSchemaVersion || '')) {
     return 'unavailable';
   }
   if (currentSignature === record.lastSeenChangeSignature) return 'no-newer';

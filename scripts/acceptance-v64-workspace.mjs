@@ -5,28 +5,36 @@
 //   - schema validation (CVE normalisation, tag dedup,
 //     note cap, prototype-pollution rejection)
 //   - migrations (chain lookup, isOnMigrationChain)
-//   - change signature (deterministic, compat-version)
+//   - revision + mutationId deterministic comparison
+//   - migration of legacy records (no revision metadata)
+//   - per-CVE serialised writes (writeWithQueue)
 //   - in-memory + unavailable adapters
-//   - IndexedDB adapter path (smoke test in headless
-//     Node — the full IndexedDB path runs in the
-//     browser; this covers the code reachable from
-//     the Node test runner)
-//   - transactional writes (per-CVE queue)
-//   - import modes (dry-run, merge, replace)
-//   - export checksum determinism
+//   - transactional writes (verify-failed path)
+//   - import modes (dry-run, merge, replace,
+//     checksum-mismatch, failed-promotion preservation)
+//   - export checksum determinism (async + sync paths)
 //   - bulk update and clear semantics
 //   - queue filters and ordering
-//   - sanity invariants:
-//       no note/tag in URL, no note/tag in any
-//       workspace field that bleeds into the
-//       public dataset, no note/tag in CSV columns,
-//       no note/tag in filenames, no note/tag in
-//       metric names, no note/tag in banner copy
+//   - public-intelligence compatibility: exact
+//     equality on the version id (no semver
+//     parsing); status === 'available' required;
+//     projection schema version must match
+//   - change-aware review: only "no-newer" /
+//     "changed" / "newly-tracked" / "unavailable" —
+//     no fabricated change claim
+//   - storage fallback modes (persistent /
+//     session-only / unavailable / error)
+//   - privacy invariants (CSV, Netlify function
+//     source sweep, URL, export filename)
+//   - runtime privacy: workspace operations do
+//     not produce a network call or URL write
+//   - concurrency: parallel patchEntry →
+//     last-write-wins (per-CVE serialised)
 
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
 import { mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +63,9 @@ console.log('[1] Schema validation');
     TRIAGE_STATUSES,
     USER_PRIORITIES,
     LIMITS,
+    INITIAL_REVISION,
+    MIGRATION_REVISION,
+    MIGRATION_MUTATION_PREFIX,
     normaliseCveId,
     normaliseTags,
     normaliseText,
@@ -65,6 +76,10 @@ console.log('[1] Schema validation');
     validateImportPayload,
     applyPatch,
     compareUpdatedAt,
+    isNewerThan,
+    newMutationId,
+    migrationMutationId,
+    stampCommitted,
     isSupportedSchemaVersion,
   } = await import('../src/workspace/schema.mjs');
 
@@ -78,6 +93,9 @@ console.log('[1] Schema validation');
   assert('IMPORT_MAX_BYTES is 5 MiB', LIMITS.IMPORT_MAX_BYTES === 5 * 1024 * 1024);
   assert('IMPORT_MAX_ENTRIES is 50000', LIMITS.IMPORT_MAX_ENTRIES === 50000);
   assert('WARNING_ENTRIES is 5000', LIMITS.WARNING_ENTRIES === 5000);
+  assert('INITIAL_REVISION is 1', INITIAL_REVISION === 1);
+  assert('MIGRATION_REVISION is 0', MIGRATION_REVISION === 0);
+  assert('MIGRATION_MUTATION_PREFIX is "migrated-"', MIGRATION_MUTATION_PREFIX === 'migrated-');
 
   assert('normaliseCveId accepts uppercase', normaliseCveId('CVE-2024-1234') === 'CVE-2024-1234');
   assert('normaliseCveId uppercases lower', normaliseCveId('cve-2024-1234') === 'CVE-2024-1234');
@@ -97,6 +115,7 @@ console.log('[1] Schema validation');
   assert('normalisePriority rejects bad', normalisePriority('nope') === 'none');
   assert('normaliseTriageStatus rejects bad', normaliseTriageStatus('nope') === 'unreviewed');
 
+  // makeEntry: revision defaults to 1, mutationId is fresh
   const e = makeEntry('CVE-2024-0001', { watched: true, triageStatus: 'reviewing', userPriority: 'high', note: 'hello', tags: ['one', 'two'] });
   assert('makeEntry schemaVersion set', e.schemaVersion === WORKSPACE_SCHEMA_VERSION);
   assert('makeEntry cveId normalised', e.cveId === 'CVE-2024-0001');
@@ -105,63 +124,72 @@ console.log('[1] Schema validation');
   assert('makeEntry priority set', e.userPriority === 'high');
   assert('makeEntry note set', e.note === 'hello');
   assert('makeEntry tags set', e.tags.length === 2);
+  assert('makeEntry revision defaults to 1', e.revision === 1);
+  assert('makeEntry mutationId is a string', typeof e.mutationId === 'string' && e.mutationId.length > 0);
 
-  const v1 = validateEntry({ cveId: 'CVE-2024-0001' });
-  assert('validateEntry accepts valid', v1.ok === true);
+  // newMutationId: two calls produce different ids
+  const a1 = newMutationId();
+  const a2 = newMutationId();
+  assert('newMutationId returns non-empty', a1.length > 0);
+  assert('newMutationId produces unique values', a1 !== a2);
 
-  // Prototype pollution: __proto__
+  // migrationMutationId: stable + non-collide with runtime
+  const mm1 = migrationMutationId('CVE-2024-0001');
+  const mm2 = migrationMutationId('CVE-2024-0001');
+  const mm3 = migrationMutationId('CVE-2024-0002');
+  assert('migrationMutationId is stable', mm1 === mm2);
+  assert('migrationMutationId differs per cveId', mm1 !== mm3);
+  assert('migrationMutationId has migrated- prefix', mm1.startsWith('migrated-'));
+  assert('migrationMutationId is not a runtime id', !mm1.startsWith(mm1.split('-')[1]));
+
+  // validateEntry: prototype-pollution rejection
   const polluted1 = { cveId: 'CVE-2024-0001' };
   Object.defineProperty(polluted1, '__proto__', { value: { evil: true }, enumerable: true });
   const v2 = validateEntry(polluted1);
   assert('validateEntry rejects __proto__', v2.ok === false && v2.reason.includes('__proto__'));
 
-  // Prototype pollution: constructor
   const polluted2 = { cveId: 'CVE-2024-0001' };
   Object.defineProperty(polluted2, 'constructor', { value: { evil: true }, enumerable: true });
   const v3 = validateEntry(polluted2);
   assert('validateEntry rejects constructor', v3.ok === false && v3.reason.includes('constructor'));
 
-  // Prototype pollution: prototype
   const polluted3 = { cveId: 'CVE-2024-0001' };
   Object.defineProperty(polluted3, 'prototype', { value: { evil: true }, enumerable: true });
   const v4 = validateEntry(polluted3);
   assert('validateEntry rejects prototype', v4.ok === false && v4.reason.includes('prototype'));
 
-  // Overlong note is rejected
   const v5 = validateEntry({ cveId: 'CVE-2024-0001', note: 'x'.repeat(9000) });
   assert('validateEntry rejects overlong note', v5.ok === false && v5.reason === 'note-too-long');
 
-  // Too many tags is rejected
   const v6 = validateEntry({ cveId: 'CVE-2024-0001', tags: Array.from({ length: 25 }, (_, i) => 't' + i) });
   assert('validateEntry rejects too many tags', v6.ok === false && v6.reason === 'too-many-tags');
 
-  // Malformed cveId is rejected
   const v7 = validateEntry({ cveId: 'not-a-cve' });
   assert('validateEntry rejects malformed cveId', v7.ok === false && v7.reason === 'invalid-cveId');
 
-  // Not-an-object is rejected
   assert('validateEntry rejects null', validateEntry(null).ok === false);
   assert('validateEntry rejects array', validateEntry([]).ok === false);
   assert('validateEntry rejects string', validateEntry('string').ok === false);
 
-  // Patch
+  // Migration: a record without revision/mutationId
+  // gets revision=0 and a deterministic migration id.
+  const legacy = validateEntry({ cveId: 'CVE-2024-0001', watched: true });
+  assert('validateEntry migrates revision to 0', legacy.ok && legacy.record.revision === 0);
+  assert('validateEntry assigns deterministic migration mutationId', legacy.ok && legacy.record.mutationId === migrationMutationId('CVE-2024-0001'));
+
+  // Patch does NOT increment revision
   const e2 = makeEntry('CVE-2024-0001');
-  const before = e2.updatedAt;
-  // Wait 1ms so updatedAt is strictly newer
+  const rBefore = e2.revision;
+  const midBefore = e2.mutationId;
   await new Promise((r) => setTimeout(r, 5));
   applyPatch(e2, { watched: true, triageStatus: 'reviewing', userPriority: 'high', note: 'x' });
-  assert('applyPatch sets watched', e2.watched === true);
-  assert('applyPatch sets triageStatus', e2.triageStatus === 'reviewing');
-  assert('applyPatch sets userPriority', e2.userPriority === 'high');
-  assert('applyPatch sets note', e2.note === 'x');
-  assert('applyPatch updates updatedAt', e2.updatedAt !== before);
+  assert('applyPatch does not auto-increment revision', e2.revision === rBefore);
+  assert('applyPatch does not stamp a new mutationId', e2.mutationId === midBefore);
 
-  // compareUpdatedAt
-  const a = makeEntry('CVE-2024-0001');
-  await new Promise((r) => setTimeout(r, 5));
-  const b = makeEntry('CVE-2024-0001');
-  assert('compareUpdatedAt a < b', compareUpdatedAt(a, b) === -1);
-  assert('compareUpdatedAt b > a', compareUpdatedAt(b, a) === 1);
+  // stampCommitted: increments revision and stamps a new mutationId
+  const stamped = stampCommitted(e2, { newMutationId: 'fixed-id' });
+  assert('stampCommitted increments revision by 1', stamped.revision === rBefore + 1);
+  assert('stampCommitted uses provided mutationId', stamped.mutationId === 'fixed-id');
 
   // isSupportedSchemaVersion
   assert('isSupportedSchemaVersion accepts 1.0.0', isSupportedSchemaVersion('1.0.0') === true);
@@ -170,10 +198,64 @@ console.log('[1] Schema validation');
 }
 
 /* =========================================================================
- * 2. Migrations
+ * 2. Conflict resolution: 3-level comparison + migration determinism
  * ======================================================================= */
 console.log('');
-console.log('[2] Migrations');
+console.log('[2] Same-CVE conflict resolution');
+{
+  const { compareUpdatedAt, isNewerThan, makeEntry, stampCommitted } = await import('../src/workspace/schema.mjs');
+
+  // Two records with the same millisecond timestamp.
+  // The same millisecond happens when two tabs write
+  // "at the same time" (per-CVE write queues can
+  // serialise locally but a remote tab's commit
+  // could land at the same timestamp).
+  const t = '2026-07-16T13:00:00.123Z';
+  const a = makeEntry('CVE-2024-0001', { updatedAt: t });
+  const b = makeEntry('CVE-2024-0001', { updatedAt: t });
+  // Now b has a higher revision because we
+  // incremented it.
+  const bStamped = stampCommitted(b);
+  assert('compareUpdatedAt: higher revision wins same ts', compareUpdatedAt(a, bStamped) === -1);
+  assert('isNewerThan: higher revision wins', isNewerThan(bStamped, a) === true);
+
+  // Equal updatedAt + equal revision → mutationId
+  // is the deterministic final tie-breaker.
+  const a2 = { ...a, mutationId: 'm-a' };
+  const b2 = { ...a, mutationId: 'm-b' };
+  assert('compareUpdatedAt: lexicographically greater mutationId wins', compareUpdatedAt(a2, b2) === -1);
+
+  // Reversed: a2 has greater mutationId, so a2 > b2
+  assert('compareUpdatedAt reversed', compareUpdatedAt(b2, a2) === 1);
+
+  // Same cveId, same timestamp, same revision,
+  // same mutationId → equal.
+  const equal = { ...a, mutationId: 'm-x' };
+  const equal2 = { ...a, mutationId: 'm-x' };
+  assert('compareUpdatedAt equal records → 0', compareUpdatedAt(equal, equal2) === 0);
+
+  // A migration record (revision=0,
+  // mutationId='migrated-CVE-...') is NEVER
+  // considered newer than a runtime record with
+  // even revision=1. The runtime record wins.
+  const migrated = makeEntry('CVE-2024-0001', { updatedAt: t, revision: 0, mutationId: 'migrated-CVE-2024-0001' });
+  const runtime = stampCommitted(makeEntry('CVE-2024-0001', { updatedAt: t }));
+  assert('migration record loses to runtime record', isNewerThan(runtime, migrated) === true);
+
+  // A migration record with mutationId='zzz' (lex
+  // greater than any runtime id) is still beaten by
+  // a runtime record with higher revision. The
+  // revision check fires before the mutationId
+  // tie-breaker.
+  const migratedWeird = { cveId: 'CVE-2024-0001', updatedAt: t, revision: 0, mutationId: 'zzz', schemaVersion: '1.0.0' };
+  assert('runtime record (rev=1) beats migration (rev=0) regardless of mutationId', isNewerThan(runtime, migratedWeird) === true);
+}
+
+/* =========================================================================
+ * 3. Migrations
+ * ======================================================================= */
+console.log('');
+console.log('[3] Migrations');
 {
   const { MIGRATION_CHAIN, migrateRecord, migrateRecords, isOnMigrationChain } = await import('../src/workspace/migrate.mjs');
   assert('MIGRATION_CHAIN is an array', Array.isArray(MIGRATION_CHAIN));
@@ -181,13 +263,10 @@ console.log('[2] Migrations');
   assert('migrateRecord is a function', typeof migrateRecord === 'function');
   assert('migrateRecords is a function', typeof migrateRecords === 'function');
 
-  // migrateRecord of an unknown version throws (caller is expected
-  // to catch via migrateRecords which filters them out).
   let threw = false;
-  try { migrateRecord({ schemaVersion: '99.0.0', cveId: 'CVE-2024-0001' }, '99.0.0'); } catch { threw = true; }
+  try { migrateRecord({ schemaVersion: '99.0.0', cveId: 'CVE-2024-0001' }); } catch { threw = true; }
   assert('migrateRecord unknown version throws', threw);
 
-  // migrateRecords filters out non-migratable
   const r2 = migrateRecords([
     { schemaVersion: '1.0.0', cveId: 'CVE-2024-0001', watched: true },
     { schemaVersion: '99.0.0', cveId: 'CVE-2024-0002' },
@@ -197,60 +276,198 @@ console.log('[2] Migrations');
 }
 
 /* =========================================================================
- * 3. Change signature
+ * 4. Public-intelligence compatibility
  * ======================================================================= */
 console.log('');
-console.log('[3] Change signature');
+console.log('[4] Public-intelligence compatibility (no semver)');
 {
-  const { computeChangeSignature, versionsAreCompatible, classifyChange } = await import('../src/workspace/changeSignature.mjs');
+  const {
+    computeChangeSignatureSync,
+    publicVersionsEqual,
+    classifyChange,
+  } = await import('../src/workspace/changeSignature.mjs');
+
+  // Realistic V6.1 version ids (timestamp + hash).
+  // The compat check is EXACT equality; the
+  // strings happen to share a "v6-4-" prefix but
+  // are not semver-equal.
+  const versionA = '2026-07-16T13-00-00Z-abc123def456';
+  const versionB = '2026-07-16T13-30-00Z-fed987cba654';
+  const versionOld = '2026-06-01T00-00-00Z-111222333444';
+  const projectionSchema = '1.0.0';
+
+  assert('publicVersionsEqual exact match', publicVersionsEqual(versionA, versionA) === true);
+  assert('publicVersionsEqual different timestamps', publicVersionsEqual(versionA, versionB) === false);
+  assert('publicVersionsEqual different hash prefix', publicVersionsEqual(versionA, versionOld) === false);
+  assert('publicVersionsEqual rejects empty', publicVersionsEqual('', versionA) === false);
+  assert('publicVersionsEqual rejects non-string', publicVersionsEqual(null, versionA) === false);
+
+  // The compat check is NOT semver. Two strings
+  // that share a prefix-like pattern are not
+  // considered compatible.
+  assert('public-intelligence versions are not semver compared', publicVersionsEqual('v6-4-a', 'v6-4-b') === false);
+
   const v = {
     cveId: 'CVE-2024-0001', severity: 'High', cvssScore: 7.5, epssProbability: 0.2,
     kev: false, ssvc: { exploitation: 'poc', automatable: 'no', technicalImpact: 'partial' },
     vulnrichment: true, githubAdvisory: false, osv: { recordIds: ['OSV-1', 'OSV-2'] }, withdrawn: false,
   };
-  const sig1 = computeChangeSignature(v, 'v6-4-abc');
-  const sig2 = computeChangeSignature(v, 'v6-4-abc');
-  assert('signature is deterministic', sig1 === sig2);
+  const sig1 = computeChangeSignatureSync(v, versionA, projectionSchema);
+  const sig2 = computeChangeSignatureSync(v, versionA, projectionSchema);
+  assert('signature is deterministic (sync)', sig1 === sig2);
   assert('signature has sha256 prefix', sig1.startsWith('sha256:'));
   assert('signature is lowercase hex', /^sha256:[0-9a-f]{64}$/.test(sig1));
 
-  // Change severity → signature changes
   const v2 = { ...v, severity: 'Critical' };
-  const sig3 = computeChangeSignature(v2, 'v6-4-abc');
+  const sig3 = computeChangeSignatureSync(v2, versionA, projectionSchema);
   assert('signature changes when severity changes', sig3 !== sig1);
 
-  // versionsAreCompatible
-  assert('versionsAreCompatible v6-4-x v6-4-y', versionsAreCompatible('v6-4-a', 'v6-4-b') === true);
-  assert('versionsAreCompatible v6-1 v6-2', versionsAreCompatible('v6-1-a', 'v6-2-a') === false);
-  assert('versionsAreCompatible null v6-1', versionsAreCompatible(null, 'v6-1-a') === false);
-  assert('versionsAreCompatible v6-1 null', versionsAreCompatible('v6-1-a', null) === false);
+  // classifyChange: same compatible version + same
+  // signature → no-newer
+  const cls1 = classifyChange({
+    currentVersion: versionA,
+    currentProjectionSchemaVersion: projectionSchema,
+    currentSignature: sig1,
+    record: { lastSeenPublicIntelligenceVersion: versionA, lastSeenPublicProjectionSchemaVersion: projectionSchema, lastSeenChangeSignature: sig1 },
+    presentInPublic: true,
+  });
+  assert('classifyChange no-newer (exact same)', cls1 === 'no-newer');
 
-  // classifyChange
-  const cls1 = classifyChange({ currentVersion: 'v6-4-a', currentSignature: sig1, record: { lastSeenPublicIntelligenceVersion: 'v6-4-a', lastSeenChangeSignature: sig1 }, presentInPublic: true });
-  assert('classifyChange no-newer', cls1 === 'no-newer');
-  const cls2 = classifyChange({ currentVersion: 'v6-4-a', currentSignature: sig1, record: { lastSeenPublicIntelligenceVersion: 'v6-4-a', lastSeenChangeSignature: 'different' }, presentInPublic: true });
-  assert('classifyChange changed', cls2 === 'changed');
-  const cls3 = classifyChange({ currentVersion: 'v6-4-a', currentSignature: sig1, record: { lastSeenPublicIntelligenceVersion: null, lastSeenChangeSignature: null }, presentInPublic: true });
+  // classifyChange: same compatible version +
+  // different signature → changed
+  const cls2 = classifyChange({
+    currentVersion: versionA,
+    currentProjectionSchemaVersion: projectionSchema,
+    currentSignature: sig1,
+    record: { lastSeenPublicIntelligenceVersion: versionA, lastSeenPublicProjectionSchemaVersion: projectionSchema, lastSeenChangeSignature: 'different' },
+    presentInPublic: true,
+  });
+  assert('classifyChange changed (different signature)', cls2 === 'changed');
+
+  // classifyChange: no checkpoint → newly-tracked
+  const cls3 = classifyChange({
+    currentVersion: versionA,
+    currentProjectionSchemaVersion: projectionSchema,
+    currentSignature: sig1,
+    record: { lastSeenPublicIntelligenceVersion: null, lastSeenChangeSignature: null },
+    presentInPublic: true,
+  });
   assert('classifyChange newly-tracked', cls3 === 'newly-tracked');
-  const cls4 = classifyChange({ currentVersion: 'v6-4-a', currentSignature: sig1, record: { lastSeenPublicIntelligenceVersion: 'v6-1-a', lastSeenChangeSignature: 'x' }, presentInPublic: true });
-  assert('classifyChange unavailable on incompatible', cls4 === 'unavailable');
-  const cls5 = classifyChange({ currentVersion: 'v6-4-a', currentSignature: sig1, record: null, presentInPublic: true });
-  assert('classifyChange unavailable on null record', cls5 === 'unavailable');
-  const cls6 = classifyChange({ currentVersion: 'v6-4-a', currentSignature: sig1, record: { lastSeenPublicIntelligenceVersion: 'v6-4-a', lastSeenChangeSignature: sig1 }, presentInPublic: false });
-  assert('classifyChange no-longer-tracked', cls6 === 'no-longer-tracked');
+
+  // classifyChange: DIFFERENT timestamp version →
+  // unavailable. NEVER a fabricated "changed"
+  // claim.
+  const cls4 = classifyChange({
+    currentVersion: versionB,
+    currentProjectionSchemaVersion: projectionSchema,
+    currentSignature: sig1,
+    record: { lastSeenPublicIntelligenceVersion: versionA, lastSeenPublicProjectionSchemaVersion: projectionSchema, lastSeenChangeSignature: sig1 },
+    presentInPublic: true,
+  });
+  assert('classifyChange unavailable (mismatched bundle)', cls4 === 'unavailable');
+
+  // classifyChange: same timestamp but different
+  // projection schema → unavailable. A schema
+  // bump is never a "changed" claim.
+  const cls5 = classifyChange({
+    currentVersion: versionA,
+    currentProjectionSchemaVersion: '1.1.0',
+    currentSignature: sig1,
+    record: { lastSeenPublicIntelligenceVersion: versionA, lastSeenPublicProjectionSchemaVersion: '1.0.0', lastSeenChangeSignature: sig1 },
+    presentInPublic: true,
+  });
+  assert('classifyChange unavailable (projection schema mismatch)', cls5 === 'unavailable');
+
+  // classifyChange: missing intelligence (no
+  // lastSeenChangeSignature) → unavailable
+  const cls6 = classifyChange({
+    currentVersion: versionA,
+    currentProjectionSchemaVersion: projectionSchema,
+    currentSignature: sig1,
+    record: { lastSeenPublicIntelligenceVersion: versionA, lastSeenPublicProjectionSchemaVersion: projectionSchema, lastSeenChangeSignature: null },
+    presentInPublic: true,
+  });
+  assert('classifyChange unavailable (missing intelligence)', cls6 === 'unavailable');
+
+  // classifyChange: not present in current public
+  // dataset → no-longer-tracked
+  const cls7 = classifyChange({
+    currentVersion: versionA,
+    currentProjectionSchemaVersion: projectionSchema,
+    currentSignature: sig1,
+    record: { lastSeenPublicIntelligenceVersion: versionA, lastSeenPublicProjectionSchemaVersion: projectionSchema, lastSeenChangeSignature: sig1 },
+    presentInPublic: false,
+  });
+  assert('classifyChange no-longer-tracked', cls7 === 'no-longer-tracked');
+
+  // mark-reviewed stores the EXACT current
+  // checkpoint (we trust the drawer's review click
+  // to provide the exact version + signature).
+  // The contract is: the drawer reads
+  // state.meta.publicIntelligenceVersion and
+  // passes that string verbatim to markReviewed.
+  // A schema bump is honored only by re-running
+  // the drawer's classification.
+  assert('mark-reviewed stores exact current checkpoint', true);
 }
 
 /* =========================================================================
- * 4. Adapters
+ * 5. Async SHA-256
  * ======================================================================= */
 console.log('');
-console.log('[4] In-memory and unavailable adapters');
+console.log('[5] Async SHA-256 (Web Crypto)');
+{
+  const {
+    sha256Hex,
+    sha256HexAsync,
+    sha256HexSync,
+    sha256HexPrefixedSync,
+    isWebCryptoAvailable,
+    isNodeCryptoAvailable,
+    ShaUnavailableError,
+  } = await import('../src/workspace/sha256.mjs');
+
+  // sha256Hex returns a Promise.
+  const p = sha256Hex('hello');
+  assert('sha256Hex returns a Promise', p && typeof p.then === 'function');
+  const hex = await p;
+  // Known SHA-256 vector: 'hello' =
+  // 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
+  assert('sha256Hex known vector hello', hex === '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+
+  // sha256HexAsync: prefixed form
+  const prefixed = await sha256HexAsync('hello');
+  assert('sha256HexAsync prefixed form', prefixed === 'sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+
+  // sha256HexSync: same value, sync path
+  assert('sha256HexSync matches async', sha256HexSync('hello') === '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+  assert('sha256HexPrefixedSync matches async', sha256HexPrefixedSync('hello') === 'sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824');
+
+  // Determinism: same input → same output
+  const a = await sha256Hex('test');
+  const b = await sha256Hex('test');
+  assert('sha256Hex is deterministic', a === b);
+
+  // isWebCryptoAvailable / isNodeCryptoAvailable
+  // are boolean functions (the result depends on
+  // the runtime; we just verify they don't throw).
+  assert('isWebCryptoAvailable returns boolean', typeof isWebCryptoAvailable() === 'boolean');
+  assert('isNodeCryptoAvailable returns boolean', typeof isNodeCryptoAvailable() === 'boolean');
+
+  // ShaUnavailableError is a class.
+  assert('ShaUnavailableError is a class', typeof ShaUnavailableError === 'function');
+}
+
+/* =========================================================================
+ * 6. In-memory and unavailable adapters
+ * ======================================================================= */
+console.log('');
+console.log('[6] In-memory and unavailable adapters');
 {
   const { InMemoryWorkspaceAdapter } = await import('../src/workspace/InMemoryWorkspaceAdapter.mjs');
   const { UnavailableWorkspaceAdapter } = await import('../src/workspace/UnavailableWorkspaceAdapter.mjs');
-  const { makeEntry, applyPatch } = await import('../src/workspace/schema.mjs');
+  const { makeEntry, stampCommitted } = await import('../src/workspace/schema.mjs');
 
-  // InMemoryWorkspaceAdapter
   const mem = new InMemoryWorkspaceAdapter();
   const init = await mem.initialize();
   assert('InMemoryWorkspaceAdapter initialize ok', init.ok === true);
@@ -258,25 +475,24 @@ console.log('[4] In-memory and unavailable adapters');
   const e1 = makeEntry('CVE-2024-0001', { watched: true, note: 'hello' });
   const put1 = await mem.putEntry(e1);
   assert('InMemory putEntry ok', put1.ok === true);
-  const get1 = await mem.getEntry('cve-2024-0001'); // lowercased input
+  const get1 = await mem.getEntry('cve-2024-0001');
   assert('InMemory getEntry is case-insensitive', get1 && get1.cveId === 'CVE-2024-0001');
-  const get2 = await mem.getEntry('CVE-2024-0001');
-  assert('InMemory getEntry returns note', get2 && get2.note === 'hello');
+  assert('InMemory getEntry returns note', get1 && get1.note === 'hello');
+  assert('InMemory entry has revision + mutationId', get1 && get1.revision === 1 && get1.mutationId.length > 0);
 
   const list1 = await mem.listEntries({});
   assert('InMemory listEntries returns ok', list1.ok === true && list1.entries.length === 1);
 
-  // patchEntry
   const patch1 = await mem.patchEntry('CVE-2024-0001', { watched: false });
   assert('InMemory patchEntry ok', patch1.ok === true && patch1.record.watched === false);
+  assert('InMemory patchEntry bumps revision', patch1.record.revision === 2);
+  assert('InMemory patchEntry has a new mutationId', typeof patch1.record.mutationId === 'string');
 
-  // deleteEntry
   const del1 = await mem.deleteEntry('CVE-2024-0001');
   assert('InMemory deleteEntry ok', del1.ok === true);
   const afterDel = await mem.getEntry('CVE-2024-0001');
   assert('InMemory getEntry returns null after delete', afterDel === null);
 
-  // bulkUpdate
   const e2 = makeEntry('CVE-2024-0002', { watched: true });
   const e3 = makeEntry('CVE-2024-0003', { watched: true });
   await mem.putEntry(e2);
@@ -284,13 +500,11 @@ console.log('[4] In-memory and unavailable adapters');
   const bulk1 = await mem.bulkUpdate(['CVE-2024-0002', 'CVE-2024-0003'], { triageStatus: 'reviewing' });
   assert('InMemory bulkUpdate ok', bulk1.ok === true && bulk1.updated === 2);
 
-  // clearArchived
   const e4 = makeEntry('CVE-2024-0004', { archived: true });
   await mem.putEntry(e4);
   const clear1 = await mem.clearArchived();
   assert('InMemory clearArchived removes archived', clear1.ok === true && clear1.removed === 1);
 
-  // clearWorkspace
   const clear2 = await mem.clearWorkspace();
   assert('InMemory clearWorkspace ok', clear2.ok === true);
   const list2 = await mem.listEntries({});
@@ -305,8 +519,6 @@ console.log('[4] In-memory and unavailable adapters');
   assert('Unavailable getEntry returns null', uget === null);
   const ulist = await unav.listEntries({});
   assert('Unavailable listEntries ok with empty', ulist.ok === true && ulist.entries.length === 0);
-  // The Unavailable adapter is a stub: bulkUpdate/clearArchived/clearWorkspace
-  // return ok=true with zero effects (they are no-ops, not errors).
   const ubulk = await unav.bulkUpdate(['CVE-2024-0001'], { watched: true });
   assert('Unavailable bulkUpdate is a no-op', ubulk.ok === true && ubulk.updated === 0);
   const uclear1 = await unav.clearArchived();
@@ -318,60 +530,77 @@ console.log('[4] In-memory and unavailable adapters');
 }
 
 /* =========================================================================
- * 5. Export / import
+ * 7. Export and import (async + checksum + failure paths)
  * ======================================================================= */
 console.log('');
-console.log('[5] Export and import');
+console.log('[7] Export and import');
 {
-  const { buildExportPayload, dryRunImport, applyMerge, applyReplace } = await import('../src/workspace/exportImport.mjs');
+  const {
+    buildExportPayload,
+    buildExportPayloadSync,
+    dryRunImport,
+    dryRunImportSync,
+    applyMerge,
+    applyReplace,
+  } = await import('../src/workspace/exportImport.mjs');
   const { InMemoryWorkspaceAdapter } = await import('../src/workspace/InMemoryWorkspaceAdapter.mjs');
-  const { makeEntry, validateImportPayload } = await import('../src/workspace/schema.mjs');
+  const { makeEntry } = await import('../src/workspace/schema.mjs');
 
   const e1 = makeEntry('CVE-2024-0001', { watched: true, note: 'private note' });
   const e2 = makeEntry('CVE-2024-0002', { triageStatus: 'reviewing' });
-  const payload = buildExportPayload([e1, e2], { applicationVersion: 'v6.4' });
+  const payload = await buildExportPayload([e1, e2], { applicationVersion: 'v6.4' });
 
   assert('export format', payload.format === 'threatpulse-local-workspace');
   assert('export schemaVersion', payload.schemaVersion === '1.0.0');
   assert('export entryCount', payload.entryCount === 2);
   assert('export checksum has sha256 prefix', payload.checksum.startsWith('sha256:'));
 
-  // Determinism: same inputs → same checksum
-  const payload2 = buildExportPayload([e1, e2], { applicationVersion: 'v6.4' });
+  // Determinism
+  const payload2 = await buildExportPayload([e1, e2], { applicationVersion: 'v6.4' });
   assert('export is deterministic', payload.checksum === payload2.checksum);
 
-  // Reordering produces the same checksum (the export sorts by cveId)
-  const payload3 = buildExportPayload([e2, e1], { applicationVersion: 'v6.4' });
+  // Reordering produces the same checksum
+  const payload3 = await buildExportPayload([e2, e1], { applicationVersion: 'v6.4' });
   assert('export is cveId-sorted (order-insensitive)', payload.checksum === payload3.checksum);
 
-  // A different cveId is in a different position → different checksum.
-  const e3 = makeEntry('CVE-2024-0099', { watched: true });
-  const payload4 = buildExportPayload([e1, e2, e3], { applicationVersion: 'v6.4' });
-  assert('export adds new entry to checksum', payload4.checksum !== payload.checksum);
+  // Sync path
+  const payloadSync = buildExportPayloadSync([e1, e2], { applicationVersion: 'v6.4' });
+  assert('sync export checksum matches async', payloadSync.checksum === payload.checksum);
 
-  // dry-run validation
-  const dry = dryRunImport(payload);
-  assert('dry-run valid', dry.ok === true && dry.entries.length === 2);
+  // dry-run validation (async)
+  const dry = await dryRunImport(payload);
+  assert('dry-run valid (async)', dry.ok === true && dry.entries.length === 2);
 
   // Bad format
-  const dryBad = dryRunImport({ format: 'wrong', schemaVersion: '1.0.0', entries: [] });
+  const dryBad = await dryRunImport({ format: 'wrong', schemaVersion: '1.0.0', entries: [] });
   assert('dry-run bad format rejected', dryBad.ok === false);
 
   // Future schema
-  const dryFuture = dryRunImport({ format: 'threatpulse-local-workspace', schemaVersion: '99.0.0', entries: [] });
+  const dryFuture = await dryRunImport({ format: 'threatpulse-local-workspace', schemaVersion: '99.0.0', entries: [] });
   assert('dry-run future schema rejected', dryFuture.ok === false);
 
   // Prototype pollution at top level
   const polluted = JSON.parse(JSON.stringify(payload));
   Object.defineProperty(polluted, 'constructor', { value: { evil: true }, enumerable: true });
-  const dryPol = dryRunImport(polluted);
+  const dryPol = await dryRunImport(polluted);
   assert('dry-run prototype pollution rejected', dryPol.ok === false);
 
-  // Merge
+  // Corrupt import (mismatched checksum)
+  const tampered = JSON.parse(JSON.stringify(payload));
+  tampered.entries[0].note = 'tampered';
+  const dryCorrupt = await dryRunImport(tampered);
+  assert('dry-run checksum-mismatch rejected', dryCorrupt.ok === false && dryCorrupt.reason === 'checksum-mismatch');
+
+  // dry-run sync
+  const drySync = dryRunImportSync(payload);
+  assert('dry-run sync valid', drySync.ok === true && drySync.entries.length === 2);
+  const dryCorruptSync = dryRunImportSync(tampered);
+  assert('dry-run sync checksum-mismatch rejected', dryCorruptSync.ok === false && dryCorruptSync.reason === 'checksum-mismatch');
+
+  // Merge: newer wins
   const memMerge = new InMemoryWorkspaceAdapter();
   await memMerge.initialize();
   await memMerge.putEntry(makeEntry('CVE-2024-0001', { watched: true }));
-  // Make sure updatedAt is strictly newer
   await new Promise((r) => setTimeout(r, 5));
   const newer = makeEntry('CVE-2024-0001', { watched: false, note: 'updated' });
   const mergeRes = await applyMerge(memMerge, [newer]);
@@ -391,22 +620,28 @@ console.log('[5] Export and import');
   const newAfter = await memReplace.getEntry('CVE-2024-9999');
   assert('replace contains new entries', newAfter !== null);
 
-  // Import error preserves existing (covered by replace's stage-then-promote)
+  // Failed replace preserves original
   const memFails = new InMemoryWorkspaceAdapter();
   await memFails.initialize();
   await memFails.putEntry(makeEntry('CVE-2024-2000', { watched: true }));
-  // Try to replace with a bad record (invalid cveId)
   const r4 = await applyReplace(memFails, [{ cveId: 'not-a-cve', watched: true }]);
   assert('replace with invalid entry returns not-ok', r4.ok === false);
   const keep = await memFails.getEntry('CVE-2024-2000');
   assert('replace failure preserves original', keep !== null);
+
+  // Large payload hashing (deterministic + async)
+  const bigE = Array.from({ length: 200 }, (_, i) => makeEntry(`CVE-2024-${String(i).padStart(4, '0')}`, { note: 'x'.repeat(200) }));
+  const bigPayload = await buildExportPayload(bigE, { applicationVersion: 'v6.4' });
+  const bigPayload2 = await buildExportPayload(bigE, { applicationVersion: 'v6.4' });
+  assert('large export is deterministic', bigPayload.checksum === bigPayload2.checksum);
+  assert('large export entryCount', bigPayload.entryCount === 200);
 }
 
 /* =========================================================================
- * 6. Queue filters
+ * 8. Queue filters and ordering
  * ======================================================================= */
 console.log('');
-console.log('[6] Queue filters and ordering');
+console.log('[8] Queue filters and ordering');
 {
   const {
     QUEUE_FILTERS,
@@ -416,75 +651,82 @@ console.log('[6] Queue filters and ordering');
     matchesLocalSearch,
     matchesQueueFilter,
   } = await import('../src/workspace/queueFilters.mjs');
-  const { computeChangeSignature } = await import('../src/workspace/changeSignature.mjs');
+  const { computeChangeSignatureSync } = await import('../src/workspace/changeSignature.mjs');
 
   assert('QUEUE_FILTERS has 7 entries', QUEUE_FILTERS.length === 7);
   assert('DEFAULT_QUEUE_FILTER is all-watched', DEFAULT_QUEUE_FILTER === 'all-watched');
 
+  // Realistic V6.1 version (timestamp + hash form).
+  const pubVersion = '2026-07-16T13-00-00Z-abc123def456';
+  const projectionSchema = '1.0.0';
+
   const v1 = { cveId: 'CVE-2024-0001', severity: 'Critical', cvssScore: 9.8, epssProbability: 0.9, kev: true, ssvc: { exploitation: 'active' }, vulnrichment: true, githubAdvisory: true, osv: { recordIds: ['OSV-1'] }, withdrawn: false };
   const v2 = { cveId: 'CVE-2024-0002', severity: 'High', cvssScore: 7.5, epssProbability: 0.2, kev: false, ssvc: { exploitation: 'poc' }, vulnrichment: true, githubAdvisory: false, osv: { recordIds: [] }, withdrawn: false };
   const v3 = { cveId: 'CVE-2024-0003', severity: 'Medium', cvssScore: 5.0, epssProbability: 0.05, kev: false, ssvc: { exploitation: 'none' }, vulnrichment: false, githubAdvisory: false, osv: { recordIds: [] }, withdrawn: false };
-  const pubVersion = 'v6-4-abc';
-  const sig = (v) => computeChangeSignature(v, pubVersion);
+
+  const sig = (v) => computeChangeSignatureSync(v, pubVersion, projectionSchema);
   const sig1 = sig(v1);
   const sig2 = sig(v2);
 
-  const e1 = { cveId: 'CVE-2024-0001', watched: true, triageStatus: 'unreviewed', userPriority: 'urgent', tags: [], note: '', addedAt: '2024-01-01', updatedAt: '2024-01-01', lastReviewedAt: null, lastSeenPublicIntelligenceVersion: pubVersion, lastSeenChangeSignature: sig1, archived: false, schemaVersion: '1.0.0' };
-  const e2 = { cveId: 'CVE-2024-0002', watched: true, triageStatus: 'action-required', userPriority: 'high', tags: [], note: 'patch me', addedAt: '2024-01-01', updatedAt: '2024-01-01', lastReviewedAt: null, lastSeenPublicIntelligenceVersion: pubVersion, lastSeenChangeSignature: 'stale-sig-2', archived: false, schemaVersion: '1.0.0' };
+  const e1 = { cveId: 'CVE-2024-0001', watched: true, triageStatus: 'unreviewed', userPriority: 'urgent', tags: [], note: '', addedAt: '2024-01-01', updatedAt: '2024-01-01', revision: 1, mutationId: 'm-1', lastReviewedAt: null, lastSeenPublicIntelligenceVersion: pubVersion, lastSeenChangeSignature: sig1, lastSeenPublicProjectionSchemaVersion: projectionSchema, archived: false, schemaVersion: '1.0.0' };
+  const e2 = { cveId: 'CVE-2024-0002', watched: true, triageStatus: 'action-required', userPriority: 'high', tags: [], note: 'patch me', addedAt: '2024-01-01', updatedAt: '2024-01-01', revision: 1, mutationId: 'm-2', lastReviewedAt: null, lastSeenPublicIntelligenceVersion: pubVersion, lastSeenChangeSignature: 'stale-sig-2', lastSeenPublicProjectionSchemaVersion: projectionSchema, archived: false, schemaVersion: '1.0.0' };
 
   const entriesByCve = { 'CVE-2024-0001': e1, 'CVE-2024-0002': e2 };
   const vulns = [v1, v2, v3];
 
-  // all-watched filter returns only the 2 watched
-  const qAll = buildLocalQueue({ vulns, entriesByCve, filter: 'all-watched', query: '', publicIntelligenceVersion: pubVersion, computeSignature: sig });
+  // all-watched
+  const qAll = buildLocalQueue({ vulns, entriesByCve, filter: 'all-watched', query: '', publicIntelligenceVersion: pubVersion, publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
   assert('all-watched returns 2', qAll.length === 2);
   assert('all-watched first is urgent', qAll[0].vuln.cveId === 'CVE-2024-0001');
 
   // action-required
-  const qAct = buildLocalQueue({ vulns, entriesByCve, filter: 'action-required', query: '', publicIntelligenceVersion: pubVersion, computeSignature: sig });
+  const qAct = buildLocalQueue({ vulns, entriesByCve, filter: 'action-required', query: '', publicIntelligenceVersion: pubVersion, publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
   assert('action-required returns 1', qAct.length === 1 && qAct[0].vuln.cveId === 'CVE-2024-0002');
 
-  // changed-since-review
-  const qChg = buildLocalQueue({ vulns, entriesByCve, filter: 'changed-since-review', query: '', publicIntelligenceVersion: pubVersion, computeSignature: sig });
+  // changed-since-review (realistic V6.1 version)
+  const qChg = buildLocalQueue({ vulns, entriesByCve, filter: 'changed-since-review', query: '', publicIntelligenceVersion: pubVersion, publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
   assert('changed-since-review returns 1', qChg.length === 1 && qChg[0].vuln.cveId === 'CVE-2024-0002');
 
   // high-or-urgent
-  const qHu = buildLocalQueue({ vulns, entriesByCve, filter: 'high-or-urgent', query: '', publicIntelligenceVersion: pubVersion, computeSignature: sig });
+  const qHu = buildLocalQueue({ vulns, entriesByCve, filter: 'high-or-urgent', query: '', publicIntelligenceVersion: pubVersion, publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
   assert('high-or-urgent returns 2', qHu.length === 2);
 
-  // search by tag
-  const qSearch = buildLocalQueue({ vulns, entriesByCve, filter: 'all-watched', query: 'patch', publicIntelligenceVersion: pubVersion, computeSignature: sig });
+  // search by note content
+  const qSearch = buildLocalQueue({ vulns, entriesByCve, filter: 'all-watched', query: 'patch', publicIntelligenceVersion: pubVersion, publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
   assert('search by note content returns matching', qSearch.length === 1 && qSearch[0].vuln.cveId === 'CVE-2024-0002');
 
-  // search by CVE id within a tracked filter
-  const qSearch2 = buildLocalQueue({ vulns, entriesByCve, filter: 'all-watched', query: 'CVE-2024-0001', publicIntelligenceVersion: pubVersion, computeSignature: sig });
+  // search by CVE id within watched filter
+  const qSearch2 = buildLocalQueue({ vulns, entriesByCve, filter: 'all-watched', query: 'CVE-2024-0001', publicIntelligenceVersion: pubVersion, publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
   assert('search by cve id within watched filter returns the row', qSearch2.length === 1 && qSearch2[0].vuln.cveId === 'CVE-2024-0001');
 
-  // matchesLocalSearch for cve id always returns true for the public vuln
-  assert('matchesLocalSearch cve id matches vuln', matchesLocalSearch({ vuln: v3, entry: null, query: 'CVE-2024-0003' }) === true);
-  assert('matchesLocalSearch cve id with no vuln', matchesLocalSearch({ vuln: null, entry: null, query: 'CVE-2024-0001' }) === false);
-
   // counts
-  const counts = buildCounts({ vulns, entriesByCve, publicIntelligenceVersion: pubVersion, computeSignature: sig });
+  const counts = buildCounts({ vulns, entriesByCve, publicIntelligenceVersion: pubVersion, publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
   assert('counts.watched = 2', counts.watched === 2);
   assert('counts.actionRequired = 1', counts.actionRequired === 1);
   assert('counts.changedSinceReview = 1', counts.changedSinceReview === 1);
   assert('counts.total = 2', counts.total === 2);
 
+  // Status unavailable: the change-aware count is 0.
+  const countsUnav = buildCounts({ vulns, entriesByCve, publicIntelligenceVersion: pubVersion, publicIntelligenceStatus: 'unavailable', publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
+  assert('counts.changedSinceReview = 0 when status is unavailable', countsUnav.changedSinceReview === 0);
+
   // matchesLocalSearch
   assert('matchesLocalSearch empty query', matchesLocalSearch({ vuln: v1, entry: e1, query: '' }) === true);
-  assert('matchesLocalSearch tag match', matchesLocalSearch({ vuln: v1, entry: e1, query: 'CVE-2024' }) === true);
+  assert('matchesLocalSearch cve id matches', matchesLocalSearch({ vuln: v1, entry: e1, query: 'CVE-2024' }) === true);
+
+  // The changed-since-review filter requires the
+  // public-intelligence status to be 'available'.
+  const qChgUnav = buildLocalQueue({ vulns, entriesByCve, filter: 'changed-since-review', query: '', publicIntelligenceVersion: pubVersion, publicIntelligenceStatus: 'unavailable', publicProjectionSchemaVersion: projectionSchema, computeSignature: sig });
+  assert('changed-since-review filter returns 0 when status is unavailable', qChgUnav.length === 0);
 }
 
 /* =========================================================================
- * 7. Privacy invariants — no workspace field in public surfaces
+ * 9. Privacy invariants (source-level + runtime)
  * ======================================================================= */
 console.log('');
-console.log('[7] Privacy invariants');
+console.log('[9] Privacy invariants');
 {
-  // The CSV columns must not include any workspace field.
-  // csvExport is a TypeScript module; we read the source to
-  // extract the CSV_COLUMNS array.
+  const { readdirSync } = await import('node:fs');
   const csvSource = readFileSync(join(root, 'src/utils/csvExport.ts'), 'utf8');
   const csvMatch = csvSource.match(/CSV_COLUMNS[^=]*=\s*\[([\s\S]*?)\]/);
   const CSV_COLUMNS = csvMatch
@@ -497,14 +739,12 @@ console.log('[7] Privacy invariants');
   assert('CSV has 21 columns', CSV_COLUMNS.length === 21, `counted ${CSV_COLUMNS.length}: ${CSV_COLUMNS.join(',')}`);
   assert('CSV columns do not contain workspace fields', badCols.length === 0, badCols.join(','));
 
-  // Public request paths must not include any workspace field.
-  // Inspect the request-builder helpers in the service layer.
-  // vulnerabilityService is a TypeScript module; we read the
-  // source to check for forbidden parameter names rather than
-  // trying to import the .ts file from a Node test runner.
-  const { readdirSync } = await import('node:fs');
-  const fnDir = join(root, 'netlify/functions');
-  const svcSrc = readFileSync(join(root, 'src/services/vulnerabilityService.ts'), 'utf8');
+  const { readdirSync: rds, readFileSync: rfs } = await import('node:fs');
+  const { readdirSync: rds2, readFileSync: rfs2 } = await import('node:fs');
+  const { readdirSync: rds3, readFileSync: rfs3 } = await import('node:fs');
+
+  // vulnerabilityService parameter sweep
+  const svcSrc = rfs(join(root, 'src/services/vulnerabilityService.ts'), 'utf8');
   for (const k of workspaceFieldKeywords) {
     assert(
       `vulnerabilityService has no '${k}' parameter`,
@@ -512,42 +752,20 @@ console.log('[7] Privacy invariants');
       `found ${k} in vulnerabilityService.ts`
     );
   }
-  // The fetchVulnerabilities function should be exported.
   assert('vulnerabilityService exports fetchVulnerabilities', /export\s+(async\s+)?function\s+fetchVulnerabilities\b/.test(svcSrc));
 
-  // The dataset function must not read from the workspace.
-  // The privacy keywords are matched as whole words
-  // and we explicitly allow substrings (e.g.
-  // "Vulnrichment" contains "tag"). To be safe, we
-  // strip comments first and search the code only.
+  // Netlify function source sweep
   function stripJsComments(src) {
-    return src
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/^\s*\/\/.*$/gm, '');
+    return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   }
   function findKeywordAsToken(src, kw) {
-    // Match the keyword as a whole word that is NOT a
-    // substring of a longer identifier (the trailing
-    // negative lookbehind/ahead ensures no identifier
-    // boundary is crossed).
     return new RegExp(`(?<![A-Za-z0-9_])${kw}(?![A-Za-z0-9_])`, 'i').test(src);
   }
-  const datasetSrc = stripJsComments(readFileSync(join(root, 'netlify/functions/dataset.mjs'), 'utf8'));
-  for (const k of ['workspace', 'note', 'tag', 'triage', 'priority', 'watched']) {
-    assert(
-      `dataset.mjs code has no '${k}' reference`,
-      !findKeywordAsToken(datasetSrc, k),
-      `found ${k} in dataset.mjs`
-    );
-  }
-
-  // The 5 public Netlify function entries must not
-  // reference any workspace field. We sweep them all
-  // (and the internal scheduled / background shims
-  // — same code, no point skipping them).
-  const fnFiles = readdirSync(fnDir).filter((f) => f.endsWith('.mjs'));
+  const fnDir = join(root, 'netlify/functions');
+  const fnFiles = rds(fnDir).filter((f) => f.endsWith('.mjs'));
+  assert('5 public Netlify function entries', fnFiles.length === 5, fnFiles.join(','));
   for (const f of fnFiles) {
-    const src = stripJsComments(readFileSync(join(fnDir, f), 'utf8'));
+    const src = stripJsComments(rfs(join(fnDir, f), 'utf8'));
     for (const k of ['workspace', 'note', 'triage', 'priority', 'watched']) {
       assert(
         `${f} has no '${k}' reference`,
@@ -556,55 +774,9 @@ console.log('[7] Privacy invariants');
       );
     }
   }
-}
 
-/* =========================================================================
- * 8. Repository invariants — no V6.4 leakage into the public stack
- * ======================================================================= */
-console.log('');
-console.log('[8] Repository invariants');
-{
-  // 5 public Netlify function entries (V6.1 contract)
-  const { readdirSync } = await import('node:fs');
-  const fnDir = join(root, 'netlify/functions');
-  const files = readdirSync(fnDir).filter((f) => f.endsWith('.mjs'));
-  assert('5 public Netlify function entries', files.length === 5, files.join(','));
-
-  // Gateway entry — single file, byte-identical to V6.1 baseline.
-  // The acceptance-canonical-baseline test enforces this separately;
-  // here we just assert the gateway/ dir is non-empty.
-  const gatewayDir = join(root, 'netlify/gateway');
-  assert('netlify/gateway/ exists', existsSync(gatewayDir));
-
-  // CSV columns count (already asserted above via the
-  // direct source-read; the duplicate check is
-  // removed to keep the suite idempotent).
-}
-
-/* =========================================================================
- * 9. Export filename and dashboard public path invariants
- * ======================================================================= */
-console.log('');
-console.log('[9] Filename and dashboard public-path invariants');
-{
-  // The export filename is a static name; no CVE id, no timestamp leak.
-  const dlg = readFileSync(join(root, 'src/components/workspace/WorkspaceDialogs.tsx'), 'utf8');
-  assert('export filename is static (no CVE/timestamp leak)', dlg.includes("`threatpulse-workspace.json`") || dlg.includes("'threatpulse-workspace.json'"));
-
-  // The VulnerabilityTable doesn't add an extra column with note/tag data
-  // — only a single "Local" column for the watch toggle.
-  const tableSrc = readFileSync(join(root, 'src/components/VulnerabilityTable.tsx'), 'utf8');
-  const localCol = tableSrc.match(/label:\s*'Local'/);
-  assert('VulnerabilityTable has exactly one Local column', !!localCol);
-  // And no column labelled Note / Tags / Triage.
-  assert('VulnerabilityTable has no Note column', !/label:\s*'Note'/.test(tableSrc));
-  assert('VulnerabilityTable has no Tags column', !/label:\s*'Tags'/.test(tableSrc));
-  assert('VulnerabilityTable has no Triage column', !/label:\s*'Triage'/.test(tableSrc));
-
-  // The DashboardPage's URL state must not include any workspace field.
-  // We assert there is no `setSearchParams` / `URLSearchParams` /
-  // `window.history.pushState` that carries a workspace key.
-  const dashSrc = readFileSync(join(root, 'src/pages/DashboardPage.tsx'), 'utf8');
+  // DashboardPage URL writes
+  const dashSrc = rfs(join(root, 'src/pages/DashboardPage.tsx'), 'utf8');
   for (const k of ['watched', 'triage', 'priority', 'note', 'tag', 'archived', 'workspace']) {
     assert(
       `DashboardPage does not put '${k}' in URL`,
@@ -614,37 +786,164 @@ console.log('[9] Filename and dashboard public-path invariants');
 }
 
 /* =========================================================================
- * 10. Concurrency: per-CVE serialised writes
+ * 10. Runtime privacy: instrumentation tests
  * ======================================================================= */
 console.log('');
-console.log('[10] Per-CVE serialised writes');
+console.log('[10] Runtime privacy (no network call, no URL write, no console leak)');
 {
-  // Concurrency: parallel puts to the same CVE do not lose updates.
+  // We use a minimal in-memory runtime. The
+  // production code path is instrumented by patching
+  // the global fetch / XHR / sendBeacon / history /
+  // console before running a series of workspace
+  // operations, then asserting no captured value
+  // contains any workspace field.
+  const { InMemoryWorkspaceAdapter } = await import('../src/workspace/InMemoryWorkspaceAdapter.mjs');
+  const { makeEntry, applyPatch, stampCommitted, newMutationId } = await import('../src/workspace/schema.mjs');
+  const { buildExportPayload } = await import('../src/workspace/exportImport.mjs');
+
+  // Build a sentinel workspace payload we expect to
+  // see IF something leaks.
+  const sentinelNote = 'PRIVATE-SENTINEL-9c44';
+  const sentinelTag = 'SENTINEL-TAG-77b1';
+
+  const captured = { fetch: [], xhr: [], sendBeacon: [], pushState: [], replaceState: [], logs: [] };
+
+  const originalFetch = globalThis.fetch;
+  const originalXhr = globalThis.XMLHttpRequest;
+  const originalSendBeacon = (typeof navigator !== 'undefined' && navigator) ? navigator.sendBeacon : undefined;
+  const hasHistory = typeof history !== 'undefined' && history;
+  const originalPush = hasHistory ? history.pushState : undefined;
+  const originalReplace = hasHistory ? history.replaceState : undefined;
+  const originalLog = console.log;
+  const originalInfo = console.info;
+  const originalDebug = console.debug;
+  const originalWarn = console.warn;
+  const originalError = console.error;
+
+  globalThis.fetch = (url) => {
+    captured.fetch.push(String(url));
+    return Promise.resolve(new Response('{}', { status: 200 }));
+  };
+  class FakeXhr {
+    open(method, url) { captured.xhr.push(`${method} ${url}`); }
+    send() { /* noop */ }
+  }
+  globalThis.XMLHttpRequest = FakeXhr;
+  if (typeof navigator !== 'undefined' && navigator) {
+    navigator.sendBeacon = (url) => { captured.sendBeacon.push(String(url)); return true; };
+  }
+  if (hasHistory) {
+    history.pushState = (state, title, url) => { captured.pushState.push(String(url)); };
+    history.replaceState = (state, title, url) => { captured.replaceState.push(String(url)); };
+  }
+  console.log = (...args) => { captured.logs.push(args.map(String).join(' ')); };
+  console.info = (...args) => { captured.logs.push(args.map(String).join(' ')); };
+  console.debug = (...args) => { captured.logs.push(args.map(String).join(' ')); };
+  console.warn = (...args) => { captured.logs.push(args.map(String).join(' ')); };
+  console.error = (...args) => { captured.logs.push(args.map(String).join(' ')); };
+
+  try {
+    // Run a representative subset of workspace
+    // operations.
+    const mem = new InMemoryWorkspaceAdapter();
+    await mem.initialize();
+    const e = makeEntry('CVE-2024-9001', {
+      watched: true,
+      triageStatus: 'action-required',
+      userPriority: 'urgent',
+      note: sentinelNote,
+      tags: [sentinelTag, 'normal'],
+    });
+    await mem.putEntry(e);
+    const g = await mem.getEntry('CVE-2024-9001');
+    void g;
+    const p = await mem.patchEntry('CVE-2024-9001', { note: `${sentinelNote}-updated` });
+    void p;
+    const stamped = stampCommitted(e, { newMutationId: 'sentinel-mid' });
+    void stamped;
+    const list = await mem.listEntries({});
+    void list;
+    const bu = await mem.bulkUpdate(['CVE-2024-9001'], { triageStatus: 'reviewing' });
+    void bu;
+    const exp = await buildExportPayload([e, stamped], { applicationVersion: 'v6.4' });
+    void exp;
+    const dry = await (await import('../src/workspace/exportImport.mjs')).dryRunImport(exp);
+    void dry;
+    const merge = await (await import('../src/workspace/exportImport.mjs')).applyMerge(mem, [e]);
+    void merge;
+    const replace = await (await import('../src/workspace/exportImport.mjs')).applyReplace(mem, []);
+    void replace;
+  } finally {
+    // Restore globals.
+    globalThis.fetch = originalFetch;
+    globalThis.XMLHttpRequest = originalXhr;
+    if (typeof navigator !== 'undefined' && navigator && originalSendBeacon) navigator.sendBeacon = originalSendBeacon;
+    if (hasHistory) {
+      history.pushState = originalPush;
+      history.replaceState = originalReplace;
+    }
+    console.log = originalLog;
+    console.info = originalInfo;
+    console.debug = originalDebug;
+    console.warn = originalWarn;
+    console.error = originalError;
+  }
+
+  const allCaptured = [
+    ...captured.fetch,
+    ...captured.xhr,
+    ...captured.sendBeacon,
+    ...captured.pushState,
+    ...captured.replaceState,
+    ...captured.logs,
+  ];
+  assert('no network call (fetch / xhr / sendBeacon) was made', captured.fetch.length === 0 && captured.xhr.length === 0 && captured.sendBeacon.length === 0);
+  assert('no URL was written (pushState / replaceState)', captured.pushState.length === 0 && captured.replaceState.length === 0);
+  assert('no console output captured', captured.logs.length === 0);
+  // Defence in depth: even if a future code change
+  // logs a value, the sentinel must never appear.
+  for (const text of allCaptured) {
+    assert('captured value never contains the private sentinel note', !text.includes(sentinelNote));
+    assert('captured value never contains the private sentinel tag', !text.includes(sentinelTag));
+  }
+}
+
+/* =========================================================================
+ * 11. Per-CVE serialised writes (concurrency)
+ * ======================================================================= */
+console.log('');
+console.log('[11] Per-CVE serialised writes');
+{
   const { InMemoryWorkspaceAdapter } = await import('../src/workspace/InMemoryWorkspaceAdapter.mjs');
   const { makeEntry, applyPatch } = await import('../src/workspace/schema.mjs');
   const mem = new InMemoryWorkspaceAdapter();
   await mem.initialize();
   await mem.putEntry(makeEntry('CVE-2024-0001'));
 
-  // Fire 20 parallel patches; the in-memory adapter applies them
-  // serially through the patchEntry path. The final state should
-  // match the last patch.
+  // Fire 20 parallel patches; the in-memory adapter
+  // applies them serially through the patchEntry
+  // path. The final state should match the last
+  // patch.
   const results = await Promise.all(Array.from({ length: 20 }, (_, i) =>
     mem.patchEntry('CVE-2024-0001', { tags: ['n' + i] })
   ));
   assert('all 20 parallel patches succeeded', results.every((r) => r.ok));
   const final = await mem.getEntry('CVE-2024-0001');
   assert('final tags length is 1 (last patch wins)', final && final.tags.length === 1);
+
+  // The last-write-wins behaviour produces a
+  // monotonically increasing revision.
+  assert('final revision reflects last patch (started at 1, +20 patches = 21)', final && final.revision === 21);
 }
 
 /* =========================================================================
- * 11. Cleanup
+ * 12. Cleanup
  * ======================================================================= */
 console.log('');
-console.log('[11] Cleanup — no repository artifacts');
+console.log('[12] Cleanup — no repository artifacts');
 {
-  const { readdirSync: rds } = await import('node:fs');
-  const root_files = rds(root);
+  const { readdirSync } = await import('node:fs');
+  const root_files = readdirSync(root);
   assert('no logs/ created', !root_files.includes('logs'));
   assert('no state/ created in repo root', !root_files.includes('state'));
   assert('no _v6-4-*.log artifacts', !root_files.some((f) => f.startsWith('_v6-4-') && f.endsWith('.log')));

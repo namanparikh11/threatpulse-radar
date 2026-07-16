@@ -165,24 +165,38 @@ function DialogShell({
 function ExportDialog({ onClose }: { onClose: () => void }) {
   const { state, exportWorkspace } = useWorkspace();
   const entries = Object.values(state.entriesByCve);
-  const [downloaded, setDownloaded] = useState<null | { bytes: number; file: string }>(null);
-  const handleDownload = useCallback(() => {
-    const payload = exportWorkspace();
-    const json = JSON.stringify(payload, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    // The filename is generic: no CVE id, no timestamp leak.
-    // "threatpulse-workspace" + ".json". The browser
-    // adds its own date-stamped "downloads/" path.
-    a.download = `threatpulse-workspace.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    setDownloaded({ bytes: json.length, file: a.download });
-  }, [exportWorkspace]);
+  const [downloaded, setDownloaded] = useState<null | { bytes: number; file: string; checksum: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [hashing, setHashing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleDownload = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setHashing(true);
+    try {
+      // Wait for any in-flight write to settle so the
+      // export reflects the latest committed state.
+      const payload = await exportWorkspace();
+      setHashing(false);
+      const json = JSON.stringify(payload, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `threatpulse-workspace.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setDownloaded({ bytes: json.length, file: a.download, checksum: payload.checksum });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not generate the export.');
+    } finally {
+      setBusy(false);
+      setHashing(false);
+    }
+  }, [busy, exportWorkspace]);
   return (
     <DialogShell title="Export local workspace" onClose={onClose}>
       <p className="text-xs text-radar-muted">
@@ -195,8 +209,18 @@ function ExportDialog({ onClose }: { onClose: () => void }) {
         <li>Format: <code className="text-radar-text">{WORKSPACE_EXPORT_FORMAT}</code></li>
         <li>Schema version: <code className="text-radar-text">{WORKSPACE_SCHEMA_VERSION}</code></li>
         <li>Entries: <strong className="text-radar-text">{entries.length.toLocaleString('en-US')}</strong></li>
-        <li>Deterministic SHA-256 checksum baked into the file</li>
+        <li>Deterministic SHA-256 checksum baked into the file (computed via Web Crypto)</li>
       </ul>
+      {hashing && (
+        <p role="status" aria-live="polite" className="mt-3 text-[11px] text-radar-accent">
+          Computing checksum… the main thread is not blocked.
+        </p>
+      )}
+      {error && (
+        <p role="status" aria-live="polite" className="mt-3 text-[11px] text-radar-warn">
+          {error}
+        </p>
+      )}
       <div className="mt-4 flex items-center justify-end gap-2">
         <button
           type="button"
@@ -208,11 +232,11 @@ function ExportDialog({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={handleDownload}
-          disabled={entries.length === 0}
+          disabled={entries.length === 0 || busy}
           className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-radar-accent/40 bg-radar-accent/10 px-3 py-1.5 text-xs text-radar-accent hover:border-radar-accent disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Download className="h-3.5 w-3.5" />
-          Download JSON
+          {busy ? 'Preparing…' : 'Download JSON'}
         </button>
       </div>
       {downloaded && (
@@ -234,16 +258,18 @@ function ExportDialog({ onClose }: { onClose: () => void }) {
 type ImportPhase =
   | { kind: 'idle' }
   | { kind: 'reading'; fileName: string; bytes: number }
+  | { kind: 'verifying'; fileName: string }
   | { kind: 'dry-run'; fileName: string; total: number; dropped: number; schemaVersion: string }
   | { kind: 'error'; reason: string }
   | { kind: 'applying'; mode: 'merge' | 'replace' }
   | { kind: 'done'; mode: 'merge' | 'replace'; added?: number; updated?: number; unchanged?: number; written?: number; removed?: number };
 
 function ImportDialog({ onClose }: { onClose: () => void }) {
-  const { importWorkspace } = useWorkspace();
+  const { importWorkspace, flushPendingWrites, hasPendingWrites } = useWorkspace();
   const [phase, setPhase] = useState<ImportPhase>({ kind: 'idle' });
   const [payload, setPayload] = useState<any | null>(null);
   const [mode, setMode] = useState<'merge' | 'replace'>('merge');
+  const [hasChecksum, setHasChecksum] = useState(false);
 
   const handleFile = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -256,9 +282,6 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-      // Reuse the validate path via the workspace context
-      // for a synchronous shape check, but the real
-      // validation lives in importWorkspace.
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         setPhase({ kind: 'error', reason: 'payload-not-object' });
         return;
@@ -279,12 +302,23 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
         setPhase({ kind: 'error', reason: 'entries-not-array' });
         return;
       }
+      setHasChecksum(typeof parsed.checksum === 'string' && parsed.checksum.length > 0);
       setPayload(parsed);
+      setPhase({ kind: 'verifying', fileName: file.name });
+      // The async dry-run also recomputes the
+      // checksum. If the file is corrupt, the
+      // checksum-mismatch reason fires here.
+      const { dryRunImport } = await import('../../workspace/exportImport.mjs');
+      const v = await dryRunImport(parsed);
+      if (!v.ok) {
+        setPhase({ kind: 'error', reason: v.reason });
+        return;
+      }
       setPhase({
         kind: 'dry-run',
         fileName: file.name,
-        total: parsed.entries.length,
-        dropped: 0,
+        total: v.entries.length,
+        dropped: (v.dropped || []).length,
         schemaVersion: parsed.schemaVersion,
       });
     } catch (err) {
@@ -297,6 +331,16 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
 
   const handleApply = useCallback(async () => {
     if (!payload) return;
+    // Wait for any pending writes (debounced note
+    // saves etc.) to settle BEFORE the destructive
+    // import operation runs. This guarantees the
+    // import sees the latest committed state and
+    // that the imported data does not race a
+    // pending autosave.
+    if (hasPendingWrites) {
+      setPhase({ kind: 'applying', mode });
+      await flushPendingWrites();
+    }
     setPhase({ kind: 'applying', mode });
     const r = await importWorkspace(payload, mode);
     if (!r.ok) {
@@ -312,7 +356,7 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
       written: r.written,
       removed: r.removed,
     });
-  }, [payload, mode, importWorkspace]);
+  }, [payload, mode, importWorkspace, hasPendingWrites, flushPendingWrites]);
 
   return (
     <DialogShell title="Import local workspace" onClose={onClose} width="max-w-2xl">
@@ -351,6 +395,12 @@ function ImportDialog({ onClose }: { onClose: () => void }) {
 
       {phase.kind === 'reading' && (
         <p className="mt-4 text-xs text-radar-text">Reading {phase.fileName}…</p>
+      )}
+
+      {phase.kind === 'verifying' && (
+        <p className="mt-4 text-xs text-radar-text">
+          Verifying {phase.fileName}{hasChecksum ? ' (checksum)' : ''}… the main thread is not blocked.
+        </p>
       )}
 
       {phase.kind === 'error' && (

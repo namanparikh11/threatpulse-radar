@@ -21,7 +21,7 @@ import WorkspaceDialogs, { type DialogKind } from '../components/workspace/Works
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { buildCounts } from '../workspace/queueFilters.mjs';
-import { computeChangeSignature } from '../workspace/changeSignature.mjs';
+import { computeChangeSignatureSync as computeChangeSignature } from '../workspace/changeSignature.mjs';
 import {
   fetchVulnerabilities,
   type FetchResult,
@@ -135,6 +135,8 @@ export default function DashboardPage() {
       vulns: state.meta.data,
       entriesByCve: workspace.state.entriesByCve,
       publicIntelligenceVersion: state.meta.publicIntelligenceVersion ?? null,
+      publicIntelligenceStatus: state.meta.publicIntelligenceStatus ?? 'unavailable',
+      publicProjectionSchemaVersion: state.meta.publicProjectionSchemaVersion ?? null,
       computeSignature: computeChangeSignature,
     });
     workspace.incrementChangedSinceReview(counts.changedSinceReview);
@@ -434,6 +436,8 @@ export default function DashboardPage() {
             <WorkspacePanel
               vulns={all}
               publicIntelligenceVersion={state.meta.publicIntelligenceVersion ?? null}
+              publicIntelligenceStatus={state.meta.publicIntelligenceStatus ?? 'unavailable'}
+              publicProjectionSchemaVersion={state.meta.publicProjectionSchemaVersion ?? null}
               selectedCveIds={selectedCveIds}
               onSelectedCveIdsChange={setSelectedCveIds}
               onOpenVuln={setSelected}
@@ -536,6 +540,12 @@ export default function DashboardPage() {
         onClose={() => setSelected(null)}
         publicIntelligenceVersion={
           state.kind === 'ready' ? state.meta.publicIntelligenceVersion ?? null : null
+        }
+        publicIntelligenceStatus={
+          state.kind === 'ready' ? state.meta.publicIntelligenceStatus ?? 'unavailable' : 'unavailable'
+        }
+        publicProjectionSchemaVersion={
+          state.kind === 'ready' ? state.meta.publicProjectionSchemaVersion ?? null : null
         }
       />
 

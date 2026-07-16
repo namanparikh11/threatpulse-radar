@@ -1,6 +1,6 @@
 /**
  * V6.4 — TypeScript declarations for the queue filter
- * helpers. Mirrors the JS surface exactly.
+ * helpers. Mirrors the JS surface.
  */
 
 export type QueueFilterId =
@@ -43,7 +43,9 @@ export interface BuildLocalQueueArgs {
   filter: QueueFilterId;
   query: string;
   publicIntelligenceVersion: string | null | undefined;
-  computeSignature?: (vuln: any, publicIntelligenceVersion: string | null | undefined) => string;
+  publicIntelligenceStatus?: 'available' | 'mismatch' | 'unavailable';
+  publicProjectionSchemaVersion?: string | null;
+  computeSignature?: (vuln: any, publicIntelligenceVersion: string | null | undefined, publicProjectionSchemaVersion?: string | null) => string;
 }
 export interface QueueItem {
   vuln: any;
@@ -57,7 +59,9 @@ export interface BuildCountsArgs {
   vulns: any[];
   entriesByCve: Record<string, any>;
   publicIntelligenceVersion: string | null | undefined;
-  computeSignature?: (vuln: any, publicIntelligenceVersion: string | null | undefined) => string;
+  publicIntelligenceStatus?: 'available' | 'mismatch' | 'unavailable';
+  publicProjectionSchemaVersion?: string | null;
+  computeSignature?: (vuln: any, publicIntelligenceVersion: string | null | undefined, publicProjectionSchemaVersion?: string | null) => string;
 }
 export interface LocalCounts {
   total: number;

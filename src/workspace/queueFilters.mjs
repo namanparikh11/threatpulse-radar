@@ -66,9 +66,18 @@ export function matchesQueueFilter({
   publicIntelligenceVersion,
   currentChangeSignature,
   presentInPublic,
+  publicProjectionSchemaVersion,
+  publicIntelligenceStatus,
 }) {
   const e = entry || null;
   const filterId = filter || 'all-watched';
+  const matchesArgsPublicProjectionSchemaVersion = publicProjectionSchemaVersion;
+  // The changed-since-review filter is the only one
+  // that needs the public-intelligence status.
+  // When the status is not 'available', the
+  // filter is unavailable: the queue never
+  // surfaces a fabricated change claim.
+  const statusAvailable = publicIntelligenceStatus === 'available';
   switch (filterId) {
     case 'all-watched':
       return !!(e && e.watched && !e.archived);
@@ -80,8 +89,14 @@ export function matchesQueueFilter({
       return !!(e && !e.archived && e.triageStatus === 'action-required');
     case 'changed-since-review': {
       if (!e || e.archived) return false;
+      // v6.4 hardened: when the public-intelligence
+      // status is not 'available', the change-aware
+      // classification is unavailable — the filter
+      // never surfaces a fabricated change claim.
+      if (!statusAvailable) return false;
       const cls = classifyChange({
         currentVersion: publicIntelligenceVersion,
+        currentProjectionSchemaVersion: matchesArgsPublicProjectionSchemaVersion,
         currentSignature: currentChangeSignature,
         record: e,
         presentInPublic: !!presentInPublic,
@@ -138,6 +153,8 @@ export function buildLocalQueue({
   filter,
   query,
   publicIntelligenceVersion,
+  publicIntelligenceStatus = 'available',
+  publicProjectionSchemaVersion = null,
   computeSignature,
 }) {
   const out = [];
@@ -146,19 +163,25 @@ export function buildLocalQueue({
     if (!v || typeof v.cveId !== 'string') continue;
     const e = byCve[v.cveId] || null;
     const presentInPublic = true;
-    const sig = typeof computeSignature === 'function'
-      ? computeSignature(v, publicIntelligenceVersion)
+    // If the public-intelligence status is not
+    // 'available', never compute a change class:
+    // every entry is 'unavailable'.
+    const sig = (publicIntelligenceStatus === 'available' && typeof computeSignature === 'function')
+      ? computeSignature(v, publicIntelligenceVersion, publicProjectionSchemaVersion)
       : '';
     const matchesFilter = matchesQueueFilter({
       vuln: v, entry: e, filter,
       publicIntelligenceVersion, currentChangeSignature: sig,
       presentInPublic,
+      publicProjectionSchemaVersion,
+      publicIntelligenceStatus,
     });
     if (!matchesFilter) continue;
     if (!matchesLocalSearch({ vuln: v, entry: e, query })) continue;
-    const changeClass = e
+    const changeClass = (publicIntelligenceStatus === 'available' && e)
       ? classifyChange({
           currentVersion: publicIntelligenceVersion,
+          currentProjectionSchemaVersion: publicProjectionSchemaVersion,
           currentSignature: sig,
           record: e,
           presentInPublic,
@@ -213,7 +236,14 @@ export function compareQueueItems(a, b) {
  * (including archived). Other counts exclude archived
  * entries unless the filter is "archived".
  */
-export function buildCounts({ vulns, entriesByCve, publicIntelligenceVersion, computeSignature }) {
+export function buildCounts({
+  vulns,
+  entriesByCve,
+  publicIntelligenceVersion,
+  publicIntelligenceStatus = 'available',
+  publicProjectionSchemaVersion = null,
+  computeSignature,
+}) {
   const byCve = entriesByCve || {};
   const entries = Object.values(byCve);
   let watched = 0, unreviewed = 0, actionRequired = 0, changed = 0, resolved = 0, archived = 0;
@@ -224,14 +254,15 @@ export function buildCounts({ vulns, entriesByCve, publicIntelligenceVersion, co
     if (e.triageStatus === 'action-required') actionRequired++;
     if (e.triageStatus === 'resolved') resolved++;
     // changed-since-review: find a matching public vuln
-    if (vulns && vulns.length > 0) {
+    if (vulns && vulns.length > 0 && publicIntelligenceStatus === 'available') {
       const v = vulns.find((x) => x.cveId === e.cveId);
       if (v) {
         const sig = typeof computeSignature === 'function'
-          ? computeSignature(v, publicIntelligenceVersion)
+          ? computeSignature(v, publicIntelligenceVersion, publicProjectionSchemaVersion)
           : '';
         const cls = classifyChange({
           currentVersion: publicIntelligenceVersion,
+          currentProjectionSchemaVersion: publicProjectionSchemaVersion,
           currentSignature: sig,
           record: e,
           presentInPublic: true,

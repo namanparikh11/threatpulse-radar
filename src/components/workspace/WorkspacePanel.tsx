@@ -54,7 +54,7 @@ import {
   type QueueFilterId,
 } from '../../workspace/queueFilters.mjs';
 import { SEVERITY_BADGE } from '../../utils/severity';
-import { computeChangeSignature } from '../../workspace/changeSignature.mjs';
+import { computeChangeSignatureSync as computeChangeSignature } from '../../workspace/changeSignature.mjs';
 import type { Vulnerability } from '../../types/vulnerability';
 
 interface WorkspacePanelProps {
@@ -65,6 +65,17 @@ interface WorkspacePanelProps {
   /** The current public intelligence version (from
    *  FetchResult.publicIntelligenceVersion). */
   publicIntelligenceVersion: string | null;
+  /** The current public intelligence status. The
+   *  panel never fabricates a change claim: when the
+   *  status is not 'available' the change-aware tile
+   *  shows 0 and the queue's "changed since review"
+   *  filter is unavailable. */
+  publicIntelligenceStatus: 'available' | 'mismatch' | 'unavailable';
+  /** The public-projection schema version, when
+   *  available. The change signature is bound to
+   *  this version; the queue never treats the
+   *  dataset version as semver. */
+  publicProjectionSchemaVersion: string | null;
   /** Selected CVE ids, owned by the parent so the
    *  bulk-action bar can act on them. */
   selectedCveIds: string[];
@@ -94,6 +105,8 @@ const QUEUE_FILTER_LABELS: Record<QueueFilterId, string> = {
 export default function WorkspacePanel({
   vulns,
   publicIntelligenceVersion,
+  publicIntelligenceStatus,
+  publicProjectionSchemaVersion,
   selectedCveIds,
   onSelectedCveIdsChange,
   onOpenVuln,
@@ -108,16 +121,20 @@ export default function WorkspacePanel({
 
   // Compute counts using the current public dataset +
   // workspace entries. Pure derivation; safe to call on
-  // every render.
+  // every render. The status and projection schema
+  // version are passed in so the change-aware count
+  // never fabricates a claim.
   const counts = useMemo(
     () =>
       buildCounts({
         vulns,
         entriesByCve: state.entriesByCve,
         publicIntelligenceVersion,
+        publicIntelligenceStatus,
+        publicProjectionSchemaVersion,
         computeSignature: computeChangeSignature,
       }),
-    [vulns, state.entriesByCve, publicIntelligenceVersion]
+    [vulns, state.entriesByCve, publicIntelligenceVersion, publicIntelligenceStatus, publicProjectionSchemaVersion]
   );
 
   // Compute the queue rows for the active filter. We
@@ -131,9 +148,11 @@ export default function WorkspacePanel({
         filter,
         query,
         publicIntelligenceVersion,
+        publicIntelligenceStatus,
+        publicProjectionSchemaVersion,
         computeSignature: computeChangeSignature,
       }),
-    [vulns, state.entriesByCve, filter, query, publicIntelligenceVersion]
+    [vulns, state.entriesByCve, filter, query, publicIntelligenceVersion, publicIntelligenceStatus, publicProjectionSchemaVersion]
   );
 
   const handleFilter = useCallback(
@@ -170,7 +189,7 @@ export default function WorkspacePanel({
   );
 
   const isUnavailable = state.status === 'unavailable' || state.status === 'error';
-  const isReadOnly = state.status === 'read-only';
+  const isSessionOnly = state.status === 'session-only';
   const isInitializing = state.status === 'initializing';
   const backendLabel = state.backend === 'indexeddb'
     ? 'IndexedDB on this device'
@@ -263,7 +282,7 @@ export default function WorkspacePanel({
       </header>
 
       {/* Status banner when the workspace is degraded. */}
-      {(isUnavailable || isReadOnly) && (
+      {(isUnavailable || isSessionOnly) && (
         <div
           role="status"
           aria-live="polite"
@@ -273,7 +292,7 @@ export default function WorkspacePanel({
           <p>
             {isUnavailable
               ? 'Local workspace is unavailable in this browser session. Watchlists, statuses, tags, and notes cannot be saved. Reload the page or use a normal (non-private) window to re-enable storage.'
-              : 'Local storage was blocked. The workspace is read-only for this session — your data is not persisted to disk.'}
+              : 'Session-only mode. Data is stored in this tab only and will be lost on tab close or reload. Export a backup now to preserve your work.'}
           </p>
         </div>
       )}
@@ -501,9 +520,9 @@ function StorageBadge({
   backendLabel: string;
 }) {
   const tone =
-    status === 'ready'
+    status === 'persistent'
       ? 'border-radar-accent/40 bg-radar-accent/5 text-radar-accent'
-      : status === 'read-only'
+      : status === 'session-only'
         ? 'border-radar-warn/40 bg-radar-warn/5 text-radar-warn'
         : status === 'unavailable' || status === 'error'
           ? 'border-radar-warn/40 bg-radar-warn/10 text-radar-warn'
@@ -515,8 +534,8 @@ function StorageBadge({
       data-testid="workspace-storage-badge"
     >
       <Database className="h-3 w-3" />
-      {status === 'ready' && 'Local'}
-      {status === 'read-only' && 'Session only'}
+      {status === 'persistent' && 'Persistent'}
+      {status === 'session-only' && 'Session only'}
       {status === 'initializing' && 'Initializing…'}
       {status === 'unavailable' && 'Unavailable'}
       {status === 'error' && 'Error'}

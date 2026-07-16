@@ -23,9 +23,29 @@ interface DetailDrawerProps {
    * "Mark reviewed" control.
    */
   publicIntelligenceVersion?: string | null;
+  /**
+   * v6.4: the current public-intelligence status.
+   * The drawer disables "Mark reviewed" when the
+   * status is not 'available'; the change-aware
+   * pill shows "Change status unavailable" instead
+   * of any fabricated value.
+   */
+  publicIntelligenceStatus?: 'available' | 'mismatch' | 'unavailable';
+  /**
+   * v6.4: the public-projection schema version
+   * (separate from the dataset version). The
+   * signature is bound to this version.
+   */
+  publicProjectionSchemaVersion?: string | null;
 }
 
-export default function DetailDrawer({ vuln, onClose, publicIntelligenceVersion }: DetailDrawerProps) {
+export default function DetailDrawer({
+  vuln,
+  onClose,
+  publicIntelligenceVersion,
+  publicIntelligenceStatus = 'available',
+  publicProjectionSchemaVersion = null,
+}: DetailDrawerProps) {
   // Close on ESC
   useEffect(() => {
     if (!vuln) return;
@@ -62,6 +82,8 @@ export default function DetailDrawer({ vuln, onClose, publicIntelligenceVersion 
             vuln={vuln}
             onClose={onClose}
             publicIntelligenceVersion={publicIntelligenceVersion}
+            publicIntelligenceStatus={publicIntelligenceStatus}
+            publicProjectionSchemaVersion={publicProjectionSchemaVersion}
           />
         )}
       </aside>
@@ -73,10 +95,14 @@ function DrawerBody({
   vuln,
   onClose,
   publicIntelligenceVersion,
+  publicIntelligenceStatus,
+  publicProjectionSchemaVersion,
 }: {
   vuln: Vulnerability;
   onClose: () => void;
   publicIntelligenceVersion?: string | null;
+  publicIntelligenceStatus?: 'available' | 'mismatch' | 'unavailable';
+  publicProjectionSchemaVersion?: string | null;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -154,7 +180,12 @@ function DrawerBody({
           <OsvContext vuln={vuln} />
         </Section>
 
-        <WorkspaceDrawerSection vuln={vuln} publicIntelligenceVersion={publicIntelligenceVersion} />
+        <WorkspaceDrawerSection
+          vuln={vuln}
+          publicIntelligenceVersion={publicIntelligenceVersion}
+          publicIntelligenceStatus={publicIntelligenceStatus}
+          publicProjectionSchemaVersion={publicProjectionSchemaVersion}
+        />
 
         <Section title="External references">
           <ul className="space-y-1.5">
