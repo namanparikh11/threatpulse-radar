@@ -79,7 +79,7 @@ export function computeChangeSignature(vuln, publicIntelligenceVersion) {
   const v = vuln;
   const ssvc = v.ssvc || {};
   const osv = v.osv || {};
-  const osvRecordIds = Array.isArray(osv.recordIds) ? osvRecordIds.slice().sort().join(',') : '';
+  const osvIds = Array.isArray(osv.recordIds) ? osv.recordIds.slice().sort().join(',') : '';
   const parts = [
     `v=${publicIntelligenceVersion || ''}`,
     `severity=${v.severity || ''}`,
@@ -91,7 +91,7 @@ export function computeChangeSignature(vuln, publicIntelligenceVersion) {
     `ssvcT=${ssvc.technicalImpact || ''}`,
     `vr=${bool01(!!v.vulnrichment)}`,
     `gh=${bool01(!!v.githubAdvisory)}`,
-    `osv=${osvRecordIds}`,
+    `osv=${osvIds}`,
     `wd=${bool01(!!v.withdrawn)}`,
   ];
   const data = parts.join('|');

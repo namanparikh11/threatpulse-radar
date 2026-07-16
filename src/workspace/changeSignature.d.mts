@@ -10,7 +10,7 @@ export type ChangeLabel =
   | 'newly-tracked'
   | 'no-longer-tracked';
 export function classifyChange(args: {
-  currentVersion: string;
+  currentVersion: string | null | undefined;
   currentSignature: string;
   record:
     | {

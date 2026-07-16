@@ -16,9 +16,16 @@ import WorkspaceDrawerSection from './workspace/WorkspaceDrawerSection';
 interface DetailDrawerProps {
   vuln: Vulnerability | null;
   onClose: () => void;
+  /**
+   * v6.4: the current public-intelligence version. The
+   * workspace section in the drawer uses it to compute
+   * the change signature and to enable the
+   * "Mark reviewed" control.
+   */
+  publicIntelligenceVersion?: string | null;
 }
 
-export default function DetailDrawer({ vuln, onClose }: DetailDrawerProps) {
+export default function DetailDrawer({ vuln, onClose, publicIntelligenceVersion }: DetailDrawerProps) {
   // Close on ESC
   useEffect(() => {
     if (!vuln) return;
@@ -50,13 +57,27 @@ export default function DetailDrawer({ vuln, onClose }: DetailDrawerProps) {
           vuln ? 'translate-x-0' : 'translate-x-full',
         ].join(' ')}
       >
-        {vuln && <DrawerBody vuln={vuln} onClose={onClose} />}
+        {vuln && (
+          <DrawerBody
+            vuln={vuln}
+            onClose={onClose}
+            publicIntelligenceVersion={publicIntelligenceVersion}
+          />
+        )}
       </aside>
     </>
   );
 }
 
-function DrawerBody({ vuln, onClose }: { vuln: Vulnerability; onClose: () => void }) {
+function DrawerBody({
+  vuln,
+  onClose,
+  publicIntelligenceVersion,
+}: {
+  vuln: Vulnerability;
+  onClose: () => void;
+  publicIntelligenceVersion?: string | null;
+}) {
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-start justify-between gap-3 border-b border-radar-border bg-radar-panel2/60 px-5 py-4">
@@ -133,7 +154,7 @@ function DrawerBody({ vuln, onClose }: { vuln: Vulnerability; onClose: () => voi
           <OsvContext vuln={vuln} />
         </Section>
 
-        <WorkspaceDrawerSection vuln={vuln} />
+        <WorkspaceDrawerSection vuln={vuln} publicIntelligenceVersion={publicIntelligenceVersion} />
 
         <Section title="External references">
           <ul className="space-y-1.5">

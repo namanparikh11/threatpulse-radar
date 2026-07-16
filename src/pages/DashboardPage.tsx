@@ -531,7 +531,13 @@ export default function DashboardPage() {
         )}
       </main>
 
-      <DetailDrawer vuln={selected} onClose={() => setSelected(null)} />
+      <DetailDrawer
+        vuln={selected}
+        onClose={() => setSelected(null)}
+        publicIntelligenceVersion={
+          state.kind === 'ready' ? state.meta.publicIntelligenceVersion ?? null : null
+        }
+      />
 
       <WorkspaceDialogs
         active={activeDialog}

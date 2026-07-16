@@ -91,7 +91,19 @@ function formatPriorityBadgeClass(priority: string): string {
   }
 }
 
-export default function WorkspaceDrawerSection({ vuln }: { vuln: Vulnerability }) {
+interface WorkspaceDrawerSectionProps {
+  vuln: Vulnerability;
+  /**
+   * v6.4: the current public-intelligence version. The
+   * drawer uses it to compute the change signature and
+   * to stamp `lastSeenPublicIntelligenceVersion` when
+   * the operator clicks "Mark reviewed". When `null`,
+   * the change-tracking controls are disabled.
+   */
+  publicIntelligenceVersion?: string | null;
+}
+
+export default function WorkspaceDrawerSection({ vuln, publicIntelligenceVersion }: WorkspaceDrawerSectionProps) {
   const {
     state,
     saveError,
@@ -126,7 +138,10 @@ export default function WorkspaceDrawerSection({ vuln }: { vuln: Vulnerability }
   // public-intelligence fields. The workspace never
   // stores the public dataset; the signature is
   // computed in-memory from the vulnerability prop.
-  const publicVersion = (vuln as any).publicIntelligenceVersion ?? null;
+  // v6.4: the version is passed in from the
+  // FetchResult (it's a dataset-level value, not a
+  // per-CVE one).
+  const publicVersion = publicIntelligenceVersion ?? null;
   const changeSignature = useMemo(() => computeChangeSignature(vuln as any, publicVersion), [vuln, publicVersion]);
   const changeLabel = useMemo(() => classifyChange({
     currentVersion: publicVersion,

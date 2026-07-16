@@ -905,20 +905,26 @@ console.log('[15] Clean Hostinger lifecycle in an isolated tracked-source copy')
   const copyRoot = mkdtempSync(join(tmpdir(), 'tpr-v63-clean-'));
   // Build the exclusion list — never copy the
   // installed deps, the build output, VCS, env,
-  // or test artifacts.
-  const skipDirs = new Set(['node_modules', 'dist', '.git', 'logs', 'state', 'node_modules.tmp', 'coverage', '.v6-build']);
+  // or test artifacts. v6.4: the v6.3 `state` skip
+  // was scoped to the top-level runtime state dir;
+  // v6.4 added `src/state/WorkspaceContext.tsx`
+  // which must be copied. We track the recursion
+  // depth and only skip `state` at depth 0.
+  const skipDirsTop = new Set(['node_modules', 'dist', '.git', 'logs', 'state', 'node_modules.tmp', 'coverage', '.v6-build']);
+  const skipDirsNested = new Set(['node_modules', 'dist', '.git', 'logs', 'node_modules.tmp', 'coverage', '.v6-build']);
   const skipFiles = new Set(['.env', '.env.local', '.env.example', 'package-lock.json.tmp']);
-  async function copyDir(src, dst) {
+  async function copyDir(src, dst, depth) {
     const { readdir } = await import('node:fs/promises');
     const entries = await readdir(src, { withFileTypes: true });
     await mkdir(dst, { recursive: true });
+    const skipDirs = depth === 0 ? skipDirsTop : skipDirsNested;
     for (const e of entries) {
       if (e.isDirectory() && skipDirs.has(e.name)) continue;
       if (e.isFile() && skipFiles.has(e.name)) continue;
       if (e.isSymbolicLink()) continue;
       const sp = join(src, e.name);
       const dp = join(dst, e.name);
-      if (e.isDirectory()) await copyDir(sp, dp);
+      if (e.isDirectory()) await copyDir(sp, dp, (depth || 0) + 1);
       else if (e.isFile()) {
         const { copyFile } = await import('node:fs/promises');
         await copyFile(sp, dp);
@@ -926,7 +932,7 @@ console.log('[15] Clean Hostinger lifecycle in an isolated tracked-source copy')
     }
   }
   try {
-    await copyDir(root, copyRoot);
+    await copyDir(root, copyRoot, 0);
     // Sanity: the copy must not include the
     // skipped dirs.
     const { readdirSync: readdirSyncP } = await import('node:fs');

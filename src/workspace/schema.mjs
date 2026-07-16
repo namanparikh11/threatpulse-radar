@@ -171,7 +171,7 @@ export function validateEntry(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { ok: false, reason: 'not-an-object' };
   }
-  for (const k of Object.keys(input)) {
+  for (const k of Object.getOwnPropertyNames(input)) {
     if (PROTOTYPE_POLLUTION_KEYS.has(k)) {
       return { ok: false, reason: `prototype-pollution:${k}` };
     }
@@ -225,7 +225,7 @@ export function validateImportPayload(payload, { maxBytes = LIMITS.IMPORT_MAX_BY
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return { ok: false, reason: 'payload-not-object' };
   }
-  for (const k of Object.keys(payload)) {
+  for (const k of Object.getOwnPropertyNames(payload)) {
     if (PROTOTYPE_POLLUTION_KEYS.has(k)) {
       return { ok: false, reason: `prototype-pollution:${k}` };
     }
