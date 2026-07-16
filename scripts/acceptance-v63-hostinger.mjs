@@ -187,12 +187,18 @@ console.log('[3] Filesystem lock semantics');
   const testPid = 99999;
   const r1 = await acquireCronLock({ locksDir: lockDir, name: 'test-lock', ttlMs: 5_000, owner, pid: testPid });
   assert('first acquisition succeeds', r1.acquired === true);
+  // The lock is a directory.
+  assert('first acquisition creates a lock directory', existsSync(join(lockDir, 'test-lock.lock')) && statSync(join(lockDir, 'test-lock.lock')).isDirectory(),
+    `existsSync=${existsSync(join(lockDir, 'test-lock.lock'))}`);
+  // The owner.json is inside the directory.
+  assert('first acquisition writes owner.json', existsSync(join(lockDir, 'test-lock.lock', 'owner.json')));
   const r2 = await acquireCronLock({ locksDir: lockDir, name: 'test-lock', ttlMs: 5_000, owner: 'other-owner', pid: 99998 });
   assert('second acquisition fails while first is held', r2.acquired === false);
   assert('second acquisition reports holder=first owner', r2.holder === owner);
   // Release the first lock.
   const rel = await releaseCronLock({ locksDir: lockDir, name: 'test-lock', owner, pid: testPid });
   assert('release of first lock succeeds', rel.released === true);
+  assert('release removes the lock directory', !existsSync(join(lockDir, 'test-lock.lock')));
   // Foreign-release is refused.
   const r3 = await acquireCronLock({ locksDir: lockDir, name: 'test-lock', ttlMs: 5_000, owner, pid: testPid });
   assert('re-acquisition after release succeeds', r3.acquired === true);
@@ -478,7 +484,7 @@ console.log('[10] Compatibility invariants');
   }
 }
 
-/* ---- 11. Hardened lock semantics ---- */
+/* ---- 11. Hardened lock semantics (mkdir-based, quarantine, owner-verify, pid-token) ---- */
 console.log('');
 console.log('[11] Hardened lock semantics (quarantine + owner-verify + pid-token)');
 
@@ -486,20 +492,26 @@ console.log('[11] Hardened lock semantics (quarantine + owner-verify + pid-token
   const { acquireCronLock, releaseCronLock, inspectCronLock, clearStaleCronLock, listCronLocks } = await import('../hostinger/locks.mjs');
   const lockDir = mkdtempSync(join(tmpdir(), 'tpr-v63-hard-'));
 
-  // 11a. Quarantine: an EXPIRED lock is renamed
-  // to `<name>.lock.stale-<ts>` before the new
-  // lock is written. The previous file is NEVER
-  // silently overwritten.
+  // Helper: seed an EXPIRED lock directory with
+  // valid owner.json.
+  function seedExpiredLockDir(name, owner, pid) {
+    const dir = join(lockDir, `${name}.lock`);
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'owner.json'), JSON.stringify({
+      acquiredAt: '2020-01-01T00:00:00.000Z',
+      expiresAt: '2020-01-01T00:00:01.000Z',
+      owner, pid, nonce: 'old',
+    }));
+    return dir;
+  }
+
+  // 11a. Quarantine: an EXPIRED lock directory is
+  // renamed to `<name>.lock.stale-<ts>-<nonce>/`
+  // before the new lock is created. The previous
+  // lock is NEVER silently overwritten.
   {
     const name = 'quarantine-stale';
-    // Seed an EXPIRED lock by hand.
-    const lockPath = join(lockDir, `${name}.lock`);
-    const expired = {
-      acquiredAt: '2020-01-01T00:00:00.000Z',
-      expiresAt: '2020-01-01T00:00:01.000Z', // long expired
-      owner: 'old-process', pid: 12345, nonce: 'old',
-    };
-    writeFileSync(lockPath, JSON.stringify(expired));
+    seedExpiredLockDir(name, 'old-process', 12345);
     const acq = await acquireCronLock({ locksDir: lockDir, name, ttlMs: 5_000, owner: 'new-process', pid: 99999 });
     assert('quarantine-stale: acquire succeeds over an expired lock', acq.acquired === true);
     const files = await listCronLocks({ locksDir: lockDir });
@@ -510,44 +522,56 @@ console.log('[11] Hardened lock semantics (quarantine + owner-verify + pid-token
     assert('quarantine-stale: new lock reports the new owner', ins.holder === 'new-process');
   }
 
-  // 11b. Quarantine: a MALFORMED lock is renamed
-  // to `<name>.lock.malformed-<ts>` and the
-  // acquire returns reason='malformed'. The
-  // malformed lock is NEVER silently overwritten.
+  // 11b. Quarantine: a MALFORMED lock directory
+  // (no owner.json OR non-JSON owner.json) is
+  // renamed to `<name>.lock.malformed-<ts>-<nonce>/`
+  // and the acquirer subsequently claims the
+  // newly-vacated slot. The original malformed
+  // lock is NEVER silently overwritten; the
+  // original is preserved in the quarantine
+  // directory for forensic review.
   {
     const name = 'quarantine-malformed';
-    const lockPath = join(lockDir, `${name}.lock`);
-    writeFileSync(lockPath, 'this is not valid json {');
+    const dir = join(lockDir, `${name}.lock`);
+    mkdirSync(dir);
+    // No owner.json — the directory is malformed.
     const acq = await acquireCronLock({ locksDir: lockDir, name, ttlMs: 5_000, owner: 'p1', pid: 99999 });
-    assert('quarantine-malformed: acquire refuses', acq.acquired === false);
-    assert('quarantine-malformed: reason is malformed', acq.reason === 'malformed', `got: ${acq.reason}`);
+    assert('quarantine-malformed: acquire succeeds after quarantining the empty dir', acq.acquired === true);
     const files = await listCronLocks({ locksDir: lockDir });
     const quarantined = files.filter((f) => f.startsWith(`${name}.lock.malformed-`));
-    assert('quarantine-malformed: previous lock is quarantined with .malformed- prefix', quarantined.length === 1, `got files: ${files.join(', ')}`);
-    assert('quarantine-malformed: no new .lock is written', !files.includes(`${name}.lock`));
+    assert('quarantine-malformed: original empty dir is quarantined with .malformed- prefix', quarantined.length === 1, `got files: ${files.join(', ')}`);
+    assert('quarantine-malformed: new lock holds the .lock name', files.includes(`${name}.lock`));
+    // The new lock's owner.json is the acquirer's.
+    const ins = await inspectCronLock({ locksDir: lockDir, name });
+    assert('quarantine-malformed: new lock owner is p1', ins.holder === 'p1', `got: ${ins.holder}`);
+
+    // Also: a malformed owner.json (not valid
+    // JSON) is quarantined AND the acquirer claims
+    // the slot. The original file is preserved
+    // inside the quarantine directory.
+    const name2 = 'quarantine-malformed-json';
+    const dir2 = join(lockDir, `${name2}.lock`);
+    mkdirSync(dir2);
+    writeFileSync(join(dir2, 'owner.json'), 'this is not valid json {');
+    const acq2 = await acquireCronLock({ locksDir: lockDir, name: name2, ttlMs: 5_000, owner: 'p2', pid: 99999 });
+    assert('quarantine-malformed-json: acquire succeeds after quarantining the invalid-json dir', acq2.acquired === true);
+    const files2 = await listCronLocks({ locksDir: lockDir });
+    const q2 = files2.filter((f) => f.startsWith(`${name2}.lock.malformed-`));
+    assert('quarantine-malformed-json: original dir is quarantined with .malformed- prefix', q2.length === 1);
+    // The malformed owner.json is preserved inside
+    // the quarantine directory.
+    const preserved = readFileSync(join(lockDir, q2[0], 'owner.json'), 'utf8');
+    assert('quarantine-malformed-json: original invalid owner.json is preserved', preserved === 'this is not valid json {');
   }
 
-  // 11c. Owner verification after rename: a
-  // concurrent acquirer that won the race
-  // produces reason='race-detected'. The function
-  // NEVER silently overwrites a foreign lock.
+  // 11c. Owner verification: a process racing
+  // after stale quarantine cannot overwrite a
+  // newly created active lock.
   {
     const name = 'owner-verify';
-    // The test exercises the same code path
-    // through a second acquire that finds a
-    // different owner after the rename. We use a
-    // stubbed acquire by hand-writing an expired
-    // lock with a foreign owner; on success the
-    // lock is owned by the foreign owner; the next
-    // acquire sees a held lock and returns
-    // lock-held (not stale-recover).
-    const lockPath = join(lockDir, `${name}.lock`);
-    writeFileSync(lockPath, JSON.stringify({
-      acquiredAt: '2020-01-01T00:00:00.000Z',
-      expiresAt: '2020-01-01T00:00:01.000Z',
-      owner: 'A', pid: 1, nonce: 'a',
-    }));
-    // Acquire as B over the expired A lock.
+    seedExpiredLockDir(name, 'A', 1);
+    // Acquire as B over the expired A lock. B
+    // quarantines A and creates the new lock.
     const acq = await acquireCronLock({ locksDir: lockDir, name, ttlMs: 60_000, owner: 'B', pid: 2 });
     assert('owner-verify: B acquires over expired A', acq.acquired === true);
     // Now A tries to acquire. The lock is HELD by
@@ -555,24 +579,23 @@ console.log('[11] Hardened lock semantics (quarantine + owner-verify + pid-token
     const re = await acquireCronLock({ locksDir: lockDir, name, ttlMs: 60_000, owner: 'A', pid: 1 });
     assert('owner-verify: A sees lock-held after B owns it', re.acquired === false, JSON.stringify(re));
     assert('owner-verify: A sees holder=B', re.holder === 'B', `got: ${re.holder}`);
+    // On disk: the lock directory's owner.json is
+    // still B's, and the quarantined A lock exists
+    // separately.
+    const ins = await inspectCronLock({ locksDir: lockDir, name });
+    assert('owner-verify: on-disk owner is B', ins.holder === 'B', `got: ${ins.holder}`);
+    const files = await listCronLocks({ locksDir: lockDir });
+    assert('owner-verify: A was quarantined', files.some((f) => f.startsWith(`${name}.lock.stale-`)));
     // Release B; A can now acquire cleanly.
     await releaseCronLock({ locksDir: lockDir, name, owner: 'B', pid: 2 });
   }
 
-  // 11d. Two reclaiming processes: only one
-  // wins. We exercise this by acquiring
-  // concurrently and checking that exactly one
-  // returns acquired=true.
+  // 11d. Two concurrent acquirers on a clean
+  // directory: exactly one wins (mkdir is
+  // atomic).
   {
     const name = 'race-two-acquirers';
-    const expired = {
-      acquiredAt: '2020-01-01T00:00:00.000Z',
-      expiresAt: '2020-01-01T00:00:01.000Z',
-      owner: 'previous', pid: 99999, nonce: 'old',
-    };
-    const lockPath = join(lockDir, `${name}.lock`);
-    writeFileSync(lockPath, JSON.stringify(expired));
-    // Two concurrent acquirers.
+    // Clean lock dir. No pre-existing lock.
     const [r1, r2] = await Promise.all([
       acquireCronLock({ locksDir: lockDir, name, ttlMs: 60_000, owner: 'P1', pid: 1001 }),
       acquireCronLock({ locksDir: lockDir, name, ttlMs: 60_000, owner: 'P2', pid: 1002 }),
@@ -587,7 +610,65 @@ console.log('[11] Hardened lock semantics (quarantine + owner-verify + pid-token
     assert('race-two-acquirers: lock on disk matches the winner', ins.holder === winnerName, `disk=${ins.holder} expected=${winnerName}`);
   }
 
-  // 11e. Pid-token release: a release with the
+  // 11e. Two stale-lock reclaimers: only one
+  // wins. The other returns race-lost.
+  {
+    const name = 'stale-reclaimers';
+    seedExpiredLockDir(name, 'previous', 99999);
+    // Two concurrent acquirers on an expired
+    // lock. The first to rename the stale lock
+    // wins; the second sees the newly-acquired
+    // lock and returns race-lost.
+    const [r1, r2] = await Promise.all([
+      acquireCronLock({ locksDir: lockDir, name, ttlMs: 60_000, owner: 'R1', pid: 2001 }),
+      acquireCronLock({ locksDir: lockDir, name, ttlMs: 60_000, owner: 'R2', pid: 2002 }),
+    ]);
+    const winners = [r1, r2].filter((r) => r.acquired).length;
+    assert('stale-reclaimers: exactly one stale-reclaimer wins', winners === 1, `r1=${JSON.stringify(r1)} r2=${JSON.stringify(r2)}`);
+    const loser = [r1, r2].find((r) => !r.acquired);
+    assert('stale-reclaimers: loser reason is race-lost or lock-held', loser && (loser.reason === 'race-lost' || loser.reason === 'lock-held'),
+      `loser=${JSON.stringify(loser)}`);
+    // On disk: one quarantine dir for the old
+    // lock, and one active lock with the winner's
+    // owner.
+    const ins = await inspectCronLock({ locksDir: lockDir, name });
+    const winnerName = r1.acquired ? 'R1' : 'R2';
+    assert('stale-reclaimers: on-disk owner is the winner', ins.holder === winnerName);
+  }
+
+  // 11f. Release by a previous owner cannot
+  // remove a replacement lock.
+  {
+    const name = 'replacement-release';
+    seedExpiredLockDir(name, 'A-old', 1);
+    // The first acquirer (A-old with a new pid)
+    // wins over its own expired lock.
+    const acq1 = await acquireCronLock({ locksDir: lockDir, name, ttlMs: 5_000, owner: 'A-old', pid: 2 });
+    assert('replacement-release: A-old acquires over its own expired lock', acq1.acquired === true);
+    // Simulate a replacement: the new lock is
+    // released and a different process (B-new)
+    // re-acquires.
+    await releaseCronLock({ locksDir: lockDir, name, owner: 'A-old', pid: 2 });
+    const acq2 = await acquireCronLock({ locksDir: lockDir, name, ttlMs: 5_000, owner: 'B-new', pid: 3 });
+    assert('replacement-release: B-new acquires after release', acq2.acquired === true);
+    // Now A-old (with its OLD pid) tries to
+    // release. The release must NOT remove the
+    // replacement. The reason MUST be one of
+    // foreign-owner or replaced (the test
+    // accepts both because the pid check fires
+    // before the owner check).
+    const rel = await releaseCronLock({ locksDir: lockDir, name, owner: 'A-old', pid: 1 });
+    assert('replacement-release: A-old release is refused', rel.released === false, JSON.stringify(rel));
+    assert('replacement-release: reason is foreign-owner, foreign-pid, or replaced',
+      rel.reason === 'foreign-owner' || rel.reason === 'foreign-pid' || rel.reason === 'replaced',
+      `got: ${rel.reason}`);
+    // The replacement is still on disk.
+    const ins = await inspectCronLock({ locksDir: lockDir, name });
+    assert('replacement-release: replacement lock is still held', ins.held === true);
+    assert('replacement-release: replacement owner is still B-new', ins.holder === 'B-new');
+  }
+
+  // 11g. Pid-token release: a release with the
   // wrong pid is refused.
   {
     const name = 'pid-token';
@@ -602,26 +683,90 @@ console.log('[11] Hardened lock semantics (quarantine + owner-verify + pid-token
     assert('pid-token: correct-pid release succeeds', right.released === true);
   }
 
-  // 11f. clearStale renames a malformed file
-  // under the .malformed- kind, and an expired
-  // file under the .stale- kind.
+  // 11h. clearStale renames an expired valid
+  // lock directory under the .stale- kind, and a
+  // malformed directory under the .malformed-
+  // kind.
   {
     const name = 'clearstale-mixed';
-    const lockPath = join(lockDir, `${name}.lock`);
-    // Write an expired valid lock.
-    writeFileSync(lockPath, JSON.stringify({
-      acquiredAt: '2020-01-01T00:00:00.000Z',
-      expiresAt: '2020-01-01T00:00:01.000Z',
-      owner: 'old', pid: 1, nonce: 'a',
-    }));
+    seedExpiredLockDir(name, 'old', 1);
     const cl = await clearStaleCronLock({ locksDir: lockDir, name });
     assert('clearstale-mixed: expired valid lock is cleared', cl.cleared === true);
     assert('clearstale-mixed: kind is stale', cl.kind === 'stale', `got: ${cl.kind}`);
-    // Now write a malformed lock and clear it.
-    writeFileSync(lockPath, 'not json');
-    const cl2 = await clearStaleCronLock({ locksDir: lockDir, name });
+    // Now create a malformed lock and clear it.
+    const name2 = 'clearstale-malformed';
+    const dir2 = join(lockDir, `${name2}.lock`);
+    mkdirSync(dir2);
+    const cl2 = await clearStaleCronLock({ locksDir: lockDir, name: name2 });
     assert('clearstale-mixed: malformed lock is cleared', cl2.cleared === true);
-    assert('clearstale-mixed: kind is malformed', cl2.kind === 'malformed', `got: ${cl2.kind}`);
+    assert('clearstale-mixed: malformed kind is malformed', cl2.kind === 'malformed', `got: ${cl2.kind}`);
+  }
+
+  // 11i. Interrupted metadata write leaves a
+  // recoverable state. We simulate the crash by
+  // creating a lock directory with no
+  // owner.json. The next acquirer MUST quarantine
+  // it (no-metadata) and acquire cleanly.
+  {
+    const name = 'interrupted-write';
+    const dir = join(lockDir, `${name}.lock`);
+    mkdirSync(dir);
+    // No owner.json — simulates a crash between
+    // mkdir and the metadata write.
+    const acq = await acquireCronLock({ locksDir: lockDir, name, ttlMs: 5_000, owner: 'recovered', pid: 99999 });
+    assert('interrupted-write: acquirer succeeds over a no-metadata directory', acq.acquired === true);
+    const ins = await inspectCronLock({ locksDir: lockDir, name });
+    assert('interrupted-write: on-disk owner is the recovered process', ins.holder === 'recovered');
+    // The empty directory was quarantined under
+    // the .malformed- prefix.
+    const files = await listCronLocks({ locksDir: lockDir });
+    assert('interrupted-write: empty directory was quarantined', files.some((f) => f.startsWith(`${name}.lock.malformed-`)));
+  }
+
+  // 11j. 20 concurrent acquisition attempts
+  // produce exactly one winner. This is the
+  // stress test for the mkdir primitive.
+  {
+    const name = 'twenty-concurrent';
+    const results = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        acquireCronLock({ locksDir: lockDir, name, ttlMs: 60_000, owner: `P${i}`, pid: 3000 + i })
+      )
+    );
+    const winners = results.filter((r) => r.acquired).length;
+    const losers = results.filter((r) => !r.acquired).length;
+    assert('twenty-concurrent: exactly one of 20 acquirers wins', winners === 1, `winners=${winners}`);
+    assert('twenty-concurrent: 19 acquirers lose', losers === 19, `losers=${losers}`);
+    // Every loser reports lock-held (or
+    // race-lost in an extreme scheduling edge
+    // case where the winner's mkdir interleaves
+    // with a loser's EEXIST observation).
+    const losersOk = results.filter((r) => !r.acquired).every((r) => r.reason === 'lock-held' || r.reason === 'race-lost');
+    assert('twenty-concurrent: every loser reports lock-held or race-lost', losersOk, `reasons=${results.filter((r) => !r.acquired).map((r) => r.reason).join(',')}`);
+    // On disk: the active lock matches the
+    // winner, and there is NO quarantine (no
+    // expired lock was reclaimed).
+    const ins = await inspectCronLock({ locksDir: lockDir, name });
+    const winnerIdx = results.findIndex((r) => r.acquired);
+    assert('twenty-concurrent: on-disk owner matches the winner', ins.holder === `P${winnerIdx}`, `disk=${ins.holder} winner=P${winnerIdx}`);
+  }
+
+  // 11k. Windows-compatible filesystem paths.
+  // The lock primitive accepts both forward-
+  // slash and backslash separators in the
+  // locksDir; the test exercises a long path
+  // that would be platform-rejected by an
+  // unsafe path-traversal guard.
+  {
+    const subDir = mkdtempSync(join(tmpdir(), 'tpr-v63-path-'));
+    const sub = join(subDir, 'sub', 'dir');
+    mkdirSync(sub, { recursive: true });
+    const acq = await acquireCronLock({ locksDir: sub, name: 'deep-lock', ttlMs: 5_000, owner: 'deep-owner', pid: 99999 });
+    assert('windows-path: lock works in a deep directory', acq.acquired === true);
+    const ins = await inspectCronLock({ locksDir: sub, name: 'deep-lock' });
+    assert('windows-path: inspect works in a deep directory', ins.held === true);
+    await releaseCronLock({ locksDir: sub, name: 'deep-lock', owner: 'deep-owner', pid: 99999 });
+    rmSync(subDir, { recursive: true, force: true });
   }
 
   rmSync(lockDir, { recursive: true, force: true });

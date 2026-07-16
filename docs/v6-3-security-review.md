@@ -85,6 +85,14 @@ dependency without explicit review.
   - `@netlify/blobs@^10.0.0` (direct, production)
     → `@netlify/otel@>=3.0.1`
     → `@opentelemetry/core < 2.8.0`
+- **Status:** dependency-owned. No compatible
+  non-breaking upgrade currently selected. The
+  fix requires either (a) a Netlify-side update
+  to a newer `@netlify/otel` that pulls in
+  `@opentelemetry/core >= 2.8.0`, or (b) a
+  breaking bump on `@netlify/blobs` (which
+  `npm audit fix --dry-run` will not perform
+  without `--force`).
 - **Runtime exposure (Hostinger):**
   - The Hostinger runtime imports the V6.2
     `publicIntelligenceStore.mjs` module (it is
@@ -107,45 +115,29 @@ dependency without explicit review.
     the OTel SDK. The realistic exposure is
     bounded by Node.js's default
     `--max-http-header-size` (16 KiB total).
-- **Available fix:** The compatible version of
-  `@netelemetry/otel` that pulls in
-  `@opentelemetry/core >= 2.8.0` requires a
-  Netlify-side update. `npm audit fix` cannot
-  apply this without a breaking bump on
-  `@netlify/blobs`.
-- **Mitigation (Hostinger):**
-  1. The Hostinger request handler applies a
-     defense-in-depth cap of `MAX_TOTAL_HEADER_BYTES`
-     (16 KiB) on the sum of every request
-     header. A request with a single oversized
-     header is rejected with HTTP 431. This
-     bounds the OTel W3C Baggage allocation
-     vector to 16 KiB.
-  2. The Hostinger runtime's storage backend
-     is `filesystem`; the `getStore` function
-     from `@netlify/blobs` is never called.
-     There is no application code that
-     propagates baggage values.
-  3. The Hostinger runtime does not call any
-     upstream provider; the only path that
-     reaches the OTel SDK is module-load
-     time, when the SDK is registered but
-     never receives a request.
-  4. A controlled bump of `@netlify/blobs`
-     to the version that pulls in
-     `@opentelemetry/core >= 2.8.0` is on
-     the V6.4+ roadmap with manual review of
-     the breaking changes.
-- **Mitigation (Netlify):**
-  1. The Netlify runtime enforces a per-request
-     memory budget that throttles the
-     unbounded-allocation vector.
-  2. The W3C Baggage propagation path is not
-     reachable from a public request — the
-     ThreatPulse public API does not process
-     Baggage headers. An attacker would need
-     a direct path into the Netlify runtime's
-     request handlers, which are not exposed.
+- **Bounded by platform/header controls where applicable:**
+  - The Hostinger HTTP application applies a
+    **defense-in-depth** cap of
+    `MAX_TOTAL_HEADER_BYTES` (16 KiB) on the sum
+    of every request header, before the request
+    handler runs. A request with a single
+    oversized header is rejected with HTTP 431.
+  - The cap is **defense in depth for the
+    Hostinger HTTP application**, not a full
+    fix for the OpenTelemetry issue. The OTel
+    SDK may initialise its propagation handlers
+    before the Hostinger request handler
+    runs, so the 16 KiB cap cannot guarantee
+    that the W3C Baggage allocation path is
+    unreachable; it can only reduce the realistic
+    exposure to a bounded allocation.
+- **Subject to re-evaluation when the Netlify
+  dependency chain updates:** a controlled bump
+  of `@netlify/blobs` to the version that pulls
+  in `@opentelemetry/core >= 2.8.0` is on the
+  V6.4+ roadmap with manual review of the
+  breaking changes. Until then, the advisory
+  remains.
 
 ## Confirmed fixable — none in this milestone
 
@@ -165,19 +157,29 @@ V6.4+ with a dedicated migration commit.
 
 ## Runtime-exposure summary for the Hostinger runtime
 
-| Advisory | Severity | Hostinger exposure |
-| --- | --- | --- |
-| GHSA-fx2h-pf6j-xcff (vite `server.fs.deny` bypass) | High | None — Vite dev server is not used in production |
-| GHSA-4w7w-66w2-5vf9 (vite path traversal in optimized deps) | Moderate | None — same reason |
-| GHSA-v6wh-96g9-6wx3 (`launch-editor` NTLMv2) | Moderate | None — `launch-editor` is not exercised by the production build |
-| GHSA-67mh-4wv8-2f99 (esbuild dev server) | Moderate | None — esbuild is build-time only |
-| GHSA-8988-4f7v-96qf (OpenTelemetry W3C Baggage) | Moderate | Module loaded transitively via the V6.2 publicIntelligenceStore import of @netlify/blobs. Mitigated by the MAX_TOTAL_HEADER_BYTES (16 KiB) cap applied to every request before the handler runs. `getStore` is never called. |
+| Advisory | Severity | Hostinger exposure | Status |
+| --- | --- | --- | --- |
+| GHSA-fx2h-pf6j-xcff (vite `server.fs.deny` bypass) | High | None — Vite dev server is not used in production | dependency-owned; non-breaking upgrade not available; documented |
+| GHSA-4w7w-66w2-5vf9 (vite path traversal in optimized deps) | Moderate | None — same reason | dependency-owned; non-breaking upgrade not available; documented |
+| GHSA-v6wh-96g9-6wx3 (`launch-editor` NTLMv2) | Moderate | None — `launch-editor` is not exercised by the production build | dependency-owned; non-breaking upgrade not available; documented |
+| GHSA-67mh-4wv8-2f99 (esbuild dev server) | Moderate | None — esbuild is build-time only | dependency-owned; non-breaking upgrade not available; documented |
+| GHSA-8988-4f7v-96qf (OpenTelemetry W3C Baggage) | Moderate | Module loaded transitively via the V6.2 publicIntelligenceStore import of @netlify/blobs. `getStore` is never called. Bounded by the Hostinger 16 KiB header cap (defense in depth, not a full fix). | dependency-owned; non-breaking upgrade not currently selected; subject to re-evaluation when the Netlify chain updates |
 
-**Result:** The Hostinger runtime's only
-runtime-exposure is the OpenTelemetry W3C
-Baggage propagation, which is mitigated by the
-16 KiB total header-size cap applied at the
-request boundary.
+**Result:** Every remaining advisory is
+**dependency-owned** (the threat is in
+`@netlify/blobs` / `@vitejs/*` /
+`@opentelemetry/*`, not in ThreatPulse
+application code). No compatible non-breaking
+upgrade is currently selected. The Hostinger
+runtime's only request-bound exposure is the
+OTel W3C Baggage propagation, which is **bounded
+by the 16 KiB header cap as defense in depth**.
+The 16 KiB cap is not a complete fix; the OTel
+SDK may initialise its propagation handlers
+before the Hostinger request handler runs.
+The advisory remains documented and is subject
+to re-evaluation when the Netlify dependency
+chain publishes a compatible update.
 
 ## What changes when this milestone is complete
 
