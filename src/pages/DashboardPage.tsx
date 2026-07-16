@@ -21,6 +21,7 @@ import WorkspaceDialogs, { type DialogKind } from '../components/workspace/Works
 import ReportBuilder from '../components/reports/ReportBuilder';
 import ReportHistoryDialog from '../components/reports/ReportHistoryDialog';
 import ReportVerifyDialog from '../components/reports/ReportVerifyDialog';
+import EnvironmentPanel from '../components/environment/EnvironmentPanel';
 import { exportReport } from '../reports/exporters/index.mjs';
 import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
 import { addHistoryEntry } from '../reports/history.mjs';
@@ -499,6 +500,8 @@ export default function DashboardPage() {
                 }}
               />
             ) : null}
+
+            <EnvironmentPanel />
 
             <DefenderViewsPanel
               rows={sorted}

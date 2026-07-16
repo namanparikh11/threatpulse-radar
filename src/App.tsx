@@ -1,10 +1,13 @@
 import DashboardPage from './pages/DashboardPage';
 import { WorkspaceProvider } from './state/WorkspaceContext';
+import { EnvironmentProvider } from './state/EnvironmentContext';
 
 export default function App() {
   return (
     <WorkspaceProvider>
-      <DashboardPage />
+      <EnvironmentProvider>
+        <DashboardPage />
+      </EnvironmentProvider>
     </WorkspaceProvider>
   );
 }
