@@ -125,6 +125,30 @@ function capturePublicCveRecords(vulns, cveIds) {
   return out;
 }
 
+/** V6.6: build a narrow optional local environment
+ *  summary for the report boundary. The summary
+ *  contains only counts — no asset names, component
+ *  paths, owner labels, or local review notes.
+ *  When the caller does not pass a summary, this
+ *  function returns `null` so the field is absent
+ *  from the JSON. */
+function computeLocalEnvironmentSummary(input) {
+  if (!input || typeof input !== 'object') return null;
+  const relatedAssetCount = typeof input.relatedAssetCount === 'number' && Number.isFinite(input.relatedAssetCount)
+    ? Math.max(0, Math.floor(input.relatedAssetCount)) : 0;
+  const relatedComponentCount = typeof input.relatedComponentCount === 'number' && Number.isFinite(input.relatedComponentCount)
+    ? Math.max(0, Math.floor(input.relatedComponentCount)) : 0;
+  const correlationStateCounts = (input.correlationStateCounts && typeof input.correlationStateCounts === 'object')
+    ? Object.fromEntries(Object.entries(input.correlationStateCounts).filter(([k, v]) => typeof k === 'string' && typeof v === 'number' && Number.isFinite(v) && v >= 0))
+    : {};
+  return Object.freeze({
+    schemaVersion: '1.0.0',
+    relatedAssetCount,
+    relatedComponentCount,
+    correlationStateCounts: Object.freeze(correlationStateCounts),
+  });
+}
+
 /** Capture the local workspace entries the report
  *  cares about. The selection is applied here
  *  (archived / resolved / notes / tags / status /
@@ -234,12 +258,20 @@ export async function buildReportSnapshot({
     includePrivateNotes: !!selection.includePrivateNotes,
     includeLocalTags: selection.includeLocalTags !== false, // default true
   });
+  // V6.6: narrow optional report boundary. When the
+  // caller supplies a `localEnvironmentSummary` the
+  // snapshot carries a small object that is excluded
+  // by default. The summary never contains asset
+  // names, component paths, owner labels, or local
+  // review notes — only counts.
+  const localEnvironmentSummary = computeLocalEnvironmentSummary(options?.localEnvironmentSummary);
   return Object.freeze({
     capturedAt: options?.generatedAt || new Date().toISOString(),
     applicationVersion: options?.applicationVersion || 'unknown',
     publicIntelligence: Object.freeze(publicIntelligence),
     publicRecords: Object.freeze(publicRecords),
     localEntries: Object.freeze(localEntries),
+    localEnvironmentSummary,
     cveIds: Object.freeze(cveIds),
     selection: Object.freeze({
       cveIds: Object.freeze(cveIds),

@@ -14,8 +14,10 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { Archive, Database, FileSearch, HardDrive, Plus, ShieldAlert, Trash2, Upload } from 'lucide-react';
+import { Archive, Database, Download, FileSearch, HardDrive, Plus, ShieldAlert, Trash2, Upload } from 'lucide-react';
 import { useEnvironment } from '../../state/EnvironmentContext';
+import { downloadFile } from '../../reports/download.mjs';
+import { validateImportPayload } from '../../environment/exportImport.mjs';
 import AssetDialog from './AssetDialog';
 import InventoryImportDialog from './InventoryImportDialog';
 import CorrelationQueue from './CorrelationQueue';
@@ -64,6 +66,42 @@ export default function EnvironmentPanel() {
     const r = await env.clearEnvironment();
     if (!r.ok) setError(`Could not clear: ${r.reason}`);
     setShowClearConfirm(false);
+  }, [env]);
+
+  const handleExport = useCallback(async () => {
+    setError(null);
+    try {
+      const r = await env.exportEnvironment();
+      if (!r.ok) { setError(`Could not export: ${r.reason}`); return; }
+      const body = JSON.stringify(r.payload, null, 2);
+      const shortId = String(r.payload.reportId || r.payload.exportedAt || Date.now()).slice(-8);
+      const filename = `threatpulse-environment-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+      downloadFile(filename, body, 'application/json;charset=utf-8');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'export-failed');
+    }
+  }, [env]);
+
+  const handleImportFile = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    setError(null);
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    if (f.size > 100 * 1024 * 1024) {
+      setError('Backup file is larger than 100 MiB.');
+      return;
+    }
+    try {
+      const text = await f.text();
+      const v = validateImportPayload(text);
+      if (!v.ok) { setError(`Backup rejected: ${v.reason}`); return; }
+      const mode = window.confirm('Replace the current environment with the backup? Click Cancel to merge instead.') ? 'replace' : 'merge';
+      const r = await env.importEnvironment(v.value, mode);
+      if (!r.ok) { setError(`Could not restore: ${r.reason}`); return; }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'import-failed');
+    } finally {
+      if (e.target) e.target.value = '';
+    }
   }, [env]);
 
   if (env.state.status === 'initializing') {
@@ -122,6 +160,29 @@ export default function EnvironmentPanel() {
             <Upload className="h-3.5 w-3.5" />
             Import SBOM
           </button>
+          <button
+            type="button"
+            onClick={handleExport}
+            className="focus-ring inline-flex items-center gap-1 rounded-md border border-radar-border bg-radar-panel2 px-2.5 py-1.5 text-xs text-radar-muted hover:border-radar-accent/40 hover:text-radar-text"
+            data-testid="environment-export"
+            disabled={env.state.assets.length === 0}
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export backup
+          </button>
+          <label
+            className="focus-ring inline-flex items-center gap-1 rounded-md border border-radar-border bg-radar-panel2 px-2.5 py-1.5 text-xs text-radar-muted hover:border-radar-accent/40 hover:text-radar-text cursor-pointer"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Restore backup
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={handleImportFile}
+              className="hidden"
+              data-testid="environment-import-file"
+            />
+          </label>
         </div>
       </header>
 

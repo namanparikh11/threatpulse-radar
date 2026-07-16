@@ -67,7 +67,9 @@ interface CreateAssetArgs {
   archived?: boolean;
 }
 
-export interface EnvironmentContextValue extends EnvironmentState {
+export interface EnvironmentContextValue {
+  state: EnvironmentState;
+
   createAsset(args: CreateAssetArgs): Promise<{ ok: true; asset: any } | { ok: false; reason: string }>;
   updateAsset(assetId: string, patch: Partial<CreateAssetArgs>): Promise<{ ok: true; asset: any } | { ok: false; reason: string }>;
   archiveAsset(assetId: string): Promise<{ ok: true } | { ok: false; reason: string }>;
@@ -83,7 +85,7 @@ export interface EnvironmentContextValue extends EnvironmentState {
   getReview(correlationId: string): Promise<any | null>;
   listReviews(): Promise<any[]>;
   deleteReview(correlationId: string): Promise<{ ok: true } | { ok: false; reason: string }>;
-  exportEnvironment(): Promise<{ ok: true; payload: any } | { ok: false; reason: string }>;
+  exportEnvironment(): Promise<{ ok: true; payload: any; format: string } | { ok: false; reason: string }>;
   importEnvironment(payload: any, mode: 'merge' | 'replace'): Promise<{ ok: true; counts: any } | { ok: false; reason: string }>;
   clearEnvironment(): Promise<{ ok: true } | { ok: false; reason: string }>;
   activeJob: { kind: 'parse' | 'correlate' | null };
@@ -380,23 +382,35 @@ export function EnvironmentProvider({ children, preferSessionOnly = false }: { c
   }, []);
 
   // ----- export / import / clear -----
-  const exportEnvironment = useCallback(async (): Promise<{ ok: true; payload: any } | { ok: false; reason: string }> => {
+  const exportEnvironment = useCallback(async (): Promise<{ ok: true; payload: any; format: string } | { ok: false; reason: string }> => {
     if (!adapterRef.current) return { ok: false, reason: 'adapter-unavailable' };
-    const assets = await adapterRef.current.listAssets({ includeArchived: true });
+    const { buildExportPayload, stampExportChecksum, ENVIRONMENT_EXPORT_FORMAT } = await import('../environment/exportImport.mjs');
+    const assets = await adapterRef.current.listAssets({ includeArchived: true }) as any[];
     const inventories: any[] = [];
     const components: any[] = [];
-    const correlationReviews = await adapterRef.current.listReviews();
+    const correlationReviews = await adapterRef.current.listReviews() as any[];
     for (const a of assets) {
-      const invs = await adapterRef.current.listInventorySnapshots(a.assetId);
+      const invs = await adapterRef.current.listInventorySnapshots(a.assetId) as any[];
       inventories.push(...invs);
-      const comps = await adapterRef.current.listComponentsForAsset(a.assetId);
+      const comps = await adapterRef.current.listComponentsForAsset(a.assetId) as any[];
       components.push(...comps);
     }
-    return { ok: true as const, payload: { assets, inventories, components, correlationReviews } };
+    const body = buildExportPayload({
+      assets,
+      inventories,
+      components,
+      correlationReviews,
+      applicationVersion: 'v6.6',
+    });
+    const stamped = await stampExportChecksum(body);
+    return { ok: true as const, payload: stamped, format: ENVIRONMENT_EXPORT_FORMAT };
   }, []);
 
-  const importEnvironment = useCallback(async (_payload: any, _mode: 'merge' | 'replace') => {
-    return { ok: false as const, reason: 'import-not-yet-implemented' };
+  const importEnvironment = useCallback(async (payload: any, mode: 'merge' | 'replace'): Promise<{ ok: true; counts: any } | { ok: false; reason: string }> => {
+    if (!adapterRef.current) return { ok: false, reason: 'adapter-unavailable' };
+    const { applyImportPayload } = await import('../environment/exportImport.mjs');
+    const out = await applyImportPayload(adapterRef.current, payload, mode);
+    return out;
   }, []);
 
   const clearEnvironment = useCallback(async (): Promise<{ ok: true } | { ok: false; reason: string }> => {
@@ -406,7 +420,7 @@ export function EnvironmentProvider({ children, preferSessionOnly = false }: { c
   }, [trackInflight]);
 
   const value = useMemo<EnvironmentContextValue>(() => ({
-    ...state,
+    state,
     activeJob,
     createAsset,
     updateAsset,
