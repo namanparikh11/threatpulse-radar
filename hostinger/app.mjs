@@ -48,6 +48,17 @@ import { createLogger, dailyLogPath } from './logger.mjs';
 import { checkReadiness, sanitizeReadinessForPublic } from './readiness.mjs';
 import { serveStatic, applySecurityHeaders, MAX_PATH_LENGTH } from './static.mjs';
 
+// Defense-in-depth cap on the total size of all
+// request headers. Node's default
+// `--max-http-header-size` is 16 KiB; we cap at the
+// same value to bound the attack surface of the
+// OpenTelemetry W3C Baggage propagation
+// vulnerability that affects @netlify/blobs (see
+// docs/v6-3-security-review.md). The cap is applied
+// BEFORE the request handler runs, so a request with
+// a single oversized header is rejected with 431.
+const MAX_TOTAL_HEADER_BYTES = 16 * 1024;
+
 import { resolveConfig as resolvePortableConfig } from '../server/config.mjs';
 import { handleHealth } from '../server/routes/health.mjs';
 import { handleReady as handlePortableReady } from '../server/routes/ready.mjs';
@@ -179,6 +190,30 @@ const server = createServer(async (req, res) => {
       res.statusCode = 414;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.end(JSON.stringify({ error: 'uri-too-long' }));
+      return;
+    }
+    // Bound the total header size. Node also
+    // enforces a default cap (16 KiB) at the HTTP
+    // parser level, but we re-check at the
+    // application level to keep the failure mode
+    // consistent with the rest of the Hostinger
+    // runtime and to defend against the OpenTelemetry
+    // W3C Baggage propagation vector that
+    // transitively affects @netlify/blobs.
+    const totalHeaderBytes = (() => {
+      let n = 0;
+      for (const k of Object.keys(req.headers || {})) {
+        const v = req.headers[k];
+        n += k.length;
+        if (Array.isArray(v)) for (const x of v) n += x.length;
+        else if (typeof v === 'string') n += v.length;
+      }
+      return n;
+    })();
+    if (totalHeaderBytes > MAX_TOTAL_HEADER_BYTES) {
+      res.statusCode = 431;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: 'request-header-fields-too-large' }));
       return;
     }
     // Guard against malformed URLs: bad percent

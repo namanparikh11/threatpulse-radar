@@ -3,8 +3,7 @@
  * V6.3 — Hostinger cron entrypoint: dataset-bound
  * public-intelligence publication.
  *
- * Cron expression (recommended): every 30 minutes
- * (offset 15 minutes after the dataset refresh).
+ * Cron expression (recommended): `20,50 * * * *` (every 30 minutes at :20 and :50).
  *
  *   15,45 * * * *  cd /home/<user>/threatpulse-radar && THREATPULSE_DATA_ROOT=/home/<user>/threatpulse-state node hostinger/cron-publish-dataset.mjs >> /home/<user>/threatpulse-logs/publish-dataset.log 2>&1
  */

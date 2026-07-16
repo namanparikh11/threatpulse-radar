@@ -2,7 +2,7 @@
 /**
  * V6.3 — Hostinger cron entrypoint: backup creation.
  *
- * Cron expression (recommended): once per day.
+ * Cron expression (recommended): `40 2 * * *` (daily at 02:40).
  *
  *   0 2 * * *  cd /home/<user>/threatpulse-radar && THREATPULSE_DATA_ROOT=/home/<user>/threatpulse-state THREATPULSE_BACKUP_DIR=/home/<user>/threatpulse-backups node hostinger/cron-backup.mjs >> /home/<user>/threatpulse-logs/backup.log 2>&1
  *

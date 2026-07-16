@@ -3,7 +3,7 @@
  * V6.3 — Hostinger cron entrypoint: canonical OSV
  * baseline refresh.
  *
- * Cron expression (recommended): every hour.
+ * Cron expression (recommended): `10 * * * *` (hourly at :10).
  *
  *   0 * * * *  cd /home/<user>/threatpulse-radar && THREATPULSE_DATA_ROOT=/home/<user>/threatpulse-state node hostinger/cron-refresh-baseline.mjs >> /home/<user>/threatpulse-logs/refresh-baseline.log 2>&1
  */

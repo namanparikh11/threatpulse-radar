@@ -11,7 +11,7 @@
  * entering the protected section while the V6.2
  * refresh is in progress.
  *
- * Cron expression (recommended): every 30 minutes.
+ * Cron expression (recommended): `0,30 * * * *` (on the hour and half-hour).
  *
  *   */30 * * * *  cd /home/<user>/threatpulse-radar && THREATPULSE_DATA_ROOT=/home/<user>/threatpulse-state node hostinger/cron-refresh-dataset.mjs >> /home/<user>/threatpulse-logs/refresh-dataset.log 2>&1
  */

@@ -2,7 +2,7 @@
 /**
  * V6.3 — Hostinger cron entrypoint: state verification.
  *
- * Cron expression (recommended): once per day.
+ * Cron expression (recommended): `30 6 * * *` (daily at 06:30).
  *
  *   30 6 * * *  cd /home/<user>/threatpulse-radar && THREATPULSE_DATA_ROOT=/home/<user>/threatpulse-state node hostinger/cron-verify-state.mjs >> /home/<user>/threatpulse-logs/verify-state.log 2>&1
  *

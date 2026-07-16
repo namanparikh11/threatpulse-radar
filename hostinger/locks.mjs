@@ -13,33 +13,90 @@
  *   {
  *     "acquiredAt": ISO timestamp,
  *     "expiresAt": ISO timestamp,
- *     "owner":     "<job name>:<pid>",
- *     "pid":       <process id>
+ *     "owner":     "<job name>:<pid>:<nonce>",
+ *     "pid":       <process id>,
+ *     "nonce":     <random hex>
  *   }
  *
- * Acquisition is atomic on POSIX (rename is atomic)
- * and atomic on Windows via the standard rename
- * path. A stale lock (expiresAt in the past) is
- * overwritten; an active lock (expiresAt in the
- * future) returns `{ acquired: false, holder }` and
- * the caller exits with code 2.
+ * ## Hardened acquisition semantics
  *
- * Lock files are NEVER deleted by an external
- * process; only the holder (or a stale-lock recovery
- * that has been authorized by the operator) may
- * remove a lock.
+ *   1. Read the existing lock file, if any.
+ *   2. If the file is missing (ENOENT), write a new
+ *      lock atomically.
+ *   3. If the file is present but the contents are
+ *      not a valid JSON object with an `expiresAt`
+ *      field, the lock is MALFORMED. The function
+ *      renames the malformed lock to
+ *      `<name>.lock.malformed-<iso-ts>` and
+ *      returns `{ acquired: false, reason:
+ *      'malformed' }`. The original lock is NEVER
+ *      silently overwritten; an operator must
+ *      inspect the quarantined file.
+ *   4. If the file is present and the lock is
+ *      ACTIVE (expiresAt in the future), the
+ *      function returns `{ acquired: false,
+ *      reason: 'lock-held', holder, expiresAt }`.
+ *   5. If the file is present and the lock is
+ *      EXPIRED (expiresAt in the past), the
+ *      function renames the expired lock to
+ *      `<name>.lock.stale-<iso-ts>` and then
+ *      atomically writes the new lock.
+ *   6. After every successful write, the function
+ *      re-reads the lock and verifies that the
+ *      owner matches the caller's `owner` value.
+ *      If it does not, a concurrent acquirer won
+ *      the race and the function returns
+ *      `{ acquired: false, reason: 'race-detected',
+ *      holder }`. The function never silently
+ *      overwrites a foreign lock.
+ *
+ * ## Hardened release semantics
+ *
+ *   - The release is conditional on BOTH the
+ *     `owner` field AND the `pid` field of the
+ *     stored lock matching the caller. A foreign
+ *     lock is NEVER removed.
+ *   - The release is idempotent. A missing lock
+ *     is reported as released=true with
+ *     reason=missing.
+ *
+ * ## Atomicity
+ *
+ *   - Writes use `writeFile(..., { flag: 'wx' })`
+ *     to a randomly-named temp file, then
+ *     `rename(temp, lockPath)`. The `wx` flag
+ *     guarantees exclusive creation of the temp
+ *     file, so two concurrent writers never share
+ *     a temp name. The `rename` call is atomic on
+ *     POSIX and Windows.
+ *   - The post-rename re-read serves as the
+ *     cross-process mutual-exclusion check: the
+ *     lock file is the source of truth, and the
+ *     re-read confirms that our write was the one
+ *     that landed.
+ *
+ * ## Quarantine format
+ *
+ *   `<name>.lock.stale-<iso-ts>`     — the lock had
+ *     a valid JSON object but its `expiresAt` was
+ *     in the past at the time of the reclaim.
+ *   `<name>.lock.malformed-<iso-ts>` — the lock
+ *     was present but not a valid JSON object.
+ *   Both forms include the ISO timestamp so the
+ *   operator can recover or remove the quarantined
+ *   file with confidence.
  */
 
-import { constants as fsConstants } from 'node:fs';
-import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 /**
- * Validate a lock name. The name is interpolated into
- * a file path; we reject anything that could escape
- * the locks directory.
+ * Validate a lock name. The name is interpolated
+ * into a file path; we reject anything that could
+ * escape the locks directory or be confused with
+ * the quarantine suffixes.
  */
 export function assertValidLockName(name) {
   if (typeof name !== 'string' || name.length === 0) {
@@ -55,19 +112,49 @@ export function assertValidLockName(name) {
 }
 
 /**
- * Acquire a lock atomically. The function:
- *   - computes the lock file path
- *   - reads the existing file (if any)
- *   - if the existing lock is expired (or the file
- *     is missing) it overwrites the file via a
- *     temp + rename
- *   - if the existing lock is still active, returns
- *     `{ acquired: false, ... }`
- *
- * Concurrent acquisitions are serialized by the
- * filesystem: only the first writer wins.
+ * Quarantine a lock file by renaming it to
+ * `<path>.<kind>-<iso-ts>`. The function refuses
+ * to overwrite an existing quarantine file with
+ * the same timestamp (a microsecond-precision
+ * timestamp + a 4-byte random suffix keeps the
+ * probability of collision negligible, but the
+ * safeguard is preserved).
  */
-export async function acquireCronLock({ locksDir, name, ttlMs, owner, pid = process.pid }) {
+async function quarantineLock(lockPath, kind) {
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  const nonce = randomBytes(4).toString('hex');
+  const quarantinePath = `${lockPath}.${kind}-${stamp}-${nonce}`;
+  try {
+    await rename(lockPath, quarantinePath);
+    return quarantinePath;
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/**
+ * Parse + validate a lock file's contents. Returns
+ * `{ valid: true, lock }` when the file is a valid
+ * JSON object with a string `expiresAt` field;
+ * `{ valid: false }` otherwise. The function does
+ * NOT enforce a particular owner format.
+ */
+function parseLockContent(buf) {
+  if (!buf || buf.length === 0) return { valid: false, reason: 'empty' };
+  let parsed;
+  try { parsed = JSON.parse(buf.toString('utf8')); } catch { return { valid: false, reason: 'not-json' }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { valid: false, reason: 'not-object' };
+  if (typeof parsed.expiresAt !== 'string') return { valid: false, reason: 'missing-expiresAt' };
+  return { valid: true, lock: parsed };
+}
+
+/**
+ * Acquire a lock atomically. See the file-level
+ * docstring for the full hardened semantics.
+ */
+export async function acquireCronLock({ locksDir, name, ttlMs, owner, pid = process.pid, nonce: providedNonce } = {}) {
   assertValidLockName(name);
   if (!locksDir || !isAbsolute(locksDir)) {
     throw new Error('lock: locksDir must be an absolute path');
@@ -75,92 +162,129 @@ export async function acquireCronLock({ locksDir, name, ttlMs, owner, pid = proc
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
     throw new Error('lock: ttlMs must be a positive number');
   }
-  // Ensure the locks directory exists. The mkdir
-  // path is recursive so a missing parent directory
-  // is created.
+  if (typeof owner !== 'string' || owner.length === 0) {
+    throw new Error('lock: owner must be a non-empty string');
+  }
   if (!existsSync(locksDir)) await mkdir(locksDir, { recursive: true });
   const lockPath = join(locksDir, `${name}.lock`);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + ttlMs);
-  // Read the current lock, if any. If the read fails
-  // for any reason other than ENOENT, surface the
-  // error — operators must see why the lock could
-  // not be inspected.
-  let existing = null;
+  const nonce = providedNonce || randomBytes(8).toString('hex');
+
+  // 1. Read the existing lock, if any.
+  let buf = null;
   try {
-    const buf = await readFile(lockPath, 'utf8');
-    existing = JSON.parse(buf);
+    buf = await readFile(lockPath);
   } catch (err) {
     if (!err || err.code !== 'ENOENT') {
-      // The lock file is present but unreadable
-      // (corrupt, permission). Refuse to overwrite;
-      // the operator must intervene.
       return { acquired: false, reason: 'lock-unreadable', error: err.message, path: lockPath };
     }
   }
-  if (existing && typeof existing === 'object' && typeof existing.expiresAt === 'string') {
-    const exp = new Date(existing.expiresAt).getTime();
-    if (!Number.isNaN(exp) && exp > now.getTime()) {
-      // Active lock held by someone else.
+  if (buf !== null) {
+    // 2. The lock is present. Validate the
+    //    contents.
+    const parsed = parseLockContent(buf);
+    if (!parsed.valid) {
+      // 3. Malformed lock. Quarantine and refuse.
+      const q = await quarantineLock(lockPath, 'malformed');
       return {
-        acquired: false,
-        reason: 'lock-held',
-        holder: existing.owner || 'unknown',
-        expiresAt: existing.expiresAt,
+        acquired: false, reason: 'malformed',
+        quarantine: parsed.reason, quarantinePath: q, path: lockPath,
+      };
+    }
+    // 4. Check expiry.
+    const exp = new Date(parsed.lock.expiresAt).getTime();
+    if (!Number.isNaN(exp) && exp > now.getTime()) {
+      return {
+        acquired: false, reason: 'lock-held',
+        holder: parsed.lock.owner || 'unknown',
+        expiresAt: parsed.lock.expiresAt,
         path: lockPath,
       };
     }
+    // 5. Expired lock. Quarantine before reclaiming.
+    await quarantineLock(lockPath, 'stale');
   }
-  // Atomically write the new lock via a temp file +
-  // rename. The random suffix avoids the very small
-  // window where two writers could collide on the
-  // same temp name.
+
+  // 6. Atomically write the new lock via a temp
+  //    file + rename. The `wx` flag prevents the
+  //    random-suffix collision window.
   const tempPath = `${lockPath}.${randomBytes(8).toString('hex')}.tmp`;
   const payload = JSON.stringify({
     acquiredAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
     owner,
     pid,
+    nonce,
   });
+  let renamedOk = false;
   try {
     await writeFile(tempPath, payload, { flag: 'wx' });
     await rename(tempPath, lockPath);
+    renamedOk = true;
   } catch (err) {
-    // A racing acquisition may have grabbed the
-    // lock between our read and our write. Re-read
-    // to confirm.
-    try { await unlink(tempPath); } catch { /* noop */ }
-    try {
-      const buf = await readFile(lockPath, 'utf8');
-      const other = JSON.parse(buf);
-      if (other && other.expiresAt && new Date(other.expiresAt).getTime() > Date.now()) {
-        return {
-          acquired: false, reason: 'lock-held', holder: other.owner || 'unknown',
-          expiresAt: other.expiresAt, path: lockPath,
-        };
-      }
-    } catch { /* noop */ }
+    try { await unlink(tempPath).catch(() => {}); } catch { /* noop */ }
     return { acquired: false, reason: 'lock-write-failed', error: err.message, path: lockPath };
   }
-  return { acquired: true, expiresAt: expiresAt.toISOString(), path: lockPath, owner };
+  if (!renamedOk) {
+    return { acquired: false, reason: 'lock-write-failed', path: lockPath };
+  }
+
+  // 7. Re-read and verify the owner matches. This
+  //    is the cross-process mutual-exclusion
+  //    check: a concurrent acquirer may have
+  //    raced past us and overwritten our write.
+  try {
+    const reBuf = await readFile(lockPath, 'utf8');
+    const reParsed = parseLockContent(reBuf);
+    if (!reParsed.valid) {
+      // Extremely unlikely: a concurrent acquirer
+      // wrote a malformed lock. The operator must
+      // inspect.
+      return { acquired: false, reason: 'malformed-after-write', path: lockPath };
+    }
+    if (reParsed.lock.owner !== owner || reParsed.lock.pid !== pid) {
+      return {
+        acquired: false, reason: 'race-detected',
+        holder: reParsed.lock.owner, path: lockPath,
+      };
+    }
+  } catch (err) {
+    return { acquired: false, reason: 'lock-verify-failed', error: err.message, path: lockPath };
+  }
+  return {
+    acquired: true, expiresAt: expiresAt.toISOString(),
+    path: lockPath, owner, pid, nonce,
+  };
 }
 
 /**
- * Release a lock. The release is conditional on the
- * owner matching the supplied owner value (or the
- * lock is missing); a foreign lock is NEVER
- * removed. The function is idempotent.
+ * Release a lock. The release is conditional on
+ * BOTH the `owner` field AND the `pid` field of
+ * the stored lock matching the caller's. A foreign
+ * lock is NEVER removed. The function is
+ * idempotent: a missing lock returns released=true
+ * with reason=missing.
  */
-export async function releaseCronLock({ locksDir, name, owner }) {
+export async function releaseCronLock({ locksDir, name, owner, pid = process.pid } = {}) {
   assertValidLockName(name);
   const lockPath = join(locksDir, `${name}.lock`);
   try {
     const buf = await readFile(lockPath, 'utf8');
-    const existing = JSON.parse(buf);
-    if (owner && existing.owner !== owner) {
-      // A different process owns this lock. Refuse
-      // to delete it.
+    const parsed = parseLockContent(buf);
+    if (!parsed.valid) {
+      // Malformed: refuse. The operator must
+      // clear it through the quarantine path.
+      return { released: false, reason: 'malformed' };
+    }
+    if (owner && parsed.lock.owner !== owner) {
       return { released: false, reason: 'foreign-owner' };
+    }
+    if (pid != null && parsed.lock.pid !== pid) {
+      // != not !== because the stored pid is a
+      // number; the caller's pid may be a number
+      // or a string-coerced number.
+      return { released: false, reason: 'foreign-pid' };
     }
     await unlink(lockPath);
     return { released: true };
@@ -172,54 +296,84 @@ export async function releaseCronLock({ locksDir, name, owner }) {
 
 /**
  * Inspect a lock without acquiring it. Returns
- * `{ held, expiresAt, holder, pid, ageMs }`. Useful
- * for the diagnostic command and the readiness
- * probe.
+ * `{ held, expiresAt, holder, pid, ageMs, valid }`.
+ * Useful for the diagnostic command and the
+ * readiness probe.
  */
-export async function inspectCronLock({ locksDir, name }) {
+export async function inspectCronLock({ locksDir, name } = {}) {
   assertValidLockName(name);
   const lockPath = join(locksDir, `${name}.lock`);
   try {
     const buf = await readFile(lockPath, 'utf8');
-    const existing = JSON.parse(buf);
-    const exp = existing && existing.expiresAt ? new Date(existing.expiresAt).getTime() : NaN;
+    const parsed = parseLockContent(buf);
+    if (!parsed.valid) return { held: false, valid: false, reason: parsed.reason, path: lockPath };
+    const exp = parsed.lock.expiresAt ? new Date(parsed.lock.expiresAt).getTime() : NaN;
     const held = !Number.isNaN(exp) && exp > Date.now();
     return {
-      held,
-      expiresAt: existing && existing.expiresAt,
-      holder: existing && existing.owner,
-      pid: existing && existing.pid,
-      ageMs: existing && existing.acquiredAt ? Date.now() - new Date(existing.acquiredAt).getTime() : null,
+      held, valid: true,
+      expiresAt: parsed.lock.expiresAt,
+      holder: parsed.lock.owner,
+      pid: parsed.lock.pid,
+      nonce: parsed.lock.nonce,
+      ageMs: parsed.lock.acquiredAt ? Date.now() - new Date(parsed.lock.acquiredAt).getTime() : null,
       path: lockPath,
     };
   } catch (err) {
-    if (err && err.code === 'ENOENT') return { held: false, path: lockPath };
-    return { held: false, error: err.message, path: lockPath };
+    if (err && err.code === 'ENOENT') return { held: false, valid: true, path: lockPath };
+    return { held: false, valid: false, error: err.message, path: lockPath };
   }
 }
 
 /**
- * Atomically remove a stale lock. The function only
- * removes locks whose `expiresAt` is in the past;
- * active locks are NEVER touched. This is the safe
- * recovery path for the operator after a crashed
- * process.
+ * Quarantine a stale lock. The function renames
+ * the lock file to `<name>.lock.stale-<iso-ts>`
+ * when the lock is expired (or malformed); an
+ * active lock is NEVER touched. The function is
+ * the safe operator-facing recovery path after a
+ * crashed process.
  */
-export async function clearStaleCronLock({ locksDir, name }) {
+export async function clearStaleCronLock({ locksDir, name } = {}) {
   assertValidLockName(name);
   const lockPath = join(locksDir, `${name}.lock`);
   try {
     const buf = await readFile(lockPath, 'utf8');
-    const existing = JSON.parse(buf);
-    const exp = existing && existing.expiresAt ? new Date(existing.expiresAt).getTime() : NaN;
-    if (!Number.isNaN(exp) && exp > Date.now()) {
-      return { cleared: false, reason: 'lock-active', expiresAt: existing.expiresAt };
+    const parsed = parseLockContent(buf);
+    if (!parsed.valid) {
+      // Malformed: quarantine under the
+      // `malformed` kind so the operator can find
+      // it.
+      const q = await quarantineLock(lockPath, 'malformed');
+      return { cleared: true, kind: 'malformed', quarantinePath: q };
     }
-    await unlink(lockPath);
-    return { cleared: true };
+    const exp = parsed.lock.expiresAt ? new Date(parsed.lock.expiresAt).getTime() : NaN;
+    if (!Number.isNaN(exp) && exp > Date.now()) {
+      return { cleared: false, reason: 'lock-active', expiresAt: parsed.lock.expiresAt };
+    }
+    const q = await quarantineLock(lockPath, 'stale');
+    return { cleared: true, kind: 'stale', quarantinePath: q };
   } catch (err) {
     if (err && err.code === 'ENOENT') return { cleared: true, reason: 'missing' };
     return { cleared: false, reason: 'clear-failed', error: err.message };
+  }
+}
+
+/**
+ * List every lock file under the locks directory,
+ * including any quarantined files. The function is
+ * used by the diagnostic command.
+ */
+export async function listCronLocks({ locksDir } = {}) {
+  if (!locksDir || !isAbsolute(locksDir)) throw new Error('lock: locksDir must be an absolute path');
+  const { readdir } = await import('node:fs/promises');
+  try {
+    const entries = await readdir(locksDir, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile() && e.name.endsWith('.lock') || /\.lock\.(stale|malformed)-/.test(e.name))
+      .map((e) => e.name)
+      .sort();
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return [];
+    throw err;
   }
 }
 

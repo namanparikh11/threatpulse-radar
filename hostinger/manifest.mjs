@@ -68,13 +68,19 @@ function parseArgs(argv) {
 const args = parseArgs(process.argv);
 const cfg = resolveHostingerConfig();
 
+// The Hostinger Business cron schedule is once per
+// minute; the schedule below is staggered so the
+// long-running dataset-publish does not collide
+// with the dataset-refresh. Every entry's minute
+// field is offset by a non-trivial amount so two
+// jobs never start in the same minute.
 const cronCommands = [
-  { name: 'cron:refresh-dataset',  expression: '*/30 * * * *',  desc: 'public dataset refresh (every 30 minutes)' },
-  { name: 'cron:publish-dataset',  expression: '15,45 * * * *', desc: 'dataset-bound public-intelligence publication (every 30m offset 15)' },
-  { name: 'cron:refresh-baseline', expression: '0 * * * *',    desc: 'canonical OSV baseline refresh (hourly)' },
-  { name: 'cron:gc',               expression: '5 * * * *',    desc: 'public-intelligence garbage collection (hourly offset 5m)' },
-  { name: 'cron:verify-state',     expression: '30 6 * * *',   desc: 'state verification (daily at 06:30)' },
-  { name: 'cron:backup',           expression: '0 2 * * *',    desc: 'backup creation (daily at 02:00)' },
+  { name: 'cron:refresh-dataset',  expression: '0,30 * * * *',  desc: 'public dataset refresh (every 30 minutes on the hour + half-hour)' },
+  { name: 'cron:refresh-baseline', expression: '10 * * * *',    desc: 'canonical OSV baseline refresh (hourly at :10)' },
+  { name: 'cron:publish-dataset',  expression: '20,50 * * * *', desc: 'dataset-bound public-intelligence publication (every 30m at :20 and :50)' },
+  { name: 'cron:gc',               expression: '25 * * * *',    desc: 'public-intelligence garbage collection (hourly at :25)' },
+  { name: 'cron:verify-state',     expression: '30 6 * * *',     desc: 'state verification (daily at 06:30)' },
+  { name: 'cron:backup',           expression: '40 2 * * *',     desc: 'backup creation (daily at 02:40)' },
 ];
 
 const requiredEnvVars = [

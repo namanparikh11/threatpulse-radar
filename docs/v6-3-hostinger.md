@@ -89,17 +89,22 @@ Six Hostinger cron entrypoints live under
 
 | Cron expression | Command | Purpose |
 | --- | --- | --- |
-| `*/30 * * * *`  | `npm run cron:refresh-dataset`  | public dataset refresh |
-| `15,45 * * * *` | `npm run cron:publish-dataset`  | dataset-bound public-intelligence publication |
-| `0 * * * *`    | `npm run cron:refresh-baseline` | canonical OSV baseline refresh |
-| `5 * * * *`    | `npm run cron:gc`               | public-intelligence garbage collection |
-| `30 6 * * *`   | `npm run cron:verify-state`     | state verification (daily) |
-| `0 2 * * *`    | `npm run cron:backup`           | backup creation (daily) |
+| `0,30 * * * *`  | `npm run cron:refresh-dataset`  | public dataset refresh (every 30 minutes on the hour + half-hour) |
+| `10 * * * *`    | `npm run cron:refresh-baseline` | canonical OSV baseline refresh (hourly at :10) |
+| `20,50 * * * *` | `npm run cron:publish-dataset`  | dataset-bound public-intelligence publication (every 30m at :20 and :50) |
+| `25 * * * *`    | `npm run cron:gc`               | public-intelligence garbage collection (hourly at :25) |
+| `30 6 * * *`    | `npm run cron:verify-state`     | state verification (daily at 06:30) |
+| `40 2 * * *`    | `npm run cron:backup`           | backup creation (daily at 02:40) |
 
 The Hostinger Business cron frequency is once per
-minute. The minimum inter-arrival time on the
-schedule above is 5 minutes, well within the
-host's limit.
+minute. The schedule is staggered so the long-
+running dataset-publish does not collide with the
+dataset-refresh: the publication runs at :20 and
+:50 (20 minutes after each refresh), the baseline
+runs at :10 (between the two refreshes), the GC
+runs at :25 (5 minutes after the publication),
+and the daily jobs run at off-peak hours (02:40
+for backup, 06:30 for verification).
 
 ## Where persistent files live
 

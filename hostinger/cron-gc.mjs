@@ -3,8 +3,7 @@
  * V6.3 — Hostinger cron entrypoint: public-intelligence
  * garbage collection.
  *
- * Cron expression (recommended): hourly, 5 minutes
- * after the dataset-publish.
+ * Cron expression (recommended): `25 * * * *` (hourly at :25).
  *
  *   5 * * * *  cd /home/<user>/threatpulse-radar && THREATPULSE_DATA_ROOT=/home/<user>/threatpulse-state node hostinger/cron-gc.mjs >> /home/<user>/threatpulse-logs/gc.log 2>&1
  */
