@@ -1,4 +1,4 @@
-import { ClipboardList, ExternalLink, Package, ShieldCheck, X, Box } from 'lucide-react';
+import { ClipboardList, ExternalLink, FileText, Package, ShieldCheck, X, Box } from 'lucide-react';
 import { useEffect } from 'react';
 import type {
   GithubAdvisory,
@@ -16,6 +16,13 @@ import WorkspaceDrawerSection from './workspace/WorkspaceDrawerSection';
 interface DetailDrawerProps {
   vuln: Vulnerability | null;
   onClose: () => void;
+  /**
+   * V6.5: open the report builder pre-seeded with a
+   * single CVE id and a report type. Optional; the
+   * entry-point button is hidden when the parent
+   * does not supply a handler.
+   */
+  onOpenReportBuilder?: (cveIds: string[], reportType?: string, title?: string) => void;
   /**
    * v6.4: the current public-intelligence version. The
    * workspace section in the drawer uses it to compute
@@ -45,6 +52,7 @@ export default function DetailDrawer({
   publicIntelligenceVersion,
   publicIntelligenceStatus = 'available',
   publicProjectionSchemaVersion = null,
+  onOpenReportBuilder,
 }: DetailDrawerProps) {
   // Close on ESC
   useEffect(() => {
@@ -84,6 +92,7 @@ export default function DetailDrawer({
             publicIntelligenceVersion={publicIntelligenceVersion}
             publicIntelligenceStatus={publicIntelligenceStatus}
             publicProjectionSchemaVersion={publicProjectionSchemaVersion}
+            onOpenReportBuilder={onOpenReportBuilder}
           />
         )}
       </aside>
@@ -97,12 +106,14 @@ function DrawerBody({
   publicIntelligenceVersion,
   publicIntelligenceStatus,
   publicProjectionSchemaVersion,
+  onOpenReportBuilder,
 }: {
   vuln: Vulnerability;
   onClose: () => void;
   publicIntelligenceVersion?: string | null;
   publicIntelligenceStatus?: 'available' | 'mismatch' | 'unavailable';
   publicProjectionSchemaVersion?: string | null;
+  onOpenReportBuilder?: (cveIds: string[], reportType?: string, title?: string) => void;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -186,6 +197,24 @@ function DrawerBody({
           publicIntelligenceStatus={publicIntelligenceStatus}
           publicProjectionSchemaVersion={publicProjectionSchemaVersion}
         />
+
+        {/* V6.5: per-CVE report entry point. */}
+        <Section title="Local report">
+          <p className="text-[11px] text-radar-muted">
+            Generate a local report focused on this CVE. Reports are generated entirely in this browser.
+          </p>
+          {onOpenReportBuilder && (
+            <button
+              type="button"
+              onClick={() => onOpenReportBuilder([vuln.cveId], 'selected-cve', `Selected CVE Report: ${vuln.cveId}`)}
+              className="focus-ring mt-2 inline-flex items-center gap-1.5 rounded-md border border-radar-accent/40 bg-radar-accent/10 px-2.5 py-1.5 text-xs text-radar-accent transition hover:border-radar-accent"
+              data-testid="detail-drawer-report"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              Build a local report for {vuln.cveId}
+            </button>
+          )}
+        </Section>
 
         <Section title="External references">
           <ul className="space-y-1.5">

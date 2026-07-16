@@ -35,6 +35,7 @@ import {
   CircleDot,
   Database,
   EyeOff,
+  FileText,
   Filter,
   HardDrive,
   ListChecks,
@@ -90,6 +91,9 @@ interface WorkspacePanelProps {
   onClearArchived: () => void;
   /** Open the clear-workspace confirmation dialog. */
   onClearWorkspace: () => void;
+  /** V6.5: open the report builder pre-seeded with
+   *  the local queue. */
+  onOpenReportBuilder?: (cveIds: string[]) => void;
 }
 
 const QUEUE_FILTER_LABELS: Record<QueueFilterId, string> = {
@@ -114,6 +118,7 @@ export default function WorkspacePanel({
   onImport,
   onClearArchived,
   onClearWorkspace,
+  onOpenReportBuilder,
 }: WorkspacePanelProps) {
   const { state } = useWorkspace();
   const [filter, setFilter] = useState<QueueFilterId>(DEFAULT_QUEUE_FILTER);
@@ -278,6 +283,22 @@ export default function WorkspacePanel({
             <X className="h-3.5 w-3.5" />
             Clear workspace
           </button>
+          {onOpenReportBuilder && (
+            <button
+              type="button"
+              onClick={() => onOpenReportBuilder(Array.from(new Set([
+                ...selectedCveIds,
+                ...(queue || []).map((q: any) => q.vuln.cveId),
+              ])))}
+              disabled={isUnavailable}
+              className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-radar-accent/40 bg-radar-accent/10 px-2.5 py-1.5 text-xs text-radar-accent transition hover:border-radar-accent disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Generate a local report from the current queue (and any selected rows)."
+              data-testid="workspace-panel-report"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              Build report
+            </button>
+          )}
         </div>
       </header>
 

@@ -18,6 +18,7 @@ import ConflictBanner from '../components/workspace/ConflictBanner';
 import WorkspacePanel from '../components/workspace/WorkspacePanel';
 import BulkActionBar from '../components/workspace/BulkActionBar';
 import WorkspaceDialogs, { type DialogKind } from '../components/workspace/WorkspaceDialogs';
+import ReportBuilder from '../components/reports/ReportBuilder';
 import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
 import { useWorkspace } from '../state/WorkspaceContext';
 import { buildCounts } from '../workspace/queueFilters.mjs';
@@ -117,6 +118,11 @@ export default function DashboardPage() {
    */
   const [selectedCveIds, setSelectedCveIds] = useState<string[]>([]);
   const [activeDialog, setActiveDialog] = useState<DialogKind>(null);
+  // V6.5: report-builder dialog state. The dialog is
+  // pre-seeded by entry points (workspace panel, detail
+  // drawer, "what changed" panel, local queue).
+  const [reportBuilderSeed, setReportBuilderSeed] = useState<{ cveIds: string[]; reportType?: string; title?: string } | null>(null);
+  const [activeReportDialog, setActiveReportDialog] = useState(false);
   const workspace = useWorkspace();
   /**
    * v6.4: keep the workspace's `changedSinceReview` count
@@ -445,6 +451,10 @@ export default function DashboardPage() {
               onImport={() => setActiveDialog('import')}
               onClearArchived={() => setActiveDialog('clear-archived')}
               onClearWorkspace={() => setActiveDialog('clear-workspace')}
+              onOpenReportBuilder={(cveIds) => {
+                setReportBuilderSeed({ cveIds, reportType: 'defender-daily-briefing', title: 'Defender Daily Briefing' });
+                setActiveReportDialog(true);
+              }}
             />
 
             <StatsCards stats={charts.stats} />
@@ -476,6 +486,10 @@ export default function DashboardPage() {
                   if (hit) setSelected(hit);
                 }}
                 onHighlightSource={(sourceId) => setHighlightSourceId(sourceId)}
+                onOpenReportBuilder={() => {
+                  setReportBuilderSeed({ cveIds: [], reportType: 'change-briefing', title: 'Change Briefing' });
+                  setActiveReportDialog(true);
+                }}
               />
             ) : null}
 
@@ -547,12 +561,36 @@ export default function DashboardPage() {
         publicProjectionSchemaVersion={
           state.kind === 'ready' ? state.meta.publicProjectionSchemaVersion ?? null : null
         }
+        onOpenReportBuilder={(cveIds, reportType, title) => {
+          setReportBuilderSeed({ cveIds, reportType: reportType || 'selected-cve', title: title || `Selected CVE Report: ${cveIds.join(', ')}` });
+          setActiveReportDialog(true);
+        }}
       />
 
       <WorkspaceDialogs
         active={activeDialog}
         onClose={() => setActiveDialog(null)}
       />
+
+      {activeReportDialog && reportBuilderSeed && (
+        <ReportBuilder
+          initialCveIds={reportBuilderSeed.cveIds}
+          initialReportType={reportBuilderSeed.reportType}
+          initialTitle={reportBuilderSeed.title}
+          publicMeta={state.kind === 'ready' ? state.meta : null}
+          publicVulns={all}
+          onClose={() => { setActiveReportDialog(false); setReportBuilderSeed(null); }}
+          onExport={() => {
+            // The export step will be wired in commit 4
+            // (the exporters module). For now the parent
+            // simply closes the dialog. The dialog already
+            // shows the preview + integrity pill; the
+            // operator can re-open the dialog to re-export.
+            setActiveReportDialog(false);
+            setReportBuilderSeed(null);
+          }}
+        />
+      )}
     </div>
   );
 }

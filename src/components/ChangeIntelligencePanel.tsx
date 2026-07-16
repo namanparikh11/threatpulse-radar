@@ -43,6 +43,9 @@ interface ChangeIntelligencePanelProps {
   onOpen: (cveId: string) => void;
   /** Callback to highlight a Source Health card. */
   onHighlightSource: (sourceId: string) => void;
+  /** V6.5: open the report builder pre-seeded with the
+   *  currently loaded change items. Optional. */
+  onOpenReportBuilder?: (cveIds: string[], reportType?: string, title?: string) => void;
 }
 
 interface CategoryChip {
@@ -74,6 +77,7 @@ export default function ChangeIntelligencePanel({
   sources,
   onOpen,
   onHighlightSource,
+  onOpenReportBuilder,
 }: ChangeIntelligencePanelProps) {
   const [activeCategory, setActiveCategory] = useState<ChangePanelCategory | null>(null);
   const [categoryItems, setCategoryItems] = useState<ChangeItem[]>([]);
@@ -206,6 +210,19 @@ export default function ChangeIntelligencePanel({
         and the current one. Click a category to see the matching CVEs.
         Filters here affect only this panel.
       </p>
+
+      {onOpenReportBuilder && totalChanges > 0 && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => onOpenReportBuilder([], 'change-briefing', 'Change Briefing')}
+            className="focus-ring inline-flex items-center gap-1.5 rounded-md border border-radar-accent/40 bg-radar-accent/10 px-2.5 py-1.5 text-xs text-radar-accent transition hover:border-radar-accent"
+            data-testid="change-intel-report"
+          >
+            Build a Change Briefing report
+          </button>
+        </div>
+      )}
 
       {suppressedAxes && suppressedAxes.length > 0 ? (
         <p className="mt-2 text-[11px] text-amber-300/90">
