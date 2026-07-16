@@ -29,9 +29,14 @@
  * Each field is concatenated as `key=value` joined by
  * `|`, then hashed with SHA-256. The output is a
  * lowercase hex digest prefixed with `sha256:`.
+ *
+ * The SHA-256 implementation is the pure-JS sync
+ * implementation in ./sha256.mjs. The Web Crypto API
+ * is async and would force every change-detection
+ * comparison through a Promise boundary.
  */
 
-import { createHash } from 'node:crypto';
+import { sha256Hex } from './sha256.mjs';
 
 const FIELDS = [
   'severity',
@@ -69,7 +74,7 @@ function bool01(b) {
  */
 export function computeChangeSignature(vuln, publicIntelligenceVersion) {
   if (!vuln || typeof vuln !== 'object') {
-    return 'sha256:' + createHash('sha256').update('__empty__').digest('hex');
+    return sha256Hex('__empty__');
   }
   const v = vuln;
   const ssvc = v.ssvc || {};
@@ -90,7 +95,7 @@ export function computeChangeSignature(vuln, publicIntelligenceVersion) {
     `wd=${bool01(!!v.withdrawn)}`,
   ];
   const data = parts.join('|');
-  return 'sha256:' + createHash('sha256').update(data).digest('hex');
+  return sha256Hex(data);
 }
 
 /**

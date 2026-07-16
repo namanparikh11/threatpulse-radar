@@ -30,7 +30,7 @@
  * workspace in memory before promoting it.
  */
 
-import { createHash } from 'node:crypto';
+import { sha256Hex } from './sha256.mjs';
 import {
   WORKSPACE_SCHEMA_VERSION,
   WORKSPACE_EXPORT_FORMAT,
@@ -66,11 +66,9 @@ function canonicaliseEntries(entries) {
 }
 
 function computeChecksum(canonicalEntries) {
-  const h = createHash('sha256');
   // Stable stringification: the entries are already
   // sorted by cveId and the field order is fixed.
-  h.update(JSON.stringify(canonicalEntries));
-  return 'sha256:' + h.digest('hex');
+  return sha256Hex(JSON.stringify(canonicalEntries));
 }
 
 /**
