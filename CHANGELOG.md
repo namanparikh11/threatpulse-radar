@@ -7,6 +7,102 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## V6.4 — Local defender workspace and triage
+
+V6.4 turns ThreatPulse Radar from a read-only public
+intelligence dashboard into a useful local defender
+workspace — without changing any of the public
+infrastructure. The V6.3 Hostinger runtime, the V6.2
+storage portability layer, the V6.1 source-health and
+change-intelligence surfaces, the V6.0 canonical
+baseline, the V5.7 21-column CSV, the private gateway,
+and the Netlify function entries are all preserved.
+
+### What this release adds
+
+- **Local-only workspace.** A per-device, IndexedDB-backed
+  (with a session-memory fallback) triage surface. A
+  defender can watch selected CVEs, assign a local triage
+  status, assign a local user priority, add local tags,
+  add a private note, mark CVEs reviewed, and identify
+  watched CVEs that changed since review. Everything
+  lives on the user's device; nothing is uploaded.
+- **Workspace panel in the dashboard.** A compact
+  panel with seven count tiles (Watched, Unreviewed,
+  Action required, Changed since review, High / urgent,
+  Resolved, Archived), a storage-status badge, an
+  Export / Import / Clear-archived / Clear-workspace
+  affordance, a single-row queue filter chip group, a
+  local search box (CVE id, note, tag), and a
+  selectable local queue list. The panel's filters and
+  counts affect only the local queue; Defender Views,
+  public filters, the public URL, and the CSV export
+  are unaffected.
+- **Local workspace section in the detail drawer.** A
+  compact section between OSV and External references
+  that exposes watch / triage / priority / tag / note /
+  mark-reviewed / archive controls. Autosave with a
+  visible save state (idle / saving / saved / error),
+  600 ms debounce on the note textarea, a character
+  counter (8,000 max), 20-tag cap, 40-char per tag.
+  Mark-reviewed uses the current public-intelligence
+  version and change signature.
+- **Bulk action bar.** Bounded bulk actions for the
+  selected queue rows: add / remove watch, set triage,
+  set priority, add tag, archive, restore. Capped at
+  200 CVEs per click; destructive actions require a
+  confirmation step.
+- **Compact watch toggle in the table.** A single
+  "Local" column with a Watch / Watched pill. Disabled
+  silently when the workspace is unavailable.
+- **Multi-tab synchronisation.** `BroadcastChannel
+  ('threatpulse-workspace')` posts a `{ type, cveId?,
+  ts }` message after every committed write; a
+  conflict banner surfaces when a remote tab delivers
+  a newer record than the local one.
+- **Application-level dialogs.** Export (download JSON),
+  Import (file picker → dry-run → merge / replace),
+  Clear archived (count-gated confirm), Clear workspace
+  (typed `RESET` gate). All dialogs trap and restore
+  focus; `Escape` closes them.
+- **Change-aware review checkpoints.** The mark-reviewed
+  action stamps `lastSeenPublicIntelligenceVersion` and
+  `lastSeenChangeSignature` (a deterministic sha256 of
+  the public-safe change fields). The "Changed since
+  review" classification surfaces only when the current
+  public signature differs from the checkpoint at the
+  SAME compatible version.
+- **Export / import with deterministic checksums.** The
+  export is sorted by `cveId`, tags are sorted
+  ascending, field order is fixed, and a `sha256:`
+  hex digest is baked into the payload. The export
+  filename is `threatpulse-workspace.json` (no CVE id,
+  no timestamp leak). Merge and replace modes are
+  behaviour-tested; failed replace leaves the original
+  workspace intact.
+
+### V6.4 invariants (and the test names that verify them)
+
+- All V6.0 / V6.1 / V6.2 / V6.3 invariants preserved
+  (31 prior acceptance suites still pass).
+- 32 acceptance suites total, 920 assertions, all green.
+- V6.4-specific suite: `scripts/acceptance-v64-workspace.mjs`
+  — 190 assertions covering schema, migrations, change
+  signature, in-memory and unavailable adapters, export
+  / import (dry-run, merge, replace, failed-promotion
+  preservation), queue filters and ordering, CSV column
+  count, Netlify function source sweep, URL privacy,
+  export filename hygiene, and per-CVE serialised writes.
+- 5 public Netlify function entries; 1 gateway function
+  entry (byte-identical to V6.1 baseline `32a8a63`);
+  `netlify/gateway/` and `client/` byte-identical to the
+  V6.1 baseline.
+- `CSV_COLUMNS` = 21.
+- No browser workspace data is sent to the backend, the
+  private gateway, the public Netlify function entries,
+  the Hostinger runtime, the dashboard URL, the CSV
+  export, or any analytics endpoint.
+
 ## V6.1 — Public intelligence, source transparency, OSV context, and change intelligence
 
 V6.1 makes the public dashboard honest about which data

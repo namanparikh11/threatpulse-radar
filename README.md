@@ -356,6 +356,29 @@ V6.0 documentation:
 
 ---
 
+## V6.4 — Local defender workspace (additive)
+
+V6.4 adds a fully-local defender workspace to the dashboard.
+A defender can watch CVEs, assign a local triage status and
+priority, add local tags, write a private note, and identify
+watched CVEs that changed since the last review. Everything
+lives on the user's device in IndexedDB (with a session-memory
+fallback); nothing is uploaded.
+
+Privacy invariants (proved by `scripts/acceptance-v64-workspace.mjs`):
+
+- No workspace field appears in the public dataset, the
+  Netlify function entries, the private gateway payloads,
+  the dashboard URL, the public CSV, or any analytics
+  endpoint.
+- The export filename is static (`threatpulse-workspace.json`).
+- The export is deterministic (sorted by `cveId`, fixed
+  field order, sha256 checksum).
+
+V6.4 documentation: [`docs/v6-4-local-workspace.md`](docs/v6-4-local-workspace.md).
+
+---
+
 ## Reliability & honesty
 
 The codebase's stance: **failures are visible, never hidden.**

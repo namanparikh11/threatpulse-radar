@@ -59,7 +59,10 @@ export const LIMITS = Object.freeze({
 
 const CVE_RE = /^CVE-\d{4}-\d{4,7}$/;
 const PROTOTYPE_POLLUTION_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
-const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f-\u009f]/;
+// Control characters EXCEPT newline (\u000a) and tab (\u0009). The
+// intent of stripControlChars is to remove ASCII control codes
+// while preserving \n and \t for multi-line notes.
+const CONTROL_CHAR_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/;
 
 /**
  * Validate + normalise a CVE identifier. The result
@@ -74,8 +77,8 @@ export function normaliseCveId(input) {
 }
 
 /**
- * Strip control characters from a string. Preserves
- * newlines and tabs so multi-line notes still work.
+ * Strip ASCII control characters from a string. Preserves
+ * newlines (\n) and tabs (\t) so multi-line notes still work.
  */
 export function stripControlChars(s) {
   if (typeof s !== 'string') return '';
@@ -137,7 +140,7 @@ export function makeEntry(cveId, overrides = {}) {
   const out = {
     schemaVersion: WORKSPACE_SCHEMA_VERSION,
     cveId: id,
-    watched: false,
+    watched: !!overrides.watched,
     triageStatus: normaliseTriageStatus(overrides.triageStatus),
     userPriority: normalisePriority(overrides.userPriority),
     tags: normaliseTags(overrides.tags),
