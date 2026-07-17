@@ -7,6 +7,45 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## V6.8 controlled deployment preparation
+
+A separate `release/v6-8-deployment-preparation` branch
+carries the V6.8 release-preparation tooling without
+modifying the V6.8 product. The branch adds:
+
+- `deploy/v6-8-release-manifest.json` — machine-readable
+  release manifest (names only, no secret values).
+- `scripts/verify-v68-release.mjs` — read-only release
+  preflight (exits 0 on success).
+- `scripts/smoke-v68-local.mjs` — local smoke test
+  (filesystem adapter, worker modules, IndexedDB
+  adapters, cron-lock helper, temporary directories).
+- `scripts/smoke-v68-production.mjs` — production
+  smoke test (dry-run by default; `--execute` is
+  required for network access).
+- `scripts/acceptance-v68-deployment-preparation.mjs`
+  — release-preparation acceptance suite.
+- `docs/v6-8-controlled-deployment-runbook.md` —
+  phased deployment procedure (PHASE 0 / 1 / 2 / 3).
+- `docs/v6-8-rollback-plan.md` — rollback triggers and
+  reversible actions.
+- `docs/v6-8-production-observation-plan.md` —
+  observation windows (30 minutes / 6 hours / 24-48
+  hours) and release statuses.
+- `docs/v6-8-environment-checklist.md` — every
+  environment variable name with classification
+  (public / gateway, required / optional, sensitive,
+  source, rotation impact, redeploy matrix).
+- `docs/v6-8-deployment-cost-controls.md` — operational
+  best practices to minimize deployment and runtime
+  credit use.
+
+The preparation branch is honest about what it is.
+The release is **not** enterprise-certified, legally
+admissible, complete, or independently audited. No
+claim of production stability is made before the
+observation windows complete.
+
 ## V6.8 — Release candidate consolidation
 
 V6.8 is a release-candidate consolidation milestone. It

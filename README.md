@@ -505,6 +505,42 @@ V6.7 documentation: [`docs/v6-7-local-remediation-evidence.md`](docs/v6-7-local-
 
 ---
 
+## V6.8 controlled deployment preparation (additive)
+
+A separate `release/v6-8-deployment-preparation` branch
+carries the V6.8 release-preparation tooling without
+modifying the V6.8 product. The branch adds:
+
+- A machine-readable [`deploy/v6-8-release-manifest.json`](deploy/v6-8-release-manifest.json)
+  (names only, no secret values).
+- A read-only release preflight
+  ([`scripts/verify-v68-release.mjs`](scripts/verify-v68-release.mjs)).
+- A local smoke test
+  ([`scripts/smoke-v68-local.mjs`](scripts/smoke-v68-local.mjs)).
+- A dry-run-by-default production smoke test
+  ([`scripts/smoke-v68-production.mjs`](scripts/smoke-v68-production.mjs)).
+- A release-preparation acceptance suite
+  ([`scripts/acceptance-v68-deployment-preparation.mjs`](scripts/acceptance-v68-deployment-preparation.mjs)).
+- A phased deployment runbook
+  ([`docs/v6-8-controlled-deployment-runbook.md`](docs/v6-8-controlled-deployment-runbook.md)).
+- A rollback plan
+  ([`docs/v6-8-rollback-plan.md`](docs/v6-8-rollback-plan.md)).
+- A production observation plan
+  ([`docs/v6-8-production-observation-plan.md`](docs/v6-8-production-observation-plan.md)).
+- An environment-variable checklist (names only)
+  ([`docs/v6-8-environment-checklist.md`](docs/v6-8-environment-checklist.md)).
+- A deployment-cost controls document
+  ([`docs/v6-8-deployment-cost-controls.md`](docs/v6-8-deployment-cost-controls.md)).
+
+The preparation branch is honest about what it is. The
+release is **not** enterprise-certified, legally
+admissible, complete, or independently audited. **The
+preparation tooling does not perform any deployment,
+merge, credential, environment-variable, DNS, or
+paid-service change.** Every action gated by the runbook
+requires explicit operator authorization in the
+Netlify UI.
+
 ## V6.8 — Release candidate consolidation (additive)
 
 V6.8 is a release-candidate consolidation milestone. It

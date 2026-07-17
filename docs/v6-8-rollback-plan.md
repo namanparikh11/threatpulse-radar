@@ -66,8 +66,7 @@ delete data or rotate credentials by default.
 6. **Avoid deleting Blob stores.** Deleting a Blob
    store destroys the public dataset and the
    baseline. Deletion is never a rollback action.
-7. **Avoid rotating credentials unless compromise
-   is suspected.** Rotating the
+7. **Avoid rotating credentials unless compromise is suspected.** Rotating the
    `THREATPULSE_CREDENTIAL_PEPPER` invalidates
    every existing private credential the operator
    has issued. The pepper is rotated only when
