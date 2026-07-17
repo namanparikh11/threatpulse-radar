@@ -22,6 +22,8 @@ import ReportBuilder from '../components/reports/ReportBuilder';
 import ReportHistoryDialog from '../components/reports/ReportHistoryDialog';
 import ReportVerifyDialog from '../components/reports/ReportVerifyDialog';
 import EnvironmentPanel from '../components/environment/EnvironmentPanel';
+import { RemediationPanel } from '../components/remediation/RemediationPanel';
+import { useRemediation } from '../state/RemediationContext';
 import { exportReport } from '../reports/exporters/index.mjs';
 import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
 import { addHistoryEntry } from '../reports/history.mjs';
@@ -134,6 +136,7 @@ export default function DashboardPage() {
   const [activeReportVerify, setActiveReportVerify] = useState<'verify' | 'compare' | null>(null);
   const workspace = useWorkspace();
   const env = useEnvironment();
+  const remediation = useRemediation();
   /**
    * v6.4: keep the workspace's `changedSinceReview` count
    * in sync with the actual public-intelligence view. The
@@ -513,6 +516,24 @@ export default function DashboardPage() {
             ) : null}
 
             <EnvironmentPanel />
+
+            <RemediationPanel
+              onExportPlan={async (planId: string) => {
+                // V6.7: per-plan export is wired in commit 7
+                // (threatpulse-local-remediation v1.0.0 bundle
+                // format with SHA-256 integrity). For now we
+                // call the context's exportPlan and surface a
+                // warning if the bundle can't be built. The
+                // actual downloadFile / bundle envelope /
+                // canonicalization lives in the exportImport
+                // module added in commit 7.
+                const r = await remediation.exportPlan(planId);
+                if (!r.ok) {
+                  // eslint-disable-next-line no-console
+                  console.warn('[threatpulse] remediation export failed:', r.reason);
+                }
+              }}
+            />
 
             <DefenderViewsPanel
               rows={sorted}

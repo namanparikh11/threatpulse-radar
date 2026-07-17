@@ -13,8 +13,10 @@
 
 import { useMemo, useState } from 'react';
 import { useEnvironment } from '../../state/EnvironmentContext';
+import { useRemediation } from '../../state/RemediationContext';
 import { CORRELATION_STATES } from '../../environment/schema.mjs';
 import CorrelationReviewDialog from './CorrelationReviewDialog';
+import { PlanDialog } from '../remediation/PlanDialog';
 
 export interface CorrelationQueueProps {
   assets: any[];
@@ -40,7 +42,9 @@ const STATE_TONE: Record<string, string> = {
 
 export default function CorrelationQueue({ assets }: CorrelationQueueProps) {
   const env = useEnvironment();
+  const remediation = useRemediation();
   const [reviewing, setReviewing] = useState<any | null>(null);
+  const [planFor, setPlanFor] = useState<any | null>(null);
 
   const rows = useMemo(() => {
     const list: any[] = [];
@@ -96,6 +100,7 @@ export default function CorrelationQueue({ assets }: CorrelationQueueProps) {
               <th scope="col" className="border-b border-radar-border/40 px-2 py-1">Component</th>
               <th scope="col" className="border-b border-radar-border/40 px-2 py-1">State</th>
               <th scope="col" className="border-b border-radar-border/40 px-2 py-1">Review</th>
+              <th scope="col" className="border-b border-radar-border/40 px-2 py-1">Plan</th>
             </tr>
           </thead>
           <tbody>
@@ -121,6 +126,16 @@ export default function CorrelationQueue({ assets }: CorrelationQueueProps) {
                       {review ? review.reviewStatus : 'unreviewed'}
                     </button>
                   </td>
+                  <td className="border-b border-radar-border/40 px-2 py-1 text-radar-muted">
+                    <button
+                      type="button"
+                      onClick={() => setPlanFor(r)}
+                      className="focus-ring inline-flex items-center gap-1 rounded-md border border-radar-border bg-radar-panel2 px-1.5 py-0.5 text-[10px] text-radar-muted hover:border-radar-accent/40 hover:text-radar-text"
+                      data-testid={`correlation-plan-${r.correlationId}`}
+                    >
+                      Create plan
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -132,6 +147,24 @@ export default function CorrelationQueue({ assets }: CorrelationQueueProps) {
         <CorrelationReviewDialog
           correlation={reviewing}
           onClose={() => setReviewing(null)}
+        />
+      )}
+      {planFor && (
+        <PlanDialog
+          open={true}
+          mode="create"
+          onClose={() => setPlanFor(null)}
+          onSubmit={async (args: any) => {
+            const r = await remediation.createPlan({
+              ...args,
+              linkedCveIds: [planFor.cveId],
+              linkedAssetIds: [planFor.assetId],
+              linkedComponentIds: [planFor.componentId],
+              linkedCorrelationIds: [planFor.correlationId],
+            });
+            if (r.ok) setPlanFor(null);
+            return r;
+          }}
         />
       )}
     </>

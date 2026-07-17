@@ -13,6 +13,7 @@ import { formatAbsolute, formatCvss, formatDate, formatEpss, formatRelative } fr
 import OsvContext from './drawer/OsvContext';
 import WorkspaceDrawerSection from './workspace/WorkspaceDrawerSection';
 import LocalRelevanceSection from './environment/LocalRelevanceSection';
+import { RemediationDrawerSection } from './remediation/RemediationDrawerSection';
 
 interface DetailDrawerProps {
   vuln: Vulnerability | null;
@@ -220,6 +221,14 @@ function DrawerBody({
         {/* V6.6: potential local relevance section. */}
         <Section title="Potential local relevance">
           <LocalRelevanceSection cveId={vuln.cveId} />
+        </Section>
+
+        {/* V6.7: local remediation section. Shows linked
+            plan count, the active plan status, and entry
+            points to create / open a plan. All data is
+            local to the browser. */}
+        <Section title="Local remediation">
+          <RemediationDrawerSection cveId={vuln.cveId} />
         </Section>
 
         <Section title="External references">
