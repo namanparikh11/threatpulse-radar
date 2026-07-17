@@ -23,6 +23,8 @@ import ReportHistoryDialog from '../components/reports/ReportHistoryDialog';
 import ReportVerifyDialog from '../components/reports/ReportVerifyDialog';
 import EnvironmentPanel from '../components/environment/EnvironmentPanel';
 import { RemediationPanel } from '../components/remediation/RemediationPanel';
+import { LocalDataCentre } from '../components/LocalDataCentre';
+import { FirstRunGuide } from '../components/FirstRunGuide';
 import { useRemediation } from '../state/RemediationContext';
 import { exportReport } from '../reports/exporters/index.mjs';
 import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
@@ -456,6 +458,12 @@ export default function DashboardPage() {
 
             <ConflictBanner />
 
+            <FirstRunGuide
+              hasWorkspaceEntries={Object.keys(workspace.state.entriesByCve || {}).length > 0}
+              hasEnvironment={env.state.assets.length > 0}
+              hasRemediation={remediation.state.plans.length > 0}
+            />
+
             <BulkActionBar
               selectedCveIds={selectedCveIds}
               onClearSelection={() => setSelectedCveIds([])}
@@ -606,6 +614,60 @@ export default function DashboardPage() {
                   : 'Filters are active. Results reflect your current search, severity, KEV, EPSS, GitHub Advisory, patch context, and SSVC exploitation selection.'}
               </p>
             )}
+
+            <LocalDataCentre
+              onExportWorkspace={async () => {
+                const r = await workspace.exportWorkspace();
+                if (r && r.format) {
+                  const body = JSON.stringify(r, null, 2);
+                  const shortId = String(r.exportedAt || Date.now()).slice(-8);
+                  const filename = `threatpulse-workspace-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                  downloadFile(filename, body, 'application/json;charset=utf-8');
+                }
+              }}
+              onExportEnvironment={async () => {
+                const r = await env.exportEnvironment();
+                if (r.ok) {
+                  const body = JSON.stringify(r.payload, null, 2);
+                  const shortId = String(r.payload.reportId || r.payload.exportedAt || Date.now()).slice(-8);
+                  const filename = `threatpulse-environment-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                  downloadFile(filename, body, 'application/json;charset=utf-8');
+                }
+              }}
+              onExportRemediation={async () => {
+                const { buildFullBundle } = await import('../remediation/exportImport.mjs');
+                const plans = remediation.state.plans || [];
+                const tasks: any[] = [];
+                const evidence: any[] = [];
+                const ledger: any[] = [];
+                for (const p of plans) {
+                  tasks.push(...((remediation.state.tasksByPlan && remediation.state.tasksByPlan[p.planId]) || []));
+                  evidence.push(...((remediation.state.evidenceByPlan && remediation.state.evidenceByPlan[p.planId]) || []));
+                  ledger.push(...((remediation.state.ledgerByPlan && remediation.state.ledgerByPlan[p.planId]) || []));
+                }
+                const bundle = await buildFullBundle(plans, tasks, evidence, ledger, { applicationVersion: '1.0.0' });
+                const body = JSON.stringify(bundle, null, 2);
+                const shortId = String(bundle.exportedAt || Date.now()).slice(-8);
+                const filename = `threatpulse-remediation-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                downloadFile(filename, body, 'application/json;charset=utf-8');
+              }}
+              onClearWorkspace={async () => {
+                const r = await workspace.clearWorkspace();
+                return r && r.ok ? { ok: true } : { ok: false, reason: (r as any)?.reason || 'clear-failed' };
+              }}
+              onClearEnvironment={async () => {
+                const r = await env.clearEnvironment();
+                return r;
+              }}
+              onClearRemediation={async () => {
+                const r = await remediation.clearAll();
+                return r;
+              }}
+              onClearReportHistory={async () => {
+                const { clearHistory } = await import('../reports/history.mjs');
+                return await clearHistory();
+              }}
+            />
 
             <Footer />
           </>
