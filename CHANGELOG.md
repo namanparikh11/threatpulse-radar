@@ -7,6 +7,84 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## V6.8 — Release candidate consolidation
+
+V6.8 is a release-candidate consolidation milestone. It
+contains the complete V6.1–V6.8 product and focuses on
+stabilizing, measuring, lazy-loading, and documenting the
+existing surfaces rather than introducing a new major
+subsystem.
+
+**This release is honest about what it is and what it
+is not. It is a single controlled release of a defensive
+cybersecurity intelligence product. It is NOT
+enterprise-certified, legally admissible, complete, or
+independently audited.**
+
+### What this release adds
+
+- **Release diagnostics.** A sanitized local storage
+  diagnostics snapshot that reports storage
+  availability, schema versions, record counts, and
+  pending-write state. Never includes note, tag,
+  owner, plan, task, evidence, or fingerprint
+  content.
+- **Hardened V6.4 multi-tab upgrade.** The workspace
+  IndexedDB adapter now closes on `onversionchange`
+  for parity with the V6.6 environment and V6.7
+  remediation adapters.
+- **Reusable `ErrorBoundary`.** A bounded React
+  error boundary that isolates a workspace /
+  reports / environment / remediation / data
+  centre failure from the public dashboard.
+- **Local Data Control Centre.** A single compact
+  surface that summarizes every local-only dataset
+  (workspace, environment, remediation, report
+  history) and exposes per-dataset export and clear
+  actions. Every destructive action is gated by an
+  accessible confirmation dialog. Datasets are
+  independent; clearing one never touches another.
+- **First-run guide.** A compact, collapsible
+  surface that surfaces the minimal first-use steps
+  the operator needs to understand ThreatPulse
+  Radar.
+- **Lazy-loaded report / environment / remediation
+  panels.** The V6.8 main bundle is ~16% smaller
+  than the V6.7 main bundle; the report builder,
+  report history, report verify/compare, the
+  environment panel, and the remediation panel are
+  emitted as separate chunks that the dashboard
+  only pays for when the operator opens them.
+- **End-to-end release-candidate acceptance suite.**
+  `scripts/acceptance-v68-release-candidate.mjs`
+  exercises the five documented journeys, local
+  data separation, migration + recovery, privacy
+  instrumentation, structural invariants, and the
+  no-Node-hashing / no-`process.exit(0)` invariants.
+- **Comprehensive release-candidate documentation.**
+  `docs/v6-8-release-candidate.md` documents the
+  full product capability map, the public vs
+  local-only data boundary, supported providers and
+  import formats, the workspace / reporting /
+  environment / remediation capabilities and
+  limitations, browser persistence limitations,
+  backup requirements, Netlify + Hostinger
+  deployment architecture, known dependency
+  advisories, known deferred work, the release
+  verification checklist, and rollback /
+  checkpoint information.
+
+### What this release does **not** do
+
+- Add accounts, authentication, cloud sync, active
+  scanning, registry calls, or proprietary scoring.
+- Introduce a new provider integration.
+- Introduce a new major product subsystem.
+- Modify `netlify/gateway/`, `client/`, or the
+  documented invariants.
+- Modify the V6.5 report contract; the public CSV
+  columns remain 21.
+
 ## V6.7 — Local remediation plans, evidence, and activity ledger
 
 V6.7 adds a local-only remediation workflow layer to ThreatPulse

@@ -5,7 +5,7 @@
 > probability, SSVC decision context, and reviewed package-remediation
 > guidance across your stack in one focused command-center view.
 
-![status](https://img.shields.io/badge/status-v6.7-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v6.8-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -502,6 +502,52 @@ Privacy invariants (proved by `scripts/acceptance-v67-local-remediation.mjs`):
   authority, or legal authenticity.
 
 V6.7 documentation: [`docs/v6-7-local-remediation-evidence.md`](docs/v6-7-local-remediation-evidence.md).
+
+---
+
+## V6.8 — Release candidate consolidation (additive)
+
+V6.8 is a release-candidate consolidation milestone. It
+contains the complete V6.1–V6.8 product and focuses on
+stabilizing, measuring, lazy-loading, and documenting the
+existing surfaces rather than introducing a new major
+subsystem.
+
+**This release is honest about what it is and what it
+is not. It is a single controlled release of a defensive
+cybersecurity intelligence product. It is NOT
+enterprise-certified, legally admissible, complete, or
+independently audited.**
+
+What V6.8 adds on top of V6.7:
+
+- A sanitized **release diagnostics** helper that
+  reports storage availability, schema versions,
+  record counts, and pending-write state — without
+  ever including private content.
+- A reusable **`ErrorBoundary`** wrapping every
+  major local surface (workspace, reports,
+  environment, remediation, local data centre) so
+  a failure on one surface cannot crash the public
+  dashboard.
+- A consolidated **Local Data Control Centre** that
+  summarizes every local dataset and exposes
+  per-dataset export and clear actions. Each
+  destructive action is gated by an accessible
+  confirmation dialog; datasets are independent.
+- A compact **first-run guide** with a dismissable
+  surface that explains the local-only storage
+  boundary and the first useful action.
+- **Lazy-loaded** report / environment / remediation
+  panels; the V6.8 main bundle is measurably
+  smaller than the V6.7 main bundle.
+- An end-to-end **release-candidate acceptance
+  suite** (`scripts/acceptance-v68-release-candidate.mjs`)
+  covering the five documented journeys, local data
+  separation, migration + recovery, privacy
+  instrumentation, and structural invariants.
+
+V6.8 documentation: [`docs/v6-8-release-candidate.md`](docs/v6-8-release-candidate.md).
 
 ---
 ## Reliability & honesty
