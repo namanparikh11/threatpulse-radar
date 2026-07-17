@@ -78,9 +78,15 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
   assert.equal(offending.length, 0, `working tree has unexpected changes: ${offending.join(', ')}`);
 });
 
-test('verify-v68-release: HEAD is the frozen release-candidate commit', () => {
+test('verify-v68-release: HEAD is based directly on the V6.8 RC commit', () => {
+  // The release-preparation branch can be on
+  // any commit that is a descendant of the V6.8
+  // RC commit `0480a9f`. The preparation branch
+  // adds release tooling + runbooks; it must
+  // NOT modify the RC product behavior.
   const head = git('rev-parse HEAD');
-  assert.equal(head, EXPECTED_COMMIT, `HEAD is ${head}, expected ${EXPECTED_COMMIT}`);
+  const merged = git(`merge-base --is-ancestor ${EXPECTED_COMMIT} HEAD && echo yes || echo no`).trim();
+  assert.equal(merged, 'yes', `HEAD (${head}) is not a descendant of the V6.8 RC commit (${EXPECTED_COMMIT})`);
 });
 
 test('verify-v68-release: release manifest exists and is valid JSON', () => {
@@ -128,13 +134,16 @@ test('verify-v68-release: release manifest contains no high-entropy secret value
 });
 
 test('verify-v68-release: required documentation exists', () => {
-  // The release-candidate doc is required. The
-  // runbook / rollback / observation / env
-  // checklist docs are required once they are
-  // added in subsequent commits; until then the
-  // preflight only flags the V6.8 release
-  // candidate doc.
-  assert.ok(existsSync(path.join(REPO, 'docs/v6-8-release-candidate.md')), 'docs/v6-8-release-candidate.md missing');
+  for (const doc of [
+    'docs/v6-8-release-candidate.md',
+    'docs/v6-8-controlled-deployment-runbook.md',
+    'docs/v6-8-rollback-plan.md',
+    'docs/v6-8-production-observation-plan.md',
+    'docs/v6-8-environment-checklist.md',
+    'docs/v6-8-deployment-cost-controls.md',
+  ]) {
+    assert.ok(existsSync(path.join(REPO, doc)), `${doc} missing`);
+  }
 });
 
 test('verify-v68-release: no committed .env or credential files (example allowed)', () => {
