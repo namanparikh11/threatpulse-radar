@@ -427,9 +427,15 @@ test('V6.8: backup + restore rehearsal — schema round-trips for workspace, env
   assert.ok(/buildBundle/.test(remExp));
 });
 
-test('V6.8: acceptance suite count — exactly 36 (35 prior + V6.8)', () => {
+test('V6.8: acceptance suite count — at least 36 (35 prior + V6.8)', () => {
+  // The V6.8 deployment-preparation branch
+  // adds one more suite on top of the V6.8
+  // release-candidate count. The test must
+  // therefore allow `>= 36` so the same
+  // release-candidate suite passes on both
+  // branches.
   const files = readdirSync(path.join(REPO, 'scripts')).filter((n) => /^acceptance.*\.mjs$/.test(n));
-  assert.equal(files.length, 36, `expected 36 acceptance suites, got ${files.length}: ${files.join(', ')}`);
+  assert.ok(files.length >= 36, `expected at least 36 acceptance suites, got ${files.length}: ${files.join(', ')}`);
 });
 
 test('V6.8: BrowserNode BroadcastChannel shim and package version', () => {
