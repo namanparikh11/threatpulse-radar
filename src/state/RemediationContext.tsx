@@ -46,17 +46,15 @@ import {
   validatePlan,
   validateTask,
   validateEvidence,
-  validateLedgerEvent,
   normalizePlan,
   normalizeTags,
   normalizeCveIds,
   REMEDIATION_LIMITS,
   PLAN_STATUSES,
-  TASK_STATUSES,
   EVIDENCE_TYPES,
   VALIDATION_STATUSES,
 } from '../remediation/schema.mjs';
-import { isSupportedTransition, checkTransition } from '../remediation/lifecycle.mjs';
+import { isSupportedTransition } from '../remediation/lifecycle.mjs';
 import { verifyChain } from '../remediation/ledger.mjs';
 import { createPlanWithGenesisEvent, appendFollowupEvent } from '../remediation/transaction.mjs';
 import { nowIso, makePlanId, makeTaskId, makeEvidenceId, makeEventId, makeMutationId } from '../remediation/id.mjs';
@@ -208,6 +206,7 @@ function selectAdapter(preferSession: boolean): any {
   if (preferSession) return new InMemoryRemediationAdapter();
   return new UnavailableRemediationAdapter();
 }
+
 
 function clampSummary(s: string): string {
   if (typeof s !== 'string') return '';
@@ -405,7 +404,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     });
     const v = validatePlan(next);
     if (!v.ok) return { ok: false as const, reason: v.reason || 'invalid-plan' };
-    const put = await trackInflight(adapter.putPlan(v.value));
+    const put = await trackInflight(adapter.putPlan(v.value)) as any;
     if (!put.ok) return { ok: false as const, reason: put.reason || 'put-failed' };
     let eventId = '';
     if (patch.status && patch.status !== cur.status) {
@@ -451,10 +450,10 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     return updatePlan(planId, { archived: false }, actorLabel);
   }, [updatePlan]);
 
-  const deletePlan = useCallback(async (planId: string) => {
+  const deletePlan = useCallback(async (planId: string): Promise<{ ok: true } | { ok: false; reason: string }> => {
     const adapter = adapterRef.current;
     if (!adapter) return { ok: false as const, reason: 'adapter-closed' };
-    const r = await trackInflight(adapter.deletePlan(planId));
+    const r = await trackInflight(adapter.deletePlan(planId)) as any;
     if (!r.ok) return r;
     void refreshAll();
     return { ok: true as const };
@@ -506,7 +505,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     };
     const ev = validateEvidence(evidence);
     if (!ev.ok) return { ok: false as const, reason: ev.reason || 'invalid-evidence' };
-    const evPut = await trackInflight(adapter.putEvidence(ev.value));
+    const evPut = await trackInflight(adapter.putEvidence(ev.value)) as any;
     if (!evPut.ok) return { ok: false as const, reason: evPut.reason || 'evidence-failed' };
     const eventResult = await trackInflight(appendFollowupEvent({
       adapter,
@@ -575,7 +574,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     };
     const v = validateTask(task);
     if (!v.ok) return { ok: false as const, reason: v.reason || 'invalid-task' };
-    const put = await trackInflight(adapter.putTask(v.value));
+    const put = await trackInflight(adapter.putTask(v.value)) as any;
     if (!put.ok) return { ok: false as const, reason: put.reason || 'put-failed' };
     const eventResult = await trackInflight(appendFollowupEvent({
       adapter,
@@ -613,7 +612,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     };
     const v = validateTask(next);
     if (!v.ok) return { ok: false as const, reason: v.reason || 'invalid-task' };
-    const put = await trackInflight(adapter.putTask(v.value));
+    const put = await trackInflight(adapter.putTask(v.value)) as any;
     if (!put.ok) return { ok: false as const, reason: put.reason || 'put-failed' };
     let eventType = 'task-updated';
     if (patch.status === 'done' && cur.task.status !== 'done') eventType = 'task-completed';
@@ -649,7 +648,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
       const next: any = { ...t, order: i, updatedAt: now, revision: (t.revision || 1) + 1, mutationId: makeMutationId() };
       const v = validateTask(next);
       if (!v.ok) return { ok: false as const, reason: v.reason || 'invalid-task' };
-      const put = await trackInflight(adapter.putTask(v.value));
+      const put = await trackInflight(adapter.putTask(v.value)) as any;
       if (!put.ok) return { ok: false as const, reason: put.reason || 'put-failed' };
       i++;
     }
@@ -668,7 +667,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     return { ok: true as const, eventId: eventResult.eventId || '' };
   }, [trackInflight, refreshAll]);
 
-  const completeTask = useCallback(async (taskId: string, actorLabel?: string) => {
+  const completeTask = useCallback(async (taskId: string, actorLabel?: string): Promise<{ ok: true; task: any; eventId: string } | { ok: false; reason: string }> => {
     return updateTask(taskId, { status: 'done', completedAt: nowIso() }, actorLabel);
   }, [updateTask]);
 
@@ -676,7 +675,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     return updateTask(taskId, { status: 'in-progress', completedAt: null }, actorLabel);
   }, [updateTask]);
 
-  const deleteTask = useCallback(async (taskId: string, actorLabel?: string) => {
+  const deleteTask = useCallback(async (taskId: string, actorLabel?: string): Promise<{ ok: true; eventId: string } | { ok: false; reason: string }> => {
     const adapter = adapterRef.current;
     if (!adapter) return { ok: false as const, reason: 'adapter-closed' };
     const cur = await (async () => {
@@ -687,7 +686,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
       return null;
     })();
     if (!cur) return { ok: false as const, reason: 'not-found' };
-    const r = await trackInflight(adapter.deleteTask(taskId));
+    const r = await trackInflight(adapter.deleteTask(taskId)) as any;
     if (!r.ok) return r;
     const now = nowIso();
     const eventResult = await trackInflight(appendFollowupEvent({
@@ -742,7 +741,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     };
     const v = validateEvidence(evidence);
     if (!v.ok) return { ok: false as const, reason: v.reason || 'invalid-evidence' };
-    const put = await trackInflight(adapter.putEvidence(v.value));
+    const put = await trackInflight(adapter.putEvidence(v.value)) as any;
     if (!put.ok) return { ok: false as const, reason: put.reason || 'put-failed' };
     const eventResult = await trackInflight(appendFollowupEvent({
       adapter,
@@ -787,7 +786,7 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     };
     const v = validateEvidence(evidence);
     if (!v.ok) return { ok: false as const, reason: v.reason || 'invalid-evidence' };
-    const put = await trackInflight(adapter.putEvidence(v.value));
+    const put = await trackInflight(adapter.putEvidence(v.value)) as any;
     if (!put.ok) return { ok: false as const, reason: put.reason || 'put-failed' };
     const eventResult = await trackInflight(appendFollowupEvent({
       adapter,
@@ -872,10 +871,10 @@ export function RemediationProvider({ children, preferSessionOnly = false }: { c
     await Promise.allSettled(all);
   }, []);
 
-  const clearAll = useCallback(async () => {
+  const clearAll = useCallback(async (): Promise<{ ok: true } | { ok: false; reason: string }> => {
     const adapter = adapterRef.current;
     if (!adapter) return { ok: false as const, reason: 'adapter-closed' };
-    const r = await trackInflight(adapter.clearAll());
+    const r = await trackInflight(adapter.clearAll()) as any;
     if (!r.ok) return r;
     void refreshAll();
     return { ok: true as const };
