@@ -1,12 +1,19 @@
 /**
- * V6.5 — Public SHA-256 entry.
+ * V6.6 — Public SHA-256 entry.
  *
- * The browser production path uses Web Crypto
- * (`sha256Browser.mjs`). The Node test runner uses
- * Node `crypto` (`sha256Node.mjs`). The dispatch is
- * runtime-based; the Vite browser build never reaches
- * the Node path so no `node:crypto` externalization
- * warning is emitted.
+ * Browser-reachable public surface. Uses Web Crypto
+ * (crypto.subtle.digest) so the production browser
+ * bundle NEVER contains a Node `crypto` reference.
+ * The Vite build graph has no `sha256Node` chunk.
+ *
+ * Node test runners (Node 18+) also expose
+ * `globalThis.crypto.subtle`, so the same browser
+ * implementation works in the test runner. The
+ * previous dual-impl dispatch (browser + Node
+ * `crypto`) was removed in V6.6 because it forced
+ * Vite to bundle a `sha256Node` chunk for the
+ * browser, even though the Node path was never
+ * reached at runtime.
  *
  * Both implementations return a lowercase hex digest
  * WITHOUT the `sha256:` prefix. The caller composes
@@ -26,22 +33,6 @@ import {
   ShaUnavailableError as BrowserShaUnavailableError,
 } from './sha256Browser.mjs';
 
-const IS_BROWSER = (typeof window !== 'undefined' && typeof document !== 'undefined');
-const IS_NODE = (typeof process !== 'undefined' && !!process.versions && !!process.versions.node);
-
-function pickImpl() {
-  if (IS_BROWSER) return 'browser';
-  if (IS_NODE) return 'node';
-  return 'browser'; // best-effort; the browser module will
-  // surface a clean unavailable error
-}
-
-/** The current implementation. */
-export const ACTIVE_IMPL = pickImpl();
-
-/** Re-export the unavailable-error class so callers
- *  catch a single class regardless of the active
- *  implementation. */
 export class ShaUnavailableError extends Error {
   constructor() {
     super('sha256: unavailable in this runtime');
@@ -49,29 +40,33 @@ export class ShaUnavailableError extends Error {
   }
 }
 
-/** True when the active implementation can serve a
- *  digest. The browser path requires Web Crypto. The
- *  Node path requires `node:crypto`. The function
- *  returns false in either case when the underlying
- *  primitive is missing. */
+/** True when Web Crypto's subtle digest with SHA-256
+ *  is reachable. Browser production path + Node 18+
+ *  test runner both report `true`. */
 export async function isAvailable() {
-  if (ACTIVE_IMPL === 'browser') return browserIsAvailable();
-  const nodeMod = await import('./sha256Node.mjs');
-  return nodeMod.isAvailable();
+  return browserIsAvailable();
 }
 
 export async function digest(bytes) {
-  if (ACTIVE_IMPL === 'browser') return await browserDigest(bytes);
-  const nodeMod = await import('./sha256Node.mjs');
-  return await nodeMod.digest(bytes);
+  return await browserDigest(bytes);
 }
 
 export async function digestString(s) {
-  if (ACTIVE_IMPL === 'browser') return await browserDigestString(s);
-  const nodeMod = await import('./sha256Node.mjs');
-  return await nodeMod.digestString(s);
+  return await browserDigestString(s);
 }
 
 export async function digestPrefixed(s) {
   return `sha256:${await digestString(s)}`;
 }
+
+/** The current implementation. Always 'browser' (Web
+ *  Crypto). Kept as a public field for callers that
+ *  want to inspect the active path. The V6.5
+ *  `ACTIVE_IMPL` field is preserved for backward
+ *  compatibility with downstream consumers. */
+export const ACTIVE_IMPL = 'browser';
+
+// Re-export the browser unavailable-error class so
+// callers catch a single class regardless of the
+// runtime.
+export { BrowserShaUnavailableError };

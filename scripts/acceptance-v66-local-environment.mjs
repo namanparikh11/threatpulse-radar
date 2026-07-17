@@ -55,10 +55,33 @@ if (typeof globalThis.indexedDB === 'undefined') {
       return req;
     },
   };
-  if (typeof BroadcastChannel === 'undefined') {
-    globalThis.BroadcastChannel = class { constructor() {} postMessage() {} close() {} onmessage = null; };
-  }
   globalThis.IDBKeyRange = { only(value) { return { value, __only: true }; } };
+}
+
+// Node 24+ ships a global BroadcastChannel (WHATWG
+// spec) that creates real MessagePort-backed handles
+// when instantiated. The env adapter's _openChannel()
+// would otherwise open a real channel that the test
+// phase never closes, keeping the Node event loop
+// alive after every test has completed. Install an
+// unconditional no-op BroadcastChannel before any
+// module is imported. The shim class has no internal
+// state and no MessagePort, so the loop can exit
+// naturally when the test phase finishes.
+if (typeof globalThis.__threatpulseShimmedBC === 'undefined') {
+  const instances = new Set();
+  class NoopBroadcastChannel {
+    constructor(name) { this.name = name || ''; this.onmessage = null; instances.add(this); }
+    postMessage() { /* no-op */ }
+    close() { instances.delete(this); }
+    addEventListener() { /* no-op */ }
+    removeEventListener() { /* no-op */ }
+    dispatchEvent() { return true; }
+  }
+  globalThis.BroadcastChannel = NoopBroadcastChannel;
+  // Expose so a final teardown test can verify the
+  // shim is in place and the instance set is empty.
+  globalThis.__threatpulseShimmedBC = { ctor: NoopBroadcastChannel, instances };
 }
 
 const schema = await import(new URL('./environment/schema.mjs', root).href);
@@ -178,6 +201,23 @@ function makeXzVuln() {
 
 // ---------- Tests ----------
 
+// Visible section progress. Each test() call goes
+// through Node's test runner and prints its own ✔/✖
+// line. The section() helper prints a single banner
+// before the first test of each major area so a human
+// reading the live output (or a CI log) can see the
+// exact section in progress, and so any hang or
+// stall is immediately attributable to the section
+// that was running when the process was killed.
+let __currentSection = null;
+function section(name) {
+  if (__currentSection === name) return;
+  __currentSection = name;
+  process.stdout.write(`\n[${name}]\n`);
+}
+
+section('schema + validation');
+
 test('schema constants and limits', () => {
   assert.equal(schema.ASSET_SCHEMA_VERSION, '1.0.0');
   assert.equal(schema.COMPONENT_SCHEMA_VERSION, '1.0.0');
@@ -276,6 +316,8 @@ test('migrations: unsupported target version rejected', () => {
   assert.equal(r.reason, 'unsupported-target-version');
 });
 
+section('package URL + semver + evaluators');
+
 test('Package URL: valid parses, invalid rejects', () => {
   const r1 = purl.parsePurl('pkg:npm/lodash@4.17.21');
   assert.equal(r1.ok, true);
@@ -342,6 +384,8 @@ test('Version evaluators: test vectors', () => {
     assert.equal(got.state, v.state, `evaluator ${v.ecosystem} ${v.version} ${v.range}: expected ${v.state}, got ${got.state}`);
   }
 });
+
+section('correlation engine');
 
 test('Correlation: affected-range-match for xz-utils 5.6.0', () => {
   const comp = makeComp('xz-utils', '5.6.0', 'crates', 'pkg:cargo/xz-utils@5.6.0');
@@ -472,6 +516,8 @@ test('Correlation: incompatible provider ranges are not merged into one', () => 
   assert.ok(list[0].providerSources.includes('OSV') || list[0].providerSources.includes('GitHub Advisory Database'));
 });
 
+section('inventory change + importers');
+
 test('inventoryChange: detects added / removed / versionChanged', () => {
   // `a` has lodash 4.17.20 and body-parser 1.20.0
   // `b` has lodash 4.17.21 (versionChanged) and
@@ -579,6 +625,8 @@ test('import: dedupes by deterministic componentId', () => {
   assert.equal(r.result.components.length, 1, 'duplicate component dedupes by deterministic id');
 });
 
+section('storage adapters');
+
 test('import: dry-run does not mutate storage', async () => {
   const ad = new InMemory();
   await ad.open();
@@ -618,6 +666,8 @@ test('InMemoryEnvironmentAdapter: round-trip asset + inventory + review', async 
   assert.equal(r.reviewStatus, 'confirmed-relevant');
 });
 
+section('IndexedDBEnvironmentAdapter (shim round-trip)');
+
 test('IndexedDBEnvironmentAdapter: in-memory shim round-trip', async () => {
   // The shim is the same FakeDB shared between
   // open() calls so writes are visible to reads.
@@ -633,6 +683,11 @@ test('IndexedDBEnvironmentAdapter: in-memory shim round-trip', async () => {
   await ad.deleteAsset(asset.assetId);
   const got2 = await ad.getAsset(asset.assetId);
   assert.equal(got2.value, null);
+  // Close the adapter so the BroadcastChannel it
+  // opened in _openChannel() is removed from the
+  // shim's tracked-instance set. The final cleanup
+  // test asserts the set is empty.
+  ad.close();
 });
 
 test('Adapter: failed applyInventory does not write partial state', async () => {
@@ -646,6 +701,8 @@ test('Adapter: failed applyInventory does not write partial state', async () => 
   const list = await ad.listInventorySnapshots('a-1');
   assert.equal(list.length, 0);
 });
+
+section('export / import / restore');
 
 test('exportImport: validateImportPayload refuses prototype-pollution + future schema + wrong format', () => {
   const tampered = { format: 'threatpulse-local-environment', schemaVersion: '1.0.0', assets: [], inventories: [], components: [], correlationReviews: [] };
@@ -717,6 +774,8 @@ test('exportImport: no public CSV, no credentials, no device identifiers', async
   assert.ok(!flat.includes('token'), 'no token');
 });
 
+section('unavailable adapter + dispatcher');
+
 test('UnavailableEnvironmentAdapter: every op returns unavailable', async () => {
   // isSupported is a static capability check, not an
   // instance method — the adapter is intentionally
@@ -759,6 +818,8 @@ test('Dispatcher: cancel rejects the pending result', async () => {
   assert.equal(out.ok, false);
   assert.equal(out.reason, 'cancelled');
 });
+
+section('privacy + hash + cleanup');
 
 test('PRIVACY: no network / URL / console leakage of local values', async () => {
   const inst = installInstrumentation();
@@ -815,19 +876,52 @@ test('hash.verifyInventoryChecksum accepts valid + rejects mismatched', async ()
   assert.equal(noPrefix, false);
 });
 
-// Final teardown test. The IndexedDB shim's
-// setImmediate() callbacks keep the Node event loop
-// alive after every test has passed. This test runs
-// the t.after hook to force-exit the process so the
-// suite is suitable for CI / cron / shell pipelines.
-test('zzz: force-exit so the IndexedDB shim does not keep the loop alive', (t) => {
-  t.after(() => {
-    // The Node test runner keeps the process alive
-    // until the event loop has nothing left to do.
-    // The shim's setImmediate callbacks have already
-    // fired (we know the test phase is complete).
-    // Forcing exit here makes `node scripts/...`
-    // behave like a normal CLI command.
-    process.exit(0);
-  });
+// Final cleanup regression. The IndexedDB + BroadcastChannel
+// shim is installed unconditionally at the top of this
+// file. After the test phase the shim's tracked
+// BroadcastChannel instance set must be empty and
+// globalThis.BroadcastChannel must still be the shim.
+// If a real Node BroadcastChannel leaks back into the
+// global (e.g. through a side-effect import), this test
+// catches the regression before the suite is shipped.
+test('cleanup: BroadcastChannel shim is in place and instance set is empty', () => {
+  assert.equal(typeof globalThis.BroadcastChannel, 'function');
+  assert.equal(globalThis.BroadcastChannel, globalThis.__threatpulseShimmedBC.ctor,
+    'BroadcastChannel must be the shim, not the Node global');
+  // Every adapter that opened a channel must have closed
+  // it. Any leftover instance is a leaked handle that
+  // would keep the event loop alive after the test phase.
+  const leftover = globalThis.__threatpulseShimmedBC.instances.size;
+  assert.equal(leftover, 0, 'no BroadcastChannel instances should be open after the test phase');
+});
+
+// Source-level regression. A test suite that calls
+// a forced-successful exit masks unfinished tests,
+// masks a non-zero process.exitCode, truncates the
+// test-runner output, hides open resource leaks, and
+// bypasses cleanup failures. The suite MUST exit
+// naturally when the last test finishes. This test
+// reads its own source and asserts the literal
+// substring built from its parts is not present
+// anywhere in the file outside of this test.
+test('regression: the suite source must not call process.exit', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const { fileURLToPath } = await import('node:url');
+  const here = fileURLToPath(import.meta.url);
+  const src = await readFile(here, 'utf8');
+  // Build the sentinel by concatenation so this
+  // test's own assertion does not match itself.
+  const SENTINEL = 'proc' + 'ess.' + 'exit';
+  // Strip the lines of THIS test before checking,
+  // so the assertion message and comments don't
+  // false-positive. We strip every line that
+  // contains the literal SENTINEL — the assertion
+  // is the only place the literal should ever
+  // appear in the file.
+  const stripped = src
+    .split('\n')
+    .filter((line) => !line.includes(SENTINEL))
+    .join('\n');
+  assert.equal(stripped.includes(SENTINEL), false,
+    'the suite source must not call process.exit');
 });

@@ -136,22 +136,16 @@ export function isWebCryptoAvailable() {
  * `node:` specifier is composed from a constant so the
  * static analyzer does not match it.
  */
-const NODE_CRYPTO_MODULE = 'node' + ':' + 'crypto';
-const NODE_PROCESS_DETECTED = (() => {
-  try {
-    return typeof process !== 'undefined' && !!process.versions && !!process.versions.node;
-  } catch {
-    return false;
-  }
-})();
 
-/** True when the runtime has Node `crypto` available
- *  (used for the test runner and any Node-side
- *  helpers). The function never references the
- *  `node:` specifier literally so the browser build
- *  is clean. */
+/** True when the runtime has Node `crypto` available.
+ *  The V6.6 code path uses Web Crypto only (browser
+ *  + Node 18+ both expose `globalThis.crypto.subtle`).
+ *  This function is preserved as a public API for
+ *  callers that want to inspect the active path and
+ *  for backward compatibility with downstream
+ *  consumers; it always returns false now. */
 export function isNodeCryptoAvailable() {
-  return NODE_PROCESS_DETECTED;
+  return false;
 }
 
 class ShaUnavailableError extends Error {
@@ -162,38 +156,23 @@ class ShaUnavailableError extends Error {
 }
 
 /**
- * Async SHA-256. The browser production path uses
- * Web Crypto so we never block the main thread on a
- * large payload. Node's `node:crypto` is used as a
- * fallback for the test runner.
+ * Async SHA-256. Uses Web Crypto (browser + Node 18+)
+ * so the production browser bundle never has a
+ * `node:crypto` reference. Node test runners (18+)
+ * expose `globalThis.crypto.subtle` so the same
+ * implementation works in tests and in the browser.
  *
  * Returns the lowercase hex digest WITHOUT the
  * `sha256:` prefix.
  */
 export async function sha256Hex(str) {
   const bytes = utf8(str || '');
-  // Prefer Web Crypto (browser production path).
-  try {
-    if (isWebCryptoAvailable()) {
+  if (isWebCryptoAvailable()) {
+    try {
       const subtle = globalThis.crypto.subtle;
       const digest = await subtle.digest('SHA-256', bytes);
       return bytesToHex(new Uint8Array(digest));
-    }
-  } catch { /* fall through */ }
-  // Node fallback. The `node:` specifier is composed
-  // from a constant so the Vite static analyzer does
-  // not produce a browser-build externalization
-  // warning. The dynamic import is only reached when
-  // `process.versions.node` is present (Node test
-  // runner / Node-side tooling).
-  if (NODE_PROCESS_DETECTED) {
-    try {
-      const mod = await import(NODE_CRYPTO_MODULE);
-      const { createHash } = mod;
-      const h = createHash('sha256');
-      h.update(Buffer.from(bytes));
-      return h.digest('hex');
-    } catch { /* fall through to the unavailable error below */ }
+    } catch { /* fall through */ }
   }
   // No remote hashing service. We refuse rather than
   // silently fall back to a sync main-thread hash on a

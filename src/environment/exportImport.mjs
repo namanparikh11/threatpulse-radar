@@ -230,21 +230,16 @@ function canonicalizeExport(v, seen = new WeakSet()) {
 }
 
 async function computeSha256(text) {
-  // Web Crypto path first
+  // Web Crypto (browser + Node 18+). The V6.6
+  // production code path has no Node `crypto`
+  // fallback, so the browser bundle has no
+  // `node:crypto` reference and the Vite build graph
+  // contains no `sha256Node` chunk.
   if (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.subtle && typeof globalThis.crypto.subtle.digest === 'function') {
     try {
       const bytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(text) : utf8Bytes(text);
       const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
       return bytesToHex(new Uint8Array(digest));
-    } catch { /* fall through */ }
-  }
-  // Node fallback (test runner only)
-  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
-    try {
-      const mod = await import('node' + ':' + 'crypto');
-      const h = mod.createHash('sha256');
-      h.update(text, 'utf8');
-      return h.digest('hex');
     } catch { /* fall through */ }
   }
   throw new Error('sha256: unavailable in this runtime');

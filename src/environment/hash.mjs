@@ -2,40 +2,28 @@
  * V6.6 — Inventory checksum helpers.
  *
  * The inventory checksum is a SHA-256 over the
- * canonical JSON of the parsed component list. The
- * browser production path uses Web Crypto; the Node
- * test runner uses the Node `crypto` module via the
- * same dispatcher pattern as the V6.5 reports.
+ * canonical JSON of the parsed component list.
  *
- * The dispatcher composes the Node `node:` specifier
- * at runtime so the Vite browser build never
- * produces a `node:crypto` externalization warning.
+ * The implementation uses Web Crypto
+ * (`globalThis.crypto.subtle.digest`) which is
+ * available in the production browser AND in
+ * Node 18+ (the test runner runtime). The V6.6
+ * code path deliberately does NOT include a Node
+ * `crypto` fallback, so the production browser
+ * bundle has no `node:crypto` reference. The
+ * Vite build graph contains no `sha256Node`
+ * chunk and emits no `node:crypto` externalization
+ * warning.
  *
  * The checksum is exposed as `sha256:<64 hex>`. The
  * short form (12 hex chars) is what the UI shows in
  * the inventory header.
+ *
+ * Failure model: when Web Crypto is unavailable the
+ * helpers throw a sanitized "sha256: unavailable in
+ * this runtime" error. No remote hashing service is
+ * ever used.
  */
-
-const NODE_CRYPTO_MODULE = 'node' + ':' + 'crypto';
-const NODE_PROCESS_DETECTED = (() => {
-  try {
-    return typeof process !== 'undefined' && !!process.versions && !!process.versions.node;
-  } catch { return false; }
-})();
-
-let nodeCryptoPromise = null;
-async function loadNodeCrypto() {
-  if (nodeCryptoPromise) return nodeCryptoPromise;
-  nodeCryptoPromise = (async () => {
-    try {
-      const mod = await import(NODE_CRYPTO_MODULE);
-      return mod;
-    } catch {
-      return null;
-    }
-  })();
-  return nodeCryptoPromise;
-}
 
 async function webCryptoDigestHex(bytes) {
   if (typeof globalThis === 'undefined') return null;
@@ -73,19 +61,15 @@ function utf8Bytes(s) {
 }
 
 /** Compute a SHA-256 over a string. Returns the
- *  lowercase hex digest without a `sha256:` prefix. */
+ *  lowercase hex digest without a `sha256:` prefix.
+ *  Uses Web Crypto (browser + Node 18+); the V6.6
+ *  build has no Node `crypto` fallback so the
+ *  production browser bundle has no `node:crypto`
+ *  reference. */
 export async function sha256Hex(str) {
   const bytes = utf8Bytes(str || '');
   const web = await webCryptoDigestHex(bytes);
   if (web) return web;
-  if (NODE_PROCESS_DETECTED) {
-    const mod = await loadNodeCrypto();
-    if (mod && mod.createHash) {
-      const h = mod.createHash('sha256');
-      h.update(Buffer.from(bytes));
-      return h.digest('hex');
-    }
-  }
   throw new Error('sha256: unavailable in this runtime');
 }
 
