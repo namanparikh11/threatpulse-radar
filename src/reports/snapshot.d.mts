@@ -45,5 +45,5 @@ export function buildReportSnapshot(args: {
   selection: ReportSelection;
   flushPendingWrites?: () => Promise<void>;
   hasPendingWrites?: boolean;
-  options?: { applicationVersion?: string; generatedAt?: string };
+  options?: { applicationVersion?: string; generatedAt?: string; localEnvironmentSummary?: any; localRemediationSummary?: any };
 }): Promise<ReportSnapshot>;

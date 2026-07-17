@@ -30,6 +30,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { AlertTriangle, FileText, ShieldAlert } from 'lucide-react';
 import { useWorkspace } from '../../state/WorkspaceContext';
+import { useRemediation } from '../../state/RemediationContext';
 import { REPORT_LIMITS, REPORT_TYPES, REDACTION_MODES, normaliseCveId } from '../../reports/schema.mjs';
 import { buildReportSnapshot } from '../../reports/snapshot.mjs';
 import { buildReport } from '../../reports/templates.mjs';
@@ -84,6 +85,7 @@ export default function ReportBuilder({
   onOpenVerify,
 }: ReportBuilderProps) {
   const workspace = useWorkspace();
+  const remediation = useRemediation();
 
   const [reportType, setReportType] = useState(initialReportType);
   const [title, setTitle] = useState(initialTitle);
@@ -92,11 +94,47 @@ export default function ReportBuilder({
   const [includeLocalTags, setIncludeLocalTags] = useState(true);
   const [includeResolved, setIncludeResolved] = useState(false);
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [includeRemediationSummary, setIncludeRemediationSummary] = useState(false);
   const [redactionMode, setRedactionMode] = useState('exclude-private-notes');
   const [exportFormat, setExportFormat] = useState<'markdown' | 'html' | 'print' | 'json'>('markdown');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<any | null>(null);
+
+  // V6.7: counts-only local remediation summary. Never
+  // contains owner labels / plan / task / evidence / fingerprint /
+  // blocker content. Opt-in only.
+  const remediationSummary = useMemo(() => {
+    if (!includeRemediationSummary) return null;
+    const counts = remediation.countByStatus();
+    const plans = remediation.state.plans || [];
+    const now = Date.now();
+    const overdue = plans.filter((p: any) => {
+      if (p.archived) return false;
+      if (p.status === 'completed' || p.status === 'cancelled' || p.status === 'accepted-risk') return false;
+      if (typeof p.dueAt !== 'string' || p.dueAt.length === 0) return false;
+      return Date.parse(p.dueAt) < now;
+    }).length;
+    const validationPending = plans.filter((p: any) => !p.archived && (p.status === 'validation-pending' || p.validationStatus === 'pending')).length;
+    const completedLocal = (counts.completed || 0);
+    const acceptedRisk = (counts['accepted-risk'] || 0);
+    const active = plans.filter((p: any) => !p.archived && p.status !== 'completed' && p.status !== 'cancelled' && p.status !== 'accepted-risk').length;
+    const draft = (counts.draft || 0);
+    const blocked = (counts.blocked || 0);
+    const archived = plans.filter((p: any) => p.archived).length;
+    const brokenLedger = Object.values(remediation.state.ledgerVerification.perPlan || {}).filter((v: any) => v && !v.ok).length;
+    return {
+      activePlanCount: active,
+      draftPlanCount: draft,
+      blockedPlanCount: blocked,
+      overduePlanCount: overdue,
+      validationPendingCount: validationPending,
+      completedLocalCount: completedLocal,
+      acceptedRiskCount: acceptedRisk,
+      archivedPlanCount: archived,
+      brokenLedgerCount: brokenLedger,
+    };
+  }, [includeRemediationSummary, remediation.state.plans, remediation.state.ledgerVerification.perPlan, remediation]);
 
   // The CVE list is bounded to MAX_CVES.
   const cveIdList = useMemo(() => cveIds.slice(0, REPORT_LIMITS.MAX_CVES), [cveIds]);
@@ -139,14 +177,17 @@ export default function ReportBuilder({
         },
         flushPendingWrites: workspace.flushPendingWrites,
         hasPendingWrites: workspace.hasPendingWrites,
-        options: { applicationVersion: 'v6.5' },
+        options: {
+          applicationVersion: 'v6.7',
+          localRemediationSummary: remediationSummary,
+        },
       });
       const built = buildReport({
         reportId: '',
         reportType,
         title: title || 'Untitled report',
         generatedAt: new Date().toISOString(),
-        applicationVersion: 'v6.5',
+        applicationVersion: 'v6.7',
         snapshot,
         mode: redactionMode,
         includePrivateNotes: includePrivateNotes && redactionMode !== 'exclude-private-notes' && redactionMode !== 'exclude-all-user-text' && redactionMode !== 'identifiers-only',
@@ -162,7 +203,7 @@ export default function ReportBuilder({
     } finally {
       setBusy(false);
     }
-  }, [cveIdList, workspace, includePrivateNotes, includeLocalTags, includeResolved, includeArchived, redactionMode, reportType, title]);
+  }, [cveIdList, workspace, includePrivateNotes, includeLocalTags, includeResolved, includeArchived, redactionMode, reportType, title, remediationSummary]);
 
   const handleExport = useCallback(() => {
     if (!report || !onExport) return;
@@ -337,6 +378,16 @@ export default function ReportBuilder({
               className="focus-ring h-3.5 w-3.5"
             />
             <span>Include archived entries</span>
+          </label>
+          <label className="inline-flex items-center gap-1" title="Adds a counts-only local remediation summary. Never includes owner labels, plan content, task content, evidence content, file fingerprints, blocker reasons, validation notes, or actor labels.">
+            <input
+              type="checkbox"
+              checked={includeRemediationSummary}
+              onChange={(e) => setIncludeRemediationSummary(e.target.checked)}
+              className="focus-ring h-3.5 w-3.5"
+              data-testid="report-builder-include-remediation-summary"
+            />
+            <span>Include local remediation summary (counts only, opt-in)</span>
           </label>
         </div>
         {includePrivateNotes && (

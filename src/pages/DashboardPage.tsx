@@ -519,18 +519,28 @@ export default function DashboardPage() {
 
             <RemediationPanel
               onExportPlan={async (planId: string) => {
-                // V6.7: per-plan export is wired in commit 7
-                // (threatpulse-local-remediation v1.0.0 bundle
-                // format with SHA-256 integrity). For now we
-                // call the context's exportPlan and surface a
-                // warning if the bundle can't be built. The
-                // actual downloadFile / bundle envelope /
-                // canonicalization lives in the exportImport
-                // module added in commit 7.
-                const r = await remediation.exportPlan(planId);
-                if (!r.ok) {
+                try {
+                  const r = await remediation.exportPlan(planId);
+                  if (!r.ok) {
+                    // eslint-disable-next-line no-console
+                    console.warn('[threatpulse] remediation export failed:', r.reason);
+                    return;
+                  }
+                  const { buildBundle } = await import('../remediation/exportImport.mjs');
+                  const bundle = await buildBundle(
+                    r.bundle.plan,
+                    r.bundle.tasks,
+                    r.bundle.evidence,
+                    r.bundle.events,
+                    { applicationVersion: '1.0.0' },
+                  );
+                  const body = JSON.stringify(bundle, null, 2);
+                  const shortId = String(bundle.planId || bundle.exportedAt || Date.now()).slice(-8);
+                  const filename = `threatpulse-remediation-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                  downloadFile(filename, body, 'application/json;charset=utf-8');
+                } catch (err) {
                   // eslint-disable-next-line no-console
-                  console.warn('[threatpulse] remediation export failed:', r.reason);
+                  console.warn('[threatpulse] remediation export failed:', err instanceof Error ? err.message : 'unknown');
                 }
               }}
             />

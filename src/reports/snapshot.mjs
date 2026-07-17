@@ -149,6 +149,43 @@ function computeLocalEnvironmentSummary(input) {
   });
 }
 
+/**
+ * V6.7: narrow optional report boundary for local
+ * remediation. When the caller supplies a
+ * `localRemediationSummary` the snapshot carries a
+ * small object that is excluded by default. The
+ * summary never contains owner labels, plan
+ * descriptions, task titles, evidence descriptions,
+ * file fingerprints, blocker reasons, validation
+ * notes, or actor labels — only counts and the
+ * count of plans with a broken ledger chain.
+ */
+function computeLocalRemediationSummary(input) {
+  if (!input || typeof input !== 'object') return null;
+  const intCount = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.max(0, Math.floor(v)) : 0;
+  const activePlanCount = intCount(input.activePlanCount);
+  const draftPlanCount = intCount(input.draftPlanCount);
+  const blockedPlanCount = intCount(input.blockedPlanCount);
+  const overduePlanCount = intCount(input.overduePlanCount);
+  const validationPendingCount = intCount(input.validationPendingCount);
+  const completedLocalCount = intCount(input.completedLocalCount);
+  const acceptedRiskCount = intCount(input.acceptedRiskCount);
+  const archivedPlanCount = intCount(input.archivedPlanCount);
+  const brokenLedgerCount = intCount(input.brokenLedgerCount);
+  return Object.freeze({
+    schemaVersion: '1.0.0',
+    activePlanCount,
+    draftPlanCount,
+    blockedPlanCount,
+    overduePlanCount,
+    validationPendingCount,
+    completedLocalCount,
+    acceptedRiskCount,
+    archivedPlanCount,
+    brokenLedgerCount,
+  });
+}
+
 /** Capture the local workspace entries the report
  *  cares about. The selection is applied here
  *  (archived / resolved / notes / tags / status /
@@ -265,6 +302,11 @@ export async function buildReportSnapshot({
   // names, component paths, owner labels, or local
   // review notes — only counts.
   const localEnvironmentSummary = computeLocalEnvironmentSummary(options?.localEnvironmentSummary);
+  // V6.7: narrow optional report boundary for local
+  // remediation. Same shape as `localEnvironmentSummary`:
+  // counts only, no owner labels / plan / task / evidence
+  // / fingerprint / blocker content. Excluded by default.
+  const localRemediationSummary = computeLocalRemediationSummary(options?.localRemediationSummary);
   return Object.freeze({
     capturedAt: options?.generatedAt || new Date().toISOString(),
     applicationVersion: options?.applicationVersion || 'unknown',
@@ -272,6 +314,7 @@ export async function buildReportSnapshot({
     publicRecords: Object.freeze(publicRecords),
     localEntries: Object.freeze(localEntries),
     localEnvironmentSummary,
+    localRemediationSummary,
     cveIds: Object.freeze(cveIds),
     selection: Object.freeze({
       cveIds: Object.freeze(cveIds),
