@@ -32,6 +32,7 @@ const EnvironmentPanel = lazy(() => import('../components/environment/Environmen
 const RemediationPanel = lazy(() => import('../components/remediation/RemediationPanel').then((m) => ({ default: m.RemediationPanel })));
 import { LocalDataCentre } from '../components/LocalDataCentre';
 import { FirstRunGuide } from '../components/FirstRunGuide';
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useRemediation } from '../state/RemediationContext';
 import { exportReport } from '../reports/exporters/index.mjs';
 import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
@@ -485,6 +486,10 @@ export default function DashboardPage() {
               onClearSelection={() => setSelectedCveIds([])}
             />
 
+            <ErrorBoundary
+              title="Local workspace"
+              guidance="Local workspace entries, notes, and tags could not be rendered. The public dashboard continues to function; try again or export the workspace first."
+            >
             <WorkspacePanel
               vulns={all}
               publicIntelligenceVersion={state.meta.publicIntelligenceVersion ?? null}
@@ -502,6 +507,7 @@ export default function DashboardPage() {
                 setActiveReportDialog(true);
               }}
             />
+            </ErrorBoundary>
 
             <StatsCards stats={charts.stats} />
 
@@ -540,10 +546,19 @@ export default function DashboardPage() {
             ) : null}
 
             <Suspense fallback={<PanelFallback label="environment" />}>
-              <EnvironmentPanel />
+              <ErrorBoundary
+                title="My Environment"
+                guidance="Local asset, inventory, correlation, and review data could not be rendered. The public dashboard continues to function; try again or export the environment first."
+              >
+                <EnvironmentPanel />
+              </ErrorBoundary>
             </Suspense>
 
             <Suspense fallback={<PanelFallback label="remediation" />}>
+              <ErrorBoundary
+                title="Local remediation"
+                guidance="Local plan, task, evidence, and ledger data could not be rendered. The public dashboard continues to function; try again or export the remediation data first."
+              >
               <RemediationPanel
                 onExportPlan={async (planId: string) => {
                 try {
@@ -571,6 +586,8 @@ export default function DashboardPage() {
                 }
               }}
             />
+              </ErrorBoundary>
+            </Suspense>
 
             <DefenderViewsPanel
               rows={sorted}
@@ -634,6 +651,10 @@ export default function DashboardPage() {
               </p>
             )}
 
+            <ErrorBoundary
+              title="Local data centre"
+              guidance="The local data control centre could not be rendered. Each local dataset can still be cleared or exported from the public dashboard's other surfaces."
+            >
             <LocalDataCentre
               onExportWorkspace={async () => {
                 const r = await workspace.exportWorkspace();
@@ -687,7 +708,7 @@ export default function DashboardPage() {
                 return await clearHistory();
               }}
             />
-            </Suspense>
+            </ErrorBoundary>
 
             <Footer />
           </>
