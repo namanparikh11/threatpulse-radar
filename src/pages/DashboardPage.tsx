@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CircleAlert, HardDrive, Loader2, RefreshCw, Sparkles, X } from 'lucide-react';
 import Header from '../components/Header';
 import StatsCards from '../components/StatsCards';
@@ -18,11 +18,18 @@ import ConflictBanner from '../components/workspace/ConflictBanner';
 import WorkspacePanel from '../components/workspace/WorkspacePanel';
 import BulkActionBar from '../components/workspace/BulkActionBar';
 import WorkspaceDialogs, { type DialogKind } from '../components/workspace/WorkspaceDialogs';
-import ReportBuilder from '../components/reports/ReportBuilder';
-import ReportHistoryDialog from '../components/reports/ReportHistoryDialog';
-import ReportVerifyDialog from '../components/reports/ReportVerifyDialog';
-import EnvironmentPanel from '../components/environment/EnvironmentPanel';
-import { RemediationPanel } from '../components/remediation/RemediationPanel';
+// V6.8: lazy-load the heavy report and local feature
+// panels so the initial dashboard render does not
+// pay the cost of the report builder, the report
+// history, the report verify/compare dialogs, the
+// environment / SBOM import dialog, or the
+// remediation UI. Each panel renders only when the
+// operator opens it for the first time.
+const ReportBuilder = lazy(() => import('../components/reports/ReportBuilder'));
+const ReportHistoryDialog = lazy(() => import('../components/reports/ReportHistoryDialog'));
+const ReportVerifyDialog = lazy(() => import('../components/reports/ReportVerifyDialog'));
+const EnvironmentPanel = lazy(() => import('../components/environment/EnvironmentPanel'));
+const RemediationPanel = lazy(() => import('../components/remediation/RemediationPanel').then((m) => ({ default: m.RemediationPanel })));
 import { LocalDataCentre } from '../components/LocalDataCentre';
 import { FirstRunGuide } from '../components/FirstRunGuide';
 import { useRemediation } from '../state/RemediationContext';
@@ -54,6 +61,15 @@ import {
 } from '../utils/analytics';
 import { formatAbsolute, formatRelative } from '../utils/format';
 import { formatAgeShort } from '../services/datasetCache';
+
+function PanelFallback({ label }: { label: string }) {
+  return (
+    <div className="panel flex items-center gap-2 px-4 py-3 text-[12px] text-radar-muted" aria-busy="true" data-testid={`panel-fallback-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+      <Loader2 className="h-3.5 w-3.5 animate-spin text-radar-accent" />
+      <span>Loading {label}…</span>
+    </div>
+  );
+}
 
 type LoadState =
   | { kind: 'loading' }
@@ -523,10 +539,13 @@ export default function DashboardPage() {
               />
             ) : null}
 
-            <EnvironmentPanel />
+            <Suspense fallback={<PanelFallback label="environment" />}>
+              <EnvironmentPanel />
+            </Suspense>
 
-            <RemediationPanel
-              onExportPlan={async (planId: string) => {
+            <Suspense fallback={<PanelFallback label="remediation" />}>
+              <RemediationPanel
+                onExportPlan={async (planId: string) => {
                 try {
                   const r = await remediation.exportPlan(planId);
                   if (!r.ok) {
@@ -668,6 +687,7 @@ export default function DashboardPage() {
                 return await clearHistory();
               }}
             />
+            </Suspense>
 
             <Footer />
           </>
@@ -698,6 +718,7 @@ export default function DashboardPage() {
       />
 
       {activeReportDialog && reportBuilderSeed && (
+        <Suspense fallback={<PanelFallback label="report builder" />}>
         <ReportBuilder
           initialCveIds={reportBuilderSeed.cveIds}
           initialReportType={reportBuilderSeed.reportType}
@@ -735,14 +756,19 @@ export default function DashboardPage() {
           onOpenHistory={() => { setActiveReportDialog(false); setReportBuilderSeed(null); setActiveReportHistory(true); }}
           onOpenVerify={(m) => { setActiveReportDialog(false); setReportBuilderSeed(null); setActiveReportVerify(m); }}
         />
+        </Suspense>
       )}
 
       {activeReportHistory && (
-        <ReportHistoryDialog onClose={() => setActiveReportHistory(false)} />
+        <Suspense fallback={<PanelFallback label="report history" />}>
+          <ReportHistoryDialog onClose={() => setActiveReportHistory(false)} />
+        </Suspense>
       )}
 
       {activeReportVerify && (
-        <ReportVerifyDialog mode={activeReportVerify} onClose={() => setActiveReportVerify(null)} />
+        <Suspense fallback={<PanelFallback label="report verify" />}>
+          <ReportVerifyDialog mode={activeReportVerify} onClose={() => setActiveReportVerify(null)} />
+        </Suspense>
       )}
     </div>
   );
