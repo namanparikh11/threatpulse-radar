@@ -26,7 +26,7 @@
  *     explanation: <human-readable reason> }
  */
 
-import { parseSemver, semverInRange } from './semver.mjs';
+import { parseSemver, compareSemver, semverInRange } from './semver.mjs';
 
 const NPM_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\* xX=><]+$/;
 const COMPOSER_RANGE_RE = /^[0-9A-Za-z\.\-\^\~\|\*\ ,xX=><]+$/;
@@ -69,7 +69,17 @@ function evaluateNpmRangeExpression(version, expr) {
     const ref = parseSemver(rest);
     const v = parseSemver(version);
     if (!ref || !v) return { hit: false, kind: 'unsupported' };
-    const cmp = v.major - ref.major || v.minor - ref.minor || v.patch - ref.patch;
+    // Pre-release handling per semver: a pre-release
+    // version is "less than" the corresponding release.
+    // So `1.0.0-alpha` does NOT satisfy `>=1.0.0`. The
+    // version is older than the bound.
+    if (v.preRelease && !ref.preRelease && (op === '>=' || op === '>')) {
+      return { hit: false, kind: 'range' };
+    }
+    if (!v.preRelease && ref.preRelease && (op === '<=' || op === '<')) {
+      return { hit: false, kind: 'range' };
+    }
+    const cmp = compareSemver(v, ref);
     if (op === '>=' && cmp >= 0) return { hit: true, kind: 'range' };
     if (op === '<=' && cmp <= 0) return { hit: true, kind: 'range' };
     if (op === '>' && cmp > 0) return { hit: true, kind: 'range' };
@@ -303,7 +313,8 @@ export const EVALUATOR_TEST_VECTORS = Object.freeze([
   { ecosystem: 'npm', version: '0.9.0', range: '>=1.0.0', state: 'no-supported-match' },
   { ecosystem: 'npm', version: '1.0.0-alpha', range: '>=1.0.0', state: 'no-supported-match' },
   { ecosystem: 'crates', version: '0.1.5', range: '^0.1.0', state: 'affected-range-match' },
-  { ecosystem: 'packagist', version: '2.0.0', range: '^1.0', state: 'affected-range-match' },
+  { ecosystem: 'packagist', version: '1.5.0', range: '^1.0', state: 'affected-range-match' },
+  { ecosystem: 'packagist', version: '2.0.0', range: '^1.0', state: 'no-supported-match' },
   // Generic (unsupported ecosystem): exact only
   { ecosystem: 'pypi', version: '1.0.0', range: '1.0.0', state: 'exact-version-match' },
   { ecosystem: 'pypi', version: '1.0.0', range: '>=1.0.0', state: 'version-not-evaluable' },

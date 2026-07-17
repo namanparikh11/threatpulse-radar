@@ -9,7 +9,7 @@
  * work to a refresh.
  */
 
-import { ASSET_SCHEMA_VERSION, COMPONENT_SCHEMA_VERSION } from './schema.mjs';
+import { ASSET_SCHEMA_VERSION, COMPONENT_SCHEMA_VERSION, validateComponent } from './schema.mjs';
 
 const REASONS = Object.freeze({
   INVALID: 'invalid-entry',
@@ -80,18 +80,32 @@ export class InMemoryEnvironmentAdapter {
   async applyInventory({ inventory, components }) {
     if (!inventory || !Array.isArray(components)) return { ok: false, reason: REASONS.INVALID };
     if (inventory.schemaVersion !== COMPONENT_SCHEMA_VERSION) return { ok: false, reason: REASONS.INVALID };
+    // Validate every component BEFORE mutating any
+    // state. A failed validation must leave the
+    // previous inventory + components intact so the
+    // operator never loses data to a malformed
+    // import.
+    for (const c of components) {
+      const v = validateComponent(c);
+      if (!v.ok) return { ok: false, reason: v.reason };
+    }
     this._inventories.set(inventory.inventoryId, inventory);
     // Wipe previous components for this asset
     for (const [cid, c] of this._components) {
       if (c.assetId === inventory.assetId) this._components.delete(cid);
     }
     for (const c of components) this._components.set(c.componentId, c);
-    // Update asset's latestInventoryId
+    // Update asset's latestInventoryId. The stored
+    // asset may be frozen (an export-import roundtrip
+    // freezes every record), so we replace it with a
+    // shallow clone before mutating.
     const a = this._assets.get(inventory.assetId);
     if (a) {
-      a.latestInventoryId = inventory.inventoryId;
-      a.updatedAt = new Date().toISOString();
-      this._assets.set(a.assetId, a);
+      const next = Object.assign({}, a, {
+        latestInventoryId: inventory.inventoryId,
+        updatedAt: new Date().toISOString(),
+      });
+      this._assets.set(a.assetId, next);
     }
     this._notify({ type: 'inventory-applied', inventoryId: inventory.inventoryId, assetId: inventory.assetId });
     return { ok: true, inventoryId: inventory.inventoryId, componentCount: components.length };

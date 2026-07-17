@@ -95,7 +95,7 @@ export async function sha256Hex(str) {
  *  and no whitespace. */
 export async function computeInventoryChecksum(components) {
   const canonical = canonicalize(components);
-  return 'sha256:' + await sha256Hex(canonical);
+  return 'sha256:' + await sha256Hex(JSON.stringify(canonical));
 }
 
 /** Verify an inventory checksum. */

@@ -197,16 +197,21 @@ function evaluateOsvPackage(component, pkg) {
       }
     }
     if (ranges.length === 0) {
-      // Provider has ranges but none hit. Still a
-      // range-correlation attempt; surface it as
-      // 'identity-only-potential' so the operator
-      // can see we tried.
+      // Provider has ranges but none hit. The
+      // evaluator was able to compare the version
+      // against the provider's range text, so this
+      // is a 'no-supported-match' (the package is
+      // in the provider's package list, but the
+      // imported version did not fall inside the
+      // declared affected range). 'identity-only-
+      // potential' is reserved for cases where the
+      // version could not be evaluated at all.
       return {
-        state: 'identity-only-potential',
+        state: 'no-supported-match',
         provider: PROVIDER_OSV,
-        evidence: [{ provider: PROVIDER_OSV, kind: 'identity-only', identity: { ecosystem: pkg.ecosystem, name: pkg.name } }],
+        evidence: [{ provider: PROVIDER_OSV, kind: 'no-match', identity: { ecosystem: pkg.ecosystem, name: pkg.name } }],
         evaluatedRanges: [],
-        limitations: ['Provider declared ranges but none matched the imported version.'],
+        limitations: ['Provider declared affected ranges but the imported version did not fall inside any of them.'],
         matchedPackageIdentity: {
           ecosystem: pkg.ecosystem || null,
           namespace: extractNamespaceFromPackage(pkg),
@@ -441,6 +446,13 @@ function normalizeGhsaEcosystem(input) {
 }
 
 function buildCorrelation({ assetId, inventoryId, component, cveId, result, publicMeta, publicVulnVersion, publicProjectionSchemaVersion, generatedAt }) {
+  // When mergeBest has joined multiple provider results,
+  // `result.providers` carries the distinct names. When
+  // only a single provider produced a result, fall back
+  // to the single-entry `provider` string.
+  const providerSources = Array.isArray(result.providers) && result.providers.length > 0
+    ? result.providers.slice()
+    : [result.provider];
   return Object.freeze({
     correlationId: correlationIdFor(assetId, inventoryId, component.componentId, cveId),
     assetId,
@@ -448,7 +460,7 @@ function buildCorrelation({ assetId, inventoryId, component, cveId, result, publ
     componentId: component.componentId,
     cveId,
     state: result.state,
-    providerSources: Array.from(new Set([result.provider])),
+    providerSources: Object.freeze(providerSources),
     matchedPackageIdentity: result.matchedPackageIdentity,
     importedVersion: component.version || null,
     evaluatedRanges: result.evaluatedRanges,
@@ -537,10 +549,15 @@ function mergeBest(a, b) {
   if (!b) return a;
   const rank = (s) => s === 'exact-version-match' ? 4 : s === 'affected-range-match' ? 3 : s === 'identity-only-potential' ? 2 : s === 'version-not-evaluable' ? 1 : 0;
   if (rank(b.state) > rank(a.state)) return b;
-  // Merge evidence
+  // Merge evidence and keep provider names SEPARATE
+  // in the `providers` array (the legacy `provider`
+  // string is kept for the single-provider case so
+  // existing single-provider code paths continue to
+  // work).
   return {
     ...a,
-    provider: a.provider + '+' + b.provider,
+    provider: a.provider,
+    providers: Array.from(new Set([a.provider, b.provider])),
     evidence: a.evidence.concat(b.evidence),
     evaluatedRanges: a.evaluatedRanges.concat(b.evaluatedRanges),
     limitations: a.limitations.concat(b.limitations),

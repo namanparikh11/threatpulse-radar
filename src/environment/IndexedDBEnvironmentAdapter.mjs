@@ -265,13 +265,19 @@ export class IndexedDBEnvironmentAdapter {
       // Insert the new components.
       for (const c of components) cmpStore.put(c);
       // Update the asset's latestInventoryId + updatedAt.
+      // The stored asset may be frozen (an
+      // export-import roundtrip freezes every record),
+      // so we replace it with a shallow clone before
+      // mutating.
       const getReq = assetStore.get(inventory.assetId);
       getReq.onsuccess = () => {
         const a = getReq.result;
         if (a) {
-          a.latestInventoryId = inventory.inventoryId;
-          a.updatedAt = new Date().toISOString();
-          assetStore.put(a);
+          const next = Object.assign({}, a, {
+            latestInventoryId: inventory.inventoryId,
+            updatedAt: new Date().toISOString(),
+          });
+          assetStore.put(next);
         }
       };
     });

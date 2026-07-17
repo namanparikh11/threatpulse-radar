@@ -86,12 +86,13 @@ export function buildExportPayload({ assets, inventories, components, correlatio
     components: deepFreeze(components.slice()),
     correlationReviews: deepFreeze(correlationReviews.slice()),
   };
-  // Recompute inventory checksums on the way through
-  // so an imported environment is bit-for-bit stable.
-  body.inventories = body.inventories.map((inv) => {
-    const invComps = components.filter((c) => c.inventoryId === inv.inventoryId);
-    return Object.assign({}, inv, { checksum: '' }); // placeholder, filled by checksum step
-  });
+  // Inventory checksums are preserved as recorded on
+  // the local side. The integrity block (added by
+  // stampExportChecksum) covers the full export
+  // payload, including the inventory checksums, so
+  // any tampering with the recorded checksums is
+  // detected on import.
+  body.inventories = body.inventories.map((inv) => Object.assign({}, inv));
   return body;
 }
 
@@ -100,7 +101,7 @@ export function buildExportPayload({ assets, inventories, components, correlatio
 export async function stampExportChecksum(payload) {
   if (!payload || typeof payload !== 'object') throw new Error('export: invalid payload');
   const canonical = canonicalizeExport(payload);
-  const hex = await computeSha256(canonical);
+  const hex = await computeSha256(JSON.stringify(canonical));
   return Object.freeze({
     ...payload,
     integrity: Object.freeze({ canonicalizationVersion: '1.0.0', checksum: 'sha256:' + hex }),
@@ -160,7 +161,7 @@ export async function verifyImportChecksum(payload) {
   const expected = payload.integrity.checksum;
   const { integrity, ...rest } = payload;
   const canonical = canonicalizeExport(rest);
-  const hex = await computeSha256(canonical);
+  const hex = await computeSha256(JSON.stringify(canonical));
   const computed = 'sha256:' + hex;
   return { ok: computed === expected, computed, expected };
 }

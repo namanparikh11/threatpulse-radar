@@ -5,7 +5,7 @@
 > probability, SSVC decision context, and reviewed package-remediation
 > guidance across your stack in one focused command-center view.
 
-![status](https://img.shields.io/badge/status-v5.6.1-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v6.6-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -376,6 +376,87 @@ Privacy invariants (proved by `scripts/acceptance-v64-workspace.mjs`):
   field order, sha256 checksum).
 
 V6.4 documentation: [`docs/v6-4-local-workspace.md`](docs/v6-4-local-workspace.md).
+
+---
+
+## V6.5 — Local briefings and reports (additive)
+
+V6.5 adds fully-local, defensible report exports generated from
+public intelligence + V6.1 change intelligence + V6.4 local
+workspace entries. Five report types, five redaction modes,
+strict JSON schema with SHA-256 integrity, verification +
+comparison + history. All generation, preview, export, verify,
+compare, and history live inside the browser. Nothing is
+uploaded.
+
+V6.5 documentation: [`docs/v6-5-local-briefings-and-reports.md`](docs/v6-5-local-briefings-and-reports.md).
+
+---
+
+## V6.6 — Local asset, SBOM, and exposure mapping (additive)
+
+V6.6 adds a local-only environment relevance layer. The operator
+can register local assets, import supported SBOM / software-inventory
+files (CycloneDX 1.4 / 1.5 / 1.6 JSON, SPDX 2.3 JSON, ThreatPulse
+inventory JSON, bounded CSV), identify components, correlate with
+public OSV + GitHub Advisory package data, distinguish reliable
+affected-range matches from ambiguous identity-only matches,
+review / dismiss local correlations, filter the public
+vulnerability table by local relevance, and view potentially
+affected local assets from the CVE detail drawer.
+
+**All asset / SBOM / package / mapping / user-review data is
+local browser data. Nothing is uploaded.** The system NEVER
+claims a correlation proves exploitability, compromise, or
+practical exploitability.
+
+Six correlation states (none mean "this CVE was exploited
+against you"):
+
+- `affected-range-match` — range evaluator said the imported
+  version falls inside the declared affected range
+- `exact-version-match` — the imported version is in the
+  provider's `versions[]` list
+- `identity-only-potential` — identity matched but no version
+  / range was available to evaluate
+- `no-supported-match` — identity matched but the imported
+  version did NOT fall inside the declared range (NOT
+  evidence of safety)
+- `version-not-evaluable` — range syntax was unsupported
+- `public-data-unavailable` — public intelligence status
+  was not `available` when correlation ran
+
+Eight review statuses (`unreviewed`, `confirmed-relevant`,
+`dismissed`, `needs-validation`, `remediation-planned`,
+`remediation-in-progress`, `remediated` (local workflow
+statement only — NOT externally verified), `accepted-risk`).
+
+Three storage adapters (`IndexedDBEnvironmentAdapter` /
+`InMemoryEnvironmentAdapter` / `UnavailableEnvironmentAdapter`)
+with multi-tab BroadcastChannel sync and atomic inventory
+promotion. Worker dispatch (separate `parseInventory.worker`
++ `correlate.worker` chunks) with main-thread synchronous
+fallback for older browsers and the test runner.
+
+V6.5 reports gain an OPTIONAL additive `localEnvironmentSummary`
+field (counts only — no asset names, paths, owner labels, or
+review notes). Default V6.5 reports carry no environment data.
+
+Privacy invariants (proved by `scripts/acceptance-v66-local-environment.mjs`):
+
+- No network call carries asset / SBOM / note / tag / report
+  data
+- No asset / note / tag / private field enters a URL
+- No production console output contains private fields
+- No public CSV field is added (`CSV_COLUMNS` still 21)
+- No public API envelope is mutated
+- No public-intelligence fixture is mutated
+- Local-relevance filter state is never serialized to the URL
+- Raw SBOM payloads are never retained (only minimal documented
+  component fields)
+- Prototype-pollution keys are rejected by every validator
+
+V6.6 documentation: [`docs/v6-6-local-environment.md`](docs/v6-6-local-environment.md).
 
 ---
 

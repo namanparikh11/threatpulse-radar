@@ -7,6 +7,120 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## V6.6 — Local asset, SBOM, and exposure mapping
+
+V6.6 adds a local-only environment relevance layer to ThreatPulse
+Radar. The operator can register local assets, import supported
+SBOM / software-inventory files (CycloneDX 1.4 / 1.5 / 1.6 JSON,
+SPDX 2.3 JSON, ThreatPulse inventory JSON, bounded CSV), identify
+components, correlate with public OSV + GitHub Advisory package
+data, distinguish reliable affected-range matches from ambiguous
+identity-only matches, review / dismiss local correlations, filter
+the public vulnerability table by local relevance, and view
+potentially affected local assets from the CVE detail drawer.
+
+**All asset / SBOM / package / mapping / user-review data is local
+browser data. Nothing is uploaded. The system NEVER claims a
+correlation proves exploitability, compromise, or practical
+exploitability.**
+
+### What this release adds
+
+- **My Environment panel.** Count cards (Assets, Inventories,
+  Components, Correlations, Awaiting review), asset list,
+  correlation queue, import / export / clear controls. Mounted
+  between the change-intel panel and Defender Views.
+- **Local asset + inventory + correlation + review schemas.** All
+  fields length-bounded; non-finite numbers rejected;
+  prototype-pollution keys (`__proto__` / `prototype` /
+  `constructor`) rejected by every validator; future schema
+  versions rejected; deep-freeze on success. Six correlation
+  states + eight review statuses (documented in
+  `docs/v6-6-local-environment.md`).
+- **Importers.** CycloneDX 1.4 / 1.5 / 1.6, SPDX 2.3, ThreatPulse
+  inventory JSON, bounded CSV (formula-like values rejected).
+  Raw SBOM payloads are never retained; only the minimal
+  documented component fields are kept.
+- **Correlation engine.** Deterministic FNV-1a `correlationId`,
+  purl > ecosystem+namespace+name > name-only precedence,
+  ecosystem normalization (so `'crates.io'` / `'cargo'` /
+  `'crates'` all collapse to `'crates'` for both sides), npm
+  semver + crates + packagist evaluators with pre-release
+  handling, default exact-only for PyPI / Maven / Go / NuGet.
+  `mergeBest` joins OSV + GHSA results with separate
+  `providerSources` array.
+- **Drawer "Potential local relevance" section.** Per-state count
+  chips, matching local assets + components with current review
+  status, per-correlation Dismiss action.
+- **Table local-relevance filter.** Seven-position filter
+  (`any` / `potentially-relevant` / `affected-range` /
+  `exact-version` / `identity-only` / `version-not-evaluable` /
+  `no-local-data`). Held in `useState` — NEVER serialized to
+  URL, NEVER in CSV, NEVER in Defender Views / What Changed.
+- **Export / import / restore.** `threatpulse-local-environment`
+  v1.0.0 format, SHA-256 over canonical JSON, atomic merge /
+  replace with rollback on failure, prototype-pollution +
+  future-schema + wrong-format rejected, no credentials / device
+  ids in the payload. Public-safe filename
+  `threatpulse-environment-{shortId}-{YYYY-MM-DD}.json`.
+- **Narrow report integration boundary.** V6.5 reports gain an
+  OPTIONAL additive `localEnvironmentSummary` field
+  (counts only — no asset names, paths, owner labels, or review
+  notes). Default V6.5 reports carry no environment data.
+- **Worker dispatch.** `parseInventory.worker-*.js` and
+  `correlate.worker-*.js` emitted as separate Vite chunks.
+  Main-thread synchronous fallback for older browsers and the
+  Node test runner (identical progress / cancellation path).
+  Worker has no network access.
+- **Three storage adapters.** `IndexedDBEnvironmentAdapter`
+  (`persistent`, BroadcastChannel multi-tab sync,
+  `onversionchange` handler, atomic inventory promotion);
+  `InMemoryEnvironmentAdapter` (`session-only`, test runner);
+  `UnavailableEnvironmentAdapter` (no-op with prominent UI
+  warning).
+- **Acceptance suite.** 47 tests covering schema, normalization,
+  parsing, evaluators, correlation, inventory change, adapters,
+  export/import integrity, dispatcher, privacy instrumentation,
+  hash determinism.
+
+### Preserved invariants
+
+- 5 public Netlify function entries
+- 1 gateway function entry (`netlify/gateway/src/private-sync-gateway.mjs`,
+  byte-identical to `32a8a63`)
+- `netlify/gateway/` + `client/` byte-identical to `32a8a63`
+- `CSV_COLUMNS` = 21
+- No accounts, no cloud sync, no scanning, no proprietary score
+- Vite browser build: no `node:crypto` externalization warning
+
+### V6.5 changes surfaced in the changelog
+
+V6.5 (Local Briefings and Reports) was previously documented in
+`docs/v6-5-local-briefings-and-reports.md` and the README but
+did not have a top-level changelog entry. V6.5 added:
+
+- **Five report types** (`defender-daily-briefing`,
+  `local-triage-queue`, `selected-cve`, `change-briefing`,
+  `executive-summary`) + **five redaction modes** (`none`,
+  `exclude-private-notes`, `exclude-local-tags`,
+  `exclude-all-user-text`, `identifiers-only`).
+- **Coherent snapshot model** — public intelligence + selected
+  CVE records + flushed workspace writes captured before
+  generation; generation runs only from the frozen snapshot.
+- **SHA-256 integrity** over canonical report bytes
+  (`sha256:` + 64 hex). Browser uses `crypto.subtle.digest`;
+  test runner uses Node `crypto` via composed specifier.
+- **Verification + comparison** — `verifyJson` + `compareReports`
+  refuse corrupt / integrity-failed inputs. Comparison never
+  interprets absence as remediation.
+- **IndexedDB history** (capped at 100 entries) — summary only,
+  no full report body, no private notes, no tags.
+- **Export formats** — Markdown, standalone HTML (CSP meta with
+  `default-src 'none'`, no scripts, no remote resources),
+  print-optimized HTML, strict JSON. Filename convention
+  `threatpulse-report-{type}-{shortId}-{YYYY-MM-DD}.{ext}`.
+- **26-test acceptance suite** (`scripts/acceptance-v65-briefings.mjs`).
+
 ## V6.4 — Local defender workspace and triage
 
 V6.4 turns ThreatPulse Radar from a read-only public
