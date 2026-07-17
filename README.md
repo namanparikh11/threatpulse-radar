@@ -5,7 +5,7 @@
 > probability, SSVC decision context, and reviewed package-remediation
 > guidance across your stack in one focused command-center view.
 
-![status](https://img.shields.io/badge/status-v6.6-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v6.7-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -460,6 +460,50 @@ V6.6 documentation: [`docs/v6-6-local-environment.md`](docs/v6-6-local-environme
 
 ---
 
+## V6.7 — Local remediation plans, evidence, and activity ledger (additive)
+
+V6.7 adds a fully-local remediation workflow layer on top of V6.4
+workspace, V6.5 reports, and V6.6 environment. The operator can
+create a local plan for a CVE, correlation, asset, or component;
+decompose the plan into ordered tasks with local owner labels and
+due dates; attach nine kinds of evidence; fingerprint a local
+evidence file with a Web Worker that never uploads the bytes; walk
+the plan through the documented nine-state lifecycle machine;
+record a local validation result; reopen a completed or
+accepted-risk plan without silently mutating its history; export
+and re-import integrity-checked plan bundles; and inspect a
+per-plan append-only hash-chained activity ledger.
+
+All plan, task, evidence, owner, due-date, validation, and
+ledger data is local browser data. Nothing is uploaded. The
+system never claims a recorded completion is an external
+verification, that a matching fingerprint proves authorship or
+authenticity, or that the local ledger has any legal or
+identity-significance.
+
+V6.5 reports gain an OPTIONAL additive `localRemediationSummary`
+field (counts only — no owner labels, plan / task / evidence
+content, fingerprints, blocker reasons, validation notes, or
+actor labels). Default V6.5 reports carry no remediation data.
+
+Privacy invariants (proved by `scripts/acceptance-v67-local-remediation.mjs`):
+- No fetch, XHR, `sendBeacon`, `history.pushState` /
+  `replaceState`, or production console output of plan / task /
+  evidence / owner / fingerprint / validation / actor content.
+- File bytes are never stored; only the SHA-256, file name,
+  size, MIME, and optional `lastModified` are recorded.
+- No `node:crypto` in any browser-reachable module.
+- No `sha256Node` or `fingerprintNode` chunk in the Vite build.
+- The `threatpulse-local-remediation` bundle v1.0.0 has a
+  SHA-256 integrity checksum, prototype-pollution rejection,
+  atomic ledger conflict detection, and a 25 MiB size cap.
+- Hash chain detects modified, missing, reordered, and inserted
+  events; does **not** prove authorship, identity, timestamp
+  authority, or legal authenticity.
+
+V6.7 documentation: [`docs/v6-7-local-remediation-evidence.md`](docs/v6-7-local-remediation-evidence.md).
+
+---
 ## Reliability & honesty
 
 The codebase's stance: **failures are visible, never hidden.**

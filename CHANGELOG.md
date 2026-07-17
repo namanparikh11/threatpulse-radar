@@ -7,6 +7,115 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## V6.7 — Local remediation plans, evidence, and activity ledger
+
+V6.7 adds a local-only remediation workflow layer to ThreatPulse
+Radar. The operator can create a remediation plan for a CVE,
+correlation, asset, or component; decompose the plan into ordered
+tasks; record local owner labels and due dates; attach nine kinds
+of evidence; fingerprint a local evidence file with a Web Worker
+that never uploads the bytes; walk the plan through a documented
+nine-state lifecycle machine; record a local validation result;
+reopen a completed or accepted-risk plan; export and re-import
+integrity-checked plan bundles; and inspect a per-plan
+append-only hash-chained activity ledger.
+
+**All plan, task, evidence, owner-label, due-date, validation,
+and ledger data is local browser data. Nothing is uploaded. The
+system NEVER claims a locally recorded completion is an external
+verification, that a matching fingerprint proves authorship or
+authenticity, or that the local ledger has any legal or
+identity-significance.**
+
+See [`docs/v6-7-local-remediation-evidence.md`](./docs/v6-7-local-remediation-evidence.md)
+for the full design notes.
+
+### What this release adds
+
+- **Remediation schemas (1.0.0).** Plan, task, evidence, and
+  ledger event records with strict validation, deterministic
+  migrations, field limits, and CVE / tag normalization.
+  Nine plan statuses, ten remediation types, five priorities,
+  six validation statuses, five task statuses, nine evidence
+  types, four evidence validation outcomes, fifteen ledger event
+  types.
+- **Lifecycle state machine.** `isSupportedTransition`,
+  `checkTransition`, `isTerminalStatus`, `isActiveStatus`,
+  `allowedTransitionsFrom`, `actionableTransitionsFrom`. The
+  `validation-pending → failed-locally` shortcut is intentionally
+  not allowed; failure re-enters `in-progress` so the operator
+  can update tasks / evidence.
+- **Append-only activity ledger.** Web Crypto SHA-256
+  `sha256:` + lowercase hex over the canonical JSON of the event
+  with `eventHash` stripped. `previousEventHash` is `null` for
+  the genesis event and equals the prior event's `eventHash`
+  otherwise. Sequences are contiguous. `verifyChain` detects
+  modified, missing, reordered, and inserted events.
+- **Local file fingerprinting.** Web Worker
+  (`fingerprint.worker.mjs`) with chunked 1 MiB progress,
+  cancellation, transferable buffer, 25 MiB cap, and Web Crypto
+  SHA-256 only. The dispatcher exposes `startFingerprintJob` and
+  `startVerifyJob` with a sync fallback when `Worker` is not
+  available.
+- **IndexedDB remediation adapter.** New database
+  `threatpulse-remediation` v1 with five stores (plans, tasks,
+  evidence, ledger, meta), `onversionchange` handler,
+  BroadcastChannel `threatpulse:remediation:events` for multi-tab
+  sync, and atomic plan + ledger commits via
+  `transaction.createPlanWithGenesisEvent` /
+  `transaction.appendFollowupEvent`.
+- **Remediation context** with `flushPendingWrites` and
+  `hasPendingWrites` for the report pipeline.
+- **Dashboard remediation panel** with count cards (Active,
+  Draft, Planned, In progress, Blocked, Overdue, Validation
+  pending, Completed, Accepted risk, Archived, Broken-ledger),
+  per-plan Export, and a "Clear all remediation data" action.
+- **Plan builder, task dialog, evidence dialog, fingerprint
+  dialog, plan detail, plan list.** All keyboard-accessible,
+  focus-trapping, mobile-safe, reduced-motion aware.
+- **Drawer, environment, correlation, and table integration.**
+  Local remediation status pill in the vulnerability table.
+  Per-CVE "Create plan" and "Open plan" actions in the
+  detail drawer. "Create plan" link in the correlation queue
+  with auto-populated CVE, asset, component, and correlation
+  ids.
+- **Export / import format `threatpulse-local-remediation`
+  v1.0.0.** SHA-256 integrity-checked JSON bundle. Dry-run,
+  merge, and replace modes. Atomic ledger conflict detection
+  (same `eventId` with a different `eventHash` is a hard
+  failure). Maximum bundle size 25 MiB.
+- **Narrow additive report boundary.** Optional
+  `localRemediationSummary` field on V6.5 reports; **excluded by
+  default**; counts only; never includes owner labels, plan /
+  task / evidence content, fingerprints, blocker reasons,
+  validation notes, or actor labels. The public CSV (21
+  columns) is unchanged.
+- **Privacy instrumentation.** Sentinel-based test coverage for
+  no fetch, no XHR, no `sendBeacon`, no `history.pushState` /
+  `replaceState`, and no console output of plan / task /
+  evidence / owner / fingerprint / validation / actor content
+  during the workflow.
+- **V6.6 lesson preserved.** No `process.exit(0)` in the
+  acceptance suite. Unconditional `BroadcastChannel` no-op
+  shim before any module import. Web Crypto only — no
+  `node:crypto` in any browser-reachable module. No
+  `sha256Node` chunk in the Vite build.
+
+### What this release does **not** do
+
+- Add accounts, login, cloud sync, or server-side profiles.
+- Touch the public vulnerability corpus.
+- Call package or provider APIs from the browser.
+- Introduce a proprietary remediation, exposure, or risk score.
+- Claim that a recorded completion is an external verification.
+- Claim that a fingerprint match proves authorship or legal
+  authenticity.
+- Use `node:crypto` in any browser-reachable module.
+- Modify the V6.5 report contract; the public CSV columns
+  remain 21.
+- Modify `netlify/gateway/`, `client/`, or the documented
+  invariants.
+
 ## V6.6 — Local asset, SBOM, and exposure mapping
 
 V6.6 adds a local-only environment relevance layer to ThreatPulse
