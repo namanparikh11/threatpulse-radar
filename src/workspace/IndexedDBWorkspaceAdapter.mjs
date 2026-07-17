@@ -101,7 +101,20 @@ export class IndexedDBWorkspaceAdapter {
           db.createObjectStore(this._metaStoreName, { keyPath: 'key' });
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        // V6.8: mirror the V6.6 environment and V6.7
+        // remediation adapters' versionchange handler so
+        // a multi-tab upgrade cleanly closes the local
+        // connection instead of leaving the prior tab
+        // with a stale handle.
+        try {
+          db.onversionchange = () => {
+            try { db.close(); } catch { /* noop */ }
+          };
+        } catch { /* noop */ }
+        resolve(db);
+      };
       req.onerror = () => reject(req.error || new Error('idb-open-failed'));
       req.onblocked = () => reject(new Error('idb-open-blocked'));
     });
