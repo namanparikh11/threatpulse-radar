@@ -46,6 +46,21 @@ admissible, complete, or independently audited. No
 claim of production stability is made before the
 observation windows complete.
 
+**Preparation-branch commit history (5 commits on top
+of the V6.8 RC `0480a9f`):** the three planned
+logical commits (`6531ada` manifest + preflight +
+smokes, `0698d12` runbooks, `5dda6f7` acceptance
+suite + docs) plus two bounded verification
+corrections (`43ea1ca` loosen the V6.8
+release-candidate suite count to `>= 36` for
+forward-compat, `557023f` allow the V6.8
+release-candidate acceptance suite in the
+deployment-preparation branch's product-source
+diff). The V6.8 release-candidate baseline carried
+36 acceptance suites; the deployment-preparation
+branch carries 37 (the V6.8 deployment-preparation
+acceptance suite).
+
 ## V6.8 — Release candidate consolidation
 
 V6.8 is a release-candidate consolidation milestone. It

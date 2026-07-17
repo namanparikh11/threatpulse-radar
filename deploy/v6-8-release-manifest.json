@@ -97,7 +97,7 @@
   ],
   "expectedAnonymousGatewayStatus": 401,
   "csvColumnCount": 21,
-  "acceptanceSuiteCount": 36,
+  "acceptanceSuiteCount": 37,
   "rollbackCommit": "0480a9f414f9dd452191f99e07b94a505e6cb003",
   "preservedCheckpointBranches": [
     "v6-0-canonical-baseline",

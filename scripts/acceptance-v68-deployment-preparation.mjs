@@ -254,9 +254,31 @@ test('V6.8-deploy: no VITE-prefixed secret contract in source or build', () => {
   assert.equal(offenders.length, 0, `VITE-prefixed secret offenders: ${offenders.join(', ')}`);
 });
 
-test('V6.8-deploy: 36 acceptance suites enumerated (35 prior + V6.8)', () => {
+test('V6.8-deploy: acceptance-suite count matches the release manifest and the V6.8 RC baseline', () => {
+  // The release manifest is the source of
+  // truth for the acceptance-suite count. This
+  // test verifies BOTH:
+  //   1. the on-disk count equals the
+  //      manifest-declared count (exact match
+  //      so the manifest cannot drift);
+  //   2. the on-disk count is not below the
+  //      V6.8 RC baseline of 36 (so a future
+  //      deletion of a suite is caught).
   const files = listDirSafe(path.join(REPO, 'scripts')).filter((n) => /^acceptance.*\.mjs$/.test(n));
-  assert.ok(files.length >= 35, `expected at least 35 acceptance suites, got ${files.length}`);
+  const text = tryRead(path.join(REPO, 'deploy', 'v6-8-release-manifest.json'));
+  assert.ok(text, 'release manifest missing');
+  const manifest = JSON.parse(text);
+  const declared = manifest.acceptanceSuiteCount;
+  assert.equal(typeof declared, 'number', `manifest acceptanceSuiteCount must be a number, got ${typeof declared}`);
+  assert.equal(
+    files.length,
+    declared,
+    `acceptance-suite count mismatch: scripts/ has ${files.length} acceptance suites but the manifest declares ${declared}`,
+  );
+  assert.ok(
+    files.length >= 36,
+    `acceptance-suite count ${files.length} is below the V6.8 RC baseline of 36`,
+  );
   assert.ok(files.includes('acceptance-v68-release-candidate.mjs'), 'V6.8 release-candidate suite missing');
   assert.ok(files.includes('acceptance-v68-deployment-preparation.mjs'), 'V6.8 deployment-preparation suite missing');
 });

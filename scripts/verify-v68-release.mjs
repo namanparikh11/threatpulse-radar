@@ -69,7 +69,15 @@ function git(args) {
 }
 
 const EXPECTED_COMMIT = '0480a9f414f9dd452191f99e07b94a505e6cb003';
-const EXPECTED_SUITE_COUNT = 36;
+// The V6.8 release-candidate baseline carried 36
+// acceptance suites. The V6.8
+// deployment-preparation branch adds one more
+// (the deployment-preparation acceptance suite)
+// so the on-disk count must be >= 36 here. The
+// exact expected count is read from the
+// release manifest, which is the source of
+// truth for the release.
+const V68_RC_BASELINE_SUITE_COUNT = 36;
 const EXPECTED_CSV_COLUMNS = 21;
 const BASELINE_COMMIT = '32a8a63';
 
@@ -208,13 +216,29 @@ test('verify-v68-release: no conflict markers', () => {
   assert.equal(conflicts, 0, `${conflicts} file(s) contain conflict markers`);
 });
 
-test('verify-v68-release: 36 acceptance suites enumerated', () => {
+test('verify-v68-release: acceptance-suite count matches the release manifest and the V6.8 RC baseline', () => {
+  // The release manifest is the source of
+  // truth for the acceptance-suite count. The
+  // preflight must verify BOTH:
+  //   1. the on-disk count equals the
+  //      manifest-declared count (exact match
+  //      so the manifest cannot drift);
+  //   2. the on-disk count is not below the
+  //      V6.8 RC baseline of 36 (so a future
+  //      deletion of a suite is caught).
   const files = listDirSafe(path.join(REPO, 'scripts')).filter((n) => /^acceptance.*\.mjs$/.test(n));
-  // The V6.8 deployment-preparation branch adds
-  // one more suite on top of the 36 V6.8
-  // release-candidate count, so the expected
-  // total is at least 36.
-  assert.ok(files.length >= EXPECTED_SUITE_COUNT, `expected at least ${EXPECTED_SUITE_COUNT} suites, got ${files.length}`);
+  const manifest = JSON.parse(readFileSync(path.join(REPO, 'deploy', 'v6-8-release-manifest.json'), 'utf-8'));
+  const declared = manifest.acceptanceSuiteCount;
+  assert.equal(typeof declared, 'number', `manifest acceptanceSuiteCount must be a number, got ${typeof declared}`);
+  assert.equal(
+    files.length,
+    declared,
+    `acceptance-suite count mismatch: scripts/ has ${files.length} acceptance suites but the manifest declares ${declared}`,
+  );
+  assert.ok(
+    files.length >= V68_RC_BASELINE_SUITE_COUNT,
+    `acceptance-suite count ${files.length} is below the V6.8 RC baseline of ${V68_RC_BASELINE_SUITE_COUNT}`,
+  );
 });
 
 test('verify-v68-release: package.json engines.node matches manifest range', () => {
