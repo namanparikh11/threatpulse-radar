@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "1.0.0",
+  "releaseName": "threatpulse-radar-v6-8-release-candidate",
+  "expectedReleaseCandidateCommit": "0480a9f414f9dd452191f99e07b94a505e6cb003",
+  "expectedSourceBranch": "v6-8-release-candidate-consolidation",
+  "expectedTargetBranch": "main",
+  "expectedPreparationBranch": "release/v6-8-deployment-preparation",
+  "nodeVersionRange": ">=18.18.0 <25.0.0",
+  "build": {
+    "command": "npm run build",
+    "frontendOutputDirectory": "dist",
+    "frontendOutputType": "static"
+  },
+  "publicNetlifySite": {
+    "name": "threatpulse-radar-public",
+    "publishDirectory": "dist",
+    "functionsDirectory": "netlify/functions",
+    "publicFunctionEntries": [
+      "dataset.mjs",
+      "refresh-baseline-background.mjs",
+      "refresh-baseline-scheduled.mjs",
+      "refresh-dataset-background.mjs",
+      "refresh-dataset-scheduled.mjs"
+    ],
+    "scheduledFunctionEntries": [
+      "refresh-baseline-scheduled.mjs",
+      "refresh-dataset-scheduled.mjs"
+    ],
+    "backgroundFunctionEntries": [
+      "refresh-baseline-background.mjs",
+      "refresh-dataset-background.mjs"
+    ],
+    "blobStoresOwned": [
+      "tpr-dataset",
+      "tpr-vulnrichment",
+      "tpr-github-advisory",
+      "tpr-baseline"
+    ]
+  },
+  "gatewayNetlifySite": {
+    "name": "threatpulse-radar-gateway",
+    "baseDirectory": "netlify/gateway/",
+    "functionsDirectory": "netlify/gateway/src",
+    "gatewayFunctionEntry": "private-sync-gateway.mjs",
+    "blobStoresOwned": [
+      "tpr-private-credentials"
+    ],
+    "blobStoresReadCrossSite": [
+      "tpr-baseline"
+    ]
+  },
+  "requiredEnvironmentVariables": {
+    "publicNetlifySite": [
+      "THREATPULSE_REFRESH_TRIGGER_SECRET",
+      "THREATPULSE_OSV_ECOSYSTEMS",
+      "THREATPULSE_STORAGE_BACKEND"
+    ],
+    "publicNetlifySiteStorage": {
+      "THREATPULSE_STORAGE_BACKEND": "netlify",
+      "THREATPULSE_SITE_ID": "auto-populated by Netlify runtime when backend=netlify",
+      "THREATPULSE_BLOBS_TOKEN": "auto-populated by Netlify runtime when backend=netlify"
+    },
+    "publicNetlifySiteFilesystem": {
+      "THREATPULSE_STORAGE_BACKEND": "filesystem (Hostinger portability only)",
+      "THREATPULSE_DATA_ROOT": "absolute path to the runtime data root"
+    },
+    "gatewayNetlifySite": [
+      "THREATPULSE_BASELINE_SITE_ID",
+      "THREATPULSE_BLOBS_ACCESS_TOKEN",
+      "THREATPULSE_CREDENTIAL_PEPPER"
+    ]
+  },
+  "optionalEnvironmentVariables": {
+    "publicNetlifySite": [
+      "THREATPULSE_DATA_ROOT",
+      "THREATPULSE_SITE_ID",
+      "THREATPULSE_BLOBS_TOKEN"
+    ],
+    "gatewayNetlifySite": [
+      "THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN"
+    ]
+  },
+  "publicSiteHealthAndSmokeRoutes": [
+    "/",
+    "/index.html",
+    "/assets/"
+  ],
+  "publicSiteDataSmokeRoutes": [
+    "/.netlify/functions/dataset"
+  ],
+  "publicSiteBackgroundFunctionSmokeRoutes": [
+    "/.netlify/functions/refresh-dataset-background",
+    "/.netlify/functions/refresh-baseline-background"
+  ],
+  "gatewaySmokeRoutes": [
+    "/.netlify/functions/private-sync-gateway"
+  ],
+  "expectedAnonymousGatewayStatus": 401,
+  "csvColumnCount": 21,
+  "acceptanceSuiteCount": 36,
+  "rollbackCommit": "0480a9f414f9dd452191f99e07b94a505e6cb003",
+  "preservedCheckpointBranches": [
+    "v6-0-canonical-baseline",
+    "v6-1-public-intelligence",
+    "v6-2-portability",
+    "v6-3-hostinger",
+    "v6-4-local-workspace",
+    "v6-5-local-briefings-and-reports",
+    "v6-6-local-environment",
+    "v6-7-local-remediation-evidence",
+    "v6-8-release-candidate-consolidation"
+  ],
+  "hostingerCommands": {
+    "start": "npm run start:hostinger",
+    "build": "npm run build",
+    "cronRefreshDataset": "npm run cron:refresh-dataset",
+    "cronRefreshBaseline": "npm run cron:refresh-baseline",
+    "cronPublishDataset": "npm run cron:publish-dataset",
+    "cronGc": "npm run cron:gc",
+    "cronVerifyState": "npm run cron:verify-state",
+    "cronBackup": "npm run cron:backup",
+    "backup": "npm run backup:hostinger",
+    "verifyBackup": "npm run verify:backup",
+    "restore": "npm run restore:hostinger",
+    "diagnose": "npm run diagnose:hostinger",
+    "manifest": "npm run manifest:hostinger"
+  },
+  "knownDeferredWork": [
+    "v2.0 remediation templates (V7.x roadmap)",
+    "multi-org workspace collaboration",
+    "server-side report-history persistence (out of scope for the local-only product)",
+    "public corpus extension beyond CISA KEV / NVD / FIRST EPSS / GitHub Advisory / OSV",
+    "real-time push (the V6.0 architecture is pull-only by design)",
+    "optional server-side trends view (out of scope)"
+  ],
+  "valuesAreNamesOrPlaceholdersOnly": true,
+  "secretsDisclosure": {
+    "includeActualValues": false,
+    "rationale": "This manifest contains variable names and structural metadata only. No secret value (token, pepper, key, password) is present. The deployment runbook (docs/v6-8-controlled-deployment-runbook.md) and the environment checklist (docs/v6-8-environment-checklist.md) are written to the same contract."
+  }
+}
