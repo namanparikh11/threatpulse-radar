@@ -31,6 +31,7 @@ may combine multiple triggers.
 | Local migrations cause widespread user-visible failure | non-blocking | Document the defect; assess whether to defer the migration in a follow-up patch |
 | Secrets or internal fields exposed in a public surface | release-blocking | Revert immediately; rotate the affected credential |
 | Excessive unexpected Netlify consumption | non-blocking | Disable optional scheduled work; investigate the function-log loop |
+| Filesystem intelligence-store corrupted on Hostinger | release-blocking | Set `THREATPULSE_STORAGE_BACKEND=netlify` (the default) to fall back to Netlify Blobs; the same code path serves both backends. NEVER delete `$THREATPULSE_DATA_ROOT/tpr-dataset/`, `tpr-vulnrichment/`, `tpr-github-advisory/`, or `tpr-public-intelligence/`. The last-known-good envelope and the per-Blob public hashes live there |
 
 ## Reversible actions
 

@@ -157,6 +157,33 @@ export const REFRESH_LOCK_TTL_MS = 15 * 60 * 1000;
 export const NVD_COOLDOWN_TTL_MS = 15 * 60 * 1000;
 
 /**
+ * Resolve the storage backend name + filesystem data
+ * root from the environment. Centralized so the
+ * `getDatasetStore` / `getVulnrichmentStore` /
+ * `getGithubAdvisoryStore` helpers agree on every
+ * detail (env-var casing, default value, filesystem
+ * dataRoot resolution).
+ *
+ * Hostinger-compatible: when
+ * `THREATPULSE_STORAGE_BACKEND=filesystem`, the helpers
+ * return `{ backend: 'filesystem', dataRoot: ... }`
+ * and route through the filesystem adapter. When the
+ * variable is unset or any value other than 'filesystem',
+ * the helpers return `{ backend: 'netlify', dataRoot: null }`
+ * and use the Netlify Blobs adapter (preserving the
+ * existing default).
+ */
+function resolveBackendAndDataRoot(opts = {}) {
+  const env = opts.env || (typeof process !== 'undefined' && process.env) || {};
+  const backend = (opts.backend || env.THREATPULSE_STORAGE_BACKEND || 'netlify').toLowerCase();
+  if (backend === 'filesystem') {
+    const dataRoot = opts.dataRoot || env.THREATPULSE_DATA_ROOT || null;
+    return { backend, dataRoot };
+  }
+  return { backend: 'netlify', dataRoot: null };
+}
+
+/**
  * Resolve a Blobs store handle. In production (Netlify Functions
  * runtime) `@netlify/blobs` auto-detects siteID and token from
  * the function's environment. In `netlify dev` the same is true.
@@ -170,9 +197,18 @@ export const NVD_COOLDOWN_TTL_MS = 15 * 60 * 1000;
  * The optional `opts.consistency` is 'strong' by default —
  * prebuilt-dataset reads must be consistent across all visitors
  * within a moment. Writes are serialized via the refresh lock.
+ *
+ * Hostinger filesystem mode:
+ * When `THREATPULSE_STORAGE_BACKEND=filesystem` is set, the
+ * returned handle is a `FilesystemStorageAdapter` rooted at
+ * `$THREATPULSE_DATA_ROOT/tpr-dataset`. Every key is mapped
+ * to a deterministic file path under that subdirectory; the
+ * adapter guarantees atomic temp+rename writes, path-traversal
+ * rejection, and `last-known-good` preservation on failure.
  */
 export function getDatasetStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
+  const { backend, dataRoot } = resolveBackendAndDataRoot(opts);
   // v6.2: the dataset store is now constructed via the
   // portable storage adapter. The adapter exposes the
   // same `get / set / getJSON / setJSON / setBinary /
@@ -182,6 +218,16 @@ export function getDatasetStore(opts = {}) {
   // is preserved for the few sites that still need
   // direct access (e.g. bootstrap state which reads
   // gzipped JSON in a custom shape).
+  if (backend === 'filesystem') {
+    if (!dataRoot) {
+      throw new Error('getDatasetStore: THREATPULSE_STORAGE_BACKEND=filesystem requires THREATPULSE_DATA_ROOT');
+    }
+    return createStorageAdapter({
+      name: 'filesystem',
+      storeName: STORE_NAME,
+      opts: { dataRoot },
+    });
+  }
   return createStorageAdapter({
     name: 'netlify',
     storeName: STORE_NAME,
@@ -195,9 +241,27 @@ export function getDatasetStore(opts = {}) {
  * `name` differs from `getDatasetStore`. The returned handle
  * has the same `.get` / `.setJSON` / `.delete` API as the
  * main dataset store.
+ *
+ * Hostinger filesystem mode:
+ * When `THREATPULSE_STORAGE_BACKEND=filesystem` is set, the
+ * returned handle is a `FilesystemStorageAdapter` rooted at
+ * `$THREATPULSE_DATA_ROOT/tpr-vulnrichment`. A failed
+ * Vulnrichment write leaves the previous cache envelope
+ * intact (the adapter's atomic temp+rename semantics).
  */
 export function getVulnrichmentStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
+  const { backend, dataRoot } = resolveBackendAndDataRoot(opts);
+  if (backend === 'filesystem') {
+    if (!dataRoot) {
+      throw new Error('getVulnrichmentStore: THREATPULSE_STORAGE_BACKEND=filesystem requires THREATPULSE_DATA_ROOT');
+    }
+    return createStorageAdapter({
+      name: 'filesystem',
+      storeName: VULNRICHMENT_STORE_NAME,
+      opts: { dataRoot },
+    });
+  }
   return createStorageAdapter({
     name: 'netlify',
     storeName: VULNRICHMENT_STORE_NAME,
@@ -211,9 +275,26 @@ export function getVulnrichmentStore(opts = {}) {
  * store `name` differs from `getDatasetStore` and
  * `getVulnrichmentStore`. The returned handle has the same
  * `.get` / `.setJSON` / `.delete` API as the other stores.
+ *
+ * Hostinger filesystem mode:
+ * When `THREATPULSE_STORAGE_BACKEND=filesystem` is set, the
+ * returned handle is a `FilesystemStorageAdapter` rooted at
+ * `$THREATPULSE_DATA_ROOT/tpr-github-advisory`. A failed
+ * write leaves the previous cache envelope intact.
  */
 export function getGithubAdvisoryStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
+  const { backend, dataRoot } = resolveBackendAndDataRoot(opts);
+  if (backend === 'filesystem') {
+    if (!dataRoot) {
+      throw new Error('getGithubAdvisoryStore: THREATPULSE_STORAGE_BACKEND=filesystem requires THREATPULSE_DATA_ROOT');
+    }
+    return createStorageAdapter({
+      name: 'filesystem',
+      storeName: GITHUB_ADVISORY_STORE_NAME,
+      opts: { dataRoot },
+    });
+  }
   return createStorageAdapter({
     name: 'netlify',
     storeName: GITHUB_ADVISORY_STORE_NAME,

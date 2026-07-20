@@ -576,6 +576,47 @@ existing standalone `hostinger/cron-*.mjs` entrypoints
 remain importable. The total acceptance suite count
 remains 37.
 
+## Hostinger filesystem intelligence-store parity (additive)
+
+A separate `hostinger/v6-8-filesystem-intelligence-stores`
+branch fixes three observed deployment findings on
+the Hostinger Business managed-Node deployment:
+
+  1. `lastVulnrichmentRefresh.status = failed`
+     ("Failed to write Vulnrichment cache blob.")
+  2. `lastGitHubAdvisoryRefresh.status = failed`
+     ("Failed to write GitHub Advisory cache blob.")
+  3. `lastV61DatasetBoundRefresh.status = skipped`
+     ("public-intelligence-store-unavailable")
+
+All three had the same root cause: the four
+`get*Store` helpers hardcoded the `'netlify'`
+adapter, so every cache write and every
+public-intelligence read returned an unusable handle
+on a Hostinger runtime that has no Netlify Blobs
+context. The fix routes the four helpers through
+`THREATPULSE_STORAGE_BACKEND` exactly the same way
+`server/config.mjs` and `jobs/_lib.mjs#resolveStorage`
+already do. The Netlify path is preserved unchanged
+for backward compatibility.
+
+When the backend is `'filesystem'`, every Blob
+namespace lives under the same
+`$THREATPULSE_DATA_ROOT`:
+
+- `tpr-dataset/` — primary dataset envelope
+- `tpr-vulnrichment/` — CISA Vulnrichment / SSVC cache
+- `tpr-github-advisory/` — GitHub Advisory cache
+- `tpr-public-intelligence/` — V6.1 public-intelligence
+  OSV + dataset versioned artifacts, `latest.json`
+  pointers, publication locks, change-summaries
+
+Every filesystem write uses a temp file + rename
+(atomic, last-known-good preserved on failure). The
+V6.1 size budgets and the NVD 429 partial-enrichment
+behavior are preserved unchanged. The total
+acceptance suite count remains 37.
+
 ## Hostinger Business managed-Node scheduler (additive)
 
 A separate `hostinger/v6-8-managed-scheduler`

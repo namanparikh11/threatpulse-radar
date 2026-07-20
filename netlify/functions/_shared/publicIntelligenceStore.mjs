@@ -40,7 +40,7 @@
  * (locked in commit 1; bumped on breaking changes).
  */
 
-import { getStore } from '@netlify/blobs';
+import { createStorageAdapter } from './storage/index.mjs';
 
 /** The single V6.1 public-intelligence Blob store. */
 export const PUBLIC_INTELLIGENCE_STORE_NAME = 'tpr-public-intelligence';
@@ -99,10 +99,51 @@ export function osvShardKey(bucketContentHash) {
  * Resolve a handle to the public-intelligence Blob store. The
  * handle is the public site's local Netlify Blobs runtime
  * context; no cross-site access, no env var, no token.
+ *
+ * Hostinger filesystem mode:
+ * When `THREATPULSE_STORAGE_BACKEND=filesystem` is set, the
+ * returned handle is a `FilesystemStorageAdapter` rooted at
+ * `$THREATPULSE_DATA_ROOT/tpr-public-intelligence`. The
+ * adapter exposes the same `get` / `setJSON` / `setBinary`
+ * / `list` / `delete` shape as the Netlify adapter, so every
+ * downstream call site works unchanged. Writes use the
+ * adapter's atomic temp+rename semantics, so a failed
+ * publication leaves the previous `latest.json` and the
+ * previous version directory intact.
+ *
+ * The Netlify path is preserved unchanged: when the env
+ * variable is unset or has any value other than 'filesystem',
+ * the function falls back to `getStore` from `@netlify/blobs`.
  */
 export function getPublicIntelligenceStore(opts = {}) {
   const consistency = opts.consistency ?? 'strong';
-  return getStore({ name: PUBLIC_INTELLIGENCE_STORE_NAME, consistency });
+  const env = opts.env || (typeof process !== 'undefined' && process.env) || {};
+  const backend = (opts.backend || env.THREATPULSE_STORAGE_BACKEND || 'netlify').toLowerCase();
+  if (backend === 'filesystem') {
+    const dataRoot = opts.dataRoot || env.THREATPULSE_DATA_ROOT;
+    if (!dataRoot) {
+      throw new Error('getPublicIntelligenceStore: THREATPULSE_STORAGE_BACKEND=filesystem requires THREATPULSE_DATA_ROOT');
+    }
+    return createStorageAdapter({
+      name: 'filesystem',
+      storeName: PUBLIC_INTELLIGENCE_STORE_NAME,
+      opts: { dataRoot },
+    });
+  }
+  // Netlify path. The `getStore` helper from
+  // `@netlify/blobs` throws a `MissingBlobsEnvironmentError`
+  // when the Netlify runtime is absent (e.g. on a
+  // workstation or a Hostinger deployment). The portable
+  // `NetlifyBlobsStorageAdapter` exposes the same
+  // get/set/list surface but is constructed without a
+  // Netlify runtime; it works on a Hostinger deployment
+  // because it routes through the V6.2 storage adapter
+  // contract.
+  return createStorageAdapter({
+    name: 'netlify',
+    storeName: PUBLIC_INTELLIGENCE_STORE_NAME,
+    opts: { consistency },
+  });
 }
 
 /**

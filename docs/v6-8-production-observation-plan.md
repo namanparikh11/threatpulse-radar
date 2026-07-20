@@ -58,6 +58,26 @@ server. Additional observation signals:
 | `spawn.error` log line with `code: 'EPERM'` or `code: 'EACCES'` | The runtime forbids child processes entirely | The current executable-resolution hotfix does NOT cover this case. Plan a follow-up that re-implements the scheduled jobs as in-process job adapters |
 | `managed-scheduler.spawn-failed` log line | The scheduler caught a sanitized `spawnError` and will rearm the next occurrence | The job is reported as `invalid-args`; the next scheduled occurrence is still armed |
 
+### Filesystem intelligence-store health (Hostinger)
+
+When `THREATPULSE_STORAGE_BACKEND=filesystem` is set
+on a managed-hosting deployment, every Blob store the
+public pipeline depends on is rooted at the same
+`$THREATPULSE_DATA_ROOT`. Additional observation
+signals:
+
+| Signal | What to look for | Recovery action |
+| --- | --- | --- |
+| Subdirectory `tpr-dataset/latest-dataset` exists | The primary dataset envelope is on disk | None — informational |
+| Subdirectory `tpr-vulnrichment/cache` exists | The Vulnrichment cache envelope is on disk | None — informational |
+| Subdirectory `tpr-github-advisory/cache` exists | The GitHub Advisory cache envelope is on disk | None — informational |
+| Subdirectory `tpr-public-intelligence/dataset/latest.json` exists | The V6.1 dataset-bound publication is on disk | None — informational |
+| `dataset/latest.json` mtime stops advancing | A size ceiling or a write error has been hit; the previous envelope is preserved | Inspect the V6.1 publication log; do NOT delete `latest.json`; plan a follow-up if the size ceiling is the cause |
+| `Vulnrichment cache write failed` log line | The Vulnrichment write to `tpr-vulnrichment/cache` failed | The previous cache envelope is preserved; the next cycle retries. If the failure persists, check the filesystem write permissions on `$THREATPULSE_DATA_ROOT/tpr-vulnrichment/` |
+| `public-intelligence-store-unavailable` log line | The public-intelligence store could not be opened | Confirm `THREATPULSE_DATA_ROOT` is set and the subdirectory is writable |
+| `public-snapshot uncompressed size … exceeds ceiling` log line | The V6.1 dataset-bound publication is a structured skip; the previous `latest.json` is preserved | Plan a follow-up; do NOT delete the previous `latest.json`. The hotfix preserves the last-known-good state |
+| NVD `status: 'partial'` or `lastNDVRefresh.reason` mentions `429` | NVD HTTP 429 (rate-limit) is in effect | The refresh orchestrator is preserving the previous better envelope and recording an NVD cooldown marker. The CISA KEV primary dataset remains serviceable |
+
 ### First 24–48 hours — long-term stability
 
 | Signal | What to look for | Recovery action |

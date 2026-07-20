@@ -7,6 +7,79 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## Hostinger filesystem intelligence-store parity fix
+
+A separate `hostinger/v6-8-filesystem-intelligence-stores`
+branch fixes three observed deployment findings on the
+production-style Hostinger Business managed-Node
+deployment:
+
+  1. `lastVulnrichmentRefresh.status = failed`
+     ("Failed to write Vulnrichment cache blob.")
+  2. `lastGitHubAdvisoryRefresh.status = failed`
+     ("Failed to write GitHub Advisory cache blob.")
+  3. `lastV61DatasetBoundRefresh.status = skipped`
+     ("public-intelligence-store-unavailable")
+
+All three had the same root cause: the four
+`get*Store` helpers (`getDatasetStore`,
+`getVulnrichmentStore`, `getGithubAdvisoryStore`,
+`getPublicIntelligenceStore`) hardcoded the
+`'netlify'` adapter, so every cache write and every
+public-intelligence read returned an unusable handle
+on a Hostinger runtime that has no Netlify Blobs
+context. The fix routes the four helpers through
+`THREATPULSE_STORAGE_BACKEND` exactly the same way
+`server/config.mjs` and `jobs/_lib.mjs#resolveStorage`
+already do. The Netlify path is preserved unchanged
+for backward compatibility.
+
+- `netlify/functions/_shared/store.mjs`: every
+  `get*Store` helper now reads
+  `THREATPULSE_STORAGE_BACKEND` and routes through
+  `createStorageAdapter`. When the backend is
+  `'filesystem'`, a `FilesystemStorageAdapter` is
+  constructed rooted at
+  `$THREATPULSE_DATA_ROOT/{storeName}`. The default
+  backend is still `'netlify'`.
+- `netlify/functions/_shared/publicIntelligenceStore.mjs`:
+  `getPublicIntelligenceStore` now uses
+  `createStorageAdapter` (the portable
+  `NetlifyBlobsStorageAdapter` on the Netlify path, the
+  `FilesystemStorageAdapter` on the filesystem path).
+  The direct `getStore` import from `@netlify/blobs`
+  is removed.
+- `scripts/verify-v68-release.mjs`: branch-aware
+  allowlist widened to also accept the
+  `hostinger/v6-8-filesystem-intelligence-stores`
+  branch; on that branch the `netlify/functions/_shared/`
+  prefix is permitted (the storage-adapter parity fix
+  lives there).
+- `scripts/acceptance-v63-hostinger.mjs`: extended
+  with a new section [18] (39 tests) covering the
+  filesystem-store parity. The total acceptance suite
+  count remains 37 — no new suite file is added.
+
+Observed production state preserved:
+
+- V6.1 size budgets
+  (`PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES`,
+  `OSV_SHARD_HARD_CEILING_*`, etc.) are unchanged. A
+  dataset that exceeds the public-snapshot ceiling is
+  a structured skip; the previous
+  `dataset/latest.json` is preserved.
+- The atomic temp+rename write contract is
+  preserved; a failed write leaves the previous valid
+  object intact.
+- The NVD 429 partial-enrichment behavior is
+  preserved as a transient condition.
+
+NVD 429 is classified as transient and bounded by the
+existing NVD cooldown marker. The primary CISA KEV
+dataset remains serviceable without NVD enrichment;
+the response truthfully reports partial enrichment.
+No retry loop is introduced.
+
 ## Hostinger managed scheduler ENOENT hotfix
 
 A separate `hostinger/v6-8-managed-scheduler-execpath`

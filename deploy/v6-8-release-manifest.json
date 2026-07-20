@@ -150,6 +150,27 @@
     "observedDeploymentBlocker": "On the production-style Hostinger temporary deployment the bare-spawn hotfix was required. The runtime logged both 'spawn' and 'ENOENT' for every scheduled dataset-refresh and dataset-publish.",
     "futureFailureMode": "An EPERM or EACCES spawn failure (instead of ENOENT) would indicate that Hostinger prohibits child processes entirely. In that case the scheduled jobs would have to be re-implemented as in-process job adapters (calling the underlying job functions directly without spawn). The current hotfix does NOT cover that scenario."
   },
+  "hostingerFilesystemIntelligenceStores": {
+    "purpose": "Filesystem storage-adapter parity for every Blob-store namespace the public pipeline depends on, so the managed-Node deployment can run with THREATPULSE_STORAGE_BACKEND=filesystem and no Netlify runtime context.",
+    "filesystemDataRoot": "THREATPULSE_DATA_ROOT",
+    "filesystemLayout": {
+      "tpr-dataset":                "primary dataset envelope + refresh lock + NVD cooldown",
+      "tpr-vulnrichment":           "CISA Vulnrichment / SSVC cache",
+      "tpr-github-advisory":        "GitHub Advisory Database cache",
+      "tpr-public-intelligence":    "V6.1 public-intelligence OSV + dataset versioned artifacts, latest.json pointers, publication locks, change-summaries"
+    },
+    "commonBoundary": "Every filesystem adapter rooted at the same THREATPULSE_DATA_ROOT. The HTTP server, the managed scheduler, and the V6.2 CLI jobs (refresh-dataset, refresh-baseline, publish-dataset-intelligence, gc-public-intelligence, verify-state) resolve the same data root; no store is hidden from any other component.",
+    "atomicityGuarantee": "Every filesystem write uses a temp file + rename. A crash or a failed write leaves the previous valid object intact. The adapter's path-traversal and symlink-escape guards are applied at every write boundary.",
+    "fixedObservations": [
+      "Vulnrichment cache write used to fail with 'Failed to write Vulnrichment cache blob.' because getVulnrichmentStore hardcoded the 'netlify' adapter. The same root cause applied to getGithubAdvisoryStore (GitHub Advisory cache) and to getPublicIntelligenceStore ('public-intelligence-store-unavailable').",
+      "All four get*Store helpers now route through THREATPULSE_STORAGE_BACKEND exactly the same way server/config.mjs and jobs/_lib.mjs#resolveStorage already do. The Netlify path is preserved unchanged for backward compatibility."
+    ],
+    "preservedLimits": "All V6.1 size budgets (PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES, OSV_SHARD_HARD_CEILING_*, etc.) and the last-known-good write contract are preserved unchanged. A dataset that exceeds the public-snapshot ceiling is a structured skip; the previous dataset/latest.json is preserved."
+  },
+  "observedNvdPartialEnrichment": {
+    "status": "transient",
+    "reason": "NVD public-anonymous endpoint rate-limits (HTTP 429). The refresh orchestrator preserves the previous better envelope and records an NVD cooldown marker. The primary CISA KEV dataset is serviceable without NVD enrichment; the response truthfully reports partial enrichment."
+  },
   "knownDeferredWork": [
     "v2.0 remediation templates (V7.x roadmap)",
     "multi-org workspace collaboration",

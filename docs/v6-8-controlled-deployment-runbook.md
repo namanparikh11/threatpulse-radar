@@ -258,6 +258,67 @@ job adapters (calling the underlying job functions
 directly without spawn). The current hotfix does
 NOT cover that scenario.
 
+## Filesystem intelligence-store parity (Hostinger)
+
+On a Hostinger Business managed-Node deployment with
+`THREATPULSE_STORAGE_BACKEND=filesystem`, every Blob
+namespace the public pipeline depends on must be
+reachable through the filesystem storage adapter.
+Three observed deployment findings were the result
+of a single root cause: the `getDatasetStore`,
+`getVulnrichmentStore`, `getGithubAdvisoryStore`, and
+`getPublicIntelligenceStore` helpers hardcoded the
+`'netlify'` adapter, so every cache write and every
+public-intelligence read returned an unusable handle
+on a Hostinger runtime that has no Netlify Blobs
+context.
+
+The fix routes the four `get*Store` helpers through
+`THREATPULSE_STORAGE_BACKEND` exactly the same way
+`server/config.mjs` and `jobs/_lib.mjs#resolveStorage`
+already do. The Netlify path is preserved unchanged
+for backward compatibility. The filesystem path
+returns a `FilesystemStorageAdapter` rooted at
+`$THREATPULSE_DATA_ROOT/{storeName}` with the same
+`get / set / setJSON / getJSON / setBinary /
+list / delete` surface the call sites already use.
+
+Filesystem layout (one subdirectory per store, all
+under the same `THREATPULSE_DATA_ROOT`):
+
+- `tpr-dataset/` — primary dataset envelope,
+  refresh lock, NVD cooldown.
+- `tpr-vulnrichment/` — CISA Vulnrichment / SSVC
+  cache.
+- `tpr-github-advisory/` — GitHub Advisory Database
+  cache.
+- `tpr-public-intelligence/` — V6.1 public-intelligence
+  OSV + dataset versioned artifacts, `latest.json`
+  pointers, publication locks, change-summaries.
+
+Atomicity + last-known-good: every filesystem write
+uses a temp file + rename; a failed write leaves the
+previous valid object intact. The adapter rejects
+path-traversal, NUL bytes, backslashes, and symlink
+escape at the write boundary. The V6.1 size budgets
+(`PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES`,
+`OSV_SHARD_HARD_CEILING_*`, etc.) and the
+last-known-good write contract are preserved
+unchanged. A dataset that exceeds the public-snapshot
+ceiling is a structured skip; the previous
+`dataset/latest.json` is preserved.
+
+NVD 429 is preserved as a transient condition: the
+refresh orchestrator keeps the previous better
+envelope, records an NVD cooldown marker, and the
+primary CISA KEV dataset remains serviceable. The
+response truthfully reports partial enrichment.
+
+Netlify remains the rollback path until the
+observation period ends: an operator can flip
+`THREATPULSE_STORAGE_BACKEND` back to `netlify` and
+the same code path serves both backends.
+
 Schedules (UTC):
 
 - dataset refresh: minute 0 and 30 of every hour

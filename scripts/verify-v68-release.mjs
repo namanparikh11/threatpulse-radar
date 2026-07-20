@@ -110,7 +110,8 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
   const lines = status.split('\n').filter(Boolean);
   const branch = git('branch --show-current');
   const isHostingerBranch = branch === 'hostinger/v6-8-managed-scheduler'
-    || branch === 'hostinger/v6-8-managed-scheduler-execpath';
+    || branch === 'hostinger/v6-8-managed-scheduler-execpath'
+    || branch === 'hostinger/v6-8-filesystem-intelligence-stores';
   // Allowed directory prefixes — any file under
   // these paths is permitted with any status code.
   const allowedDirPrefixes = [
@@ -120,11 +121,19 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
   ];
   if (isHostingerBranch) {
     // The hostinger branch carries the managed
-    // scheduler, the shared cron-spawn helper, and
-    // the refactored cron entrypoints. Every file
+    // scheduler, the shared cron-spawn helper, the
+    // refactored cron entrypoints, and (on the
+    // filesystem-intelligence-stores branch) the
+    // filesystem storage-adapter parity fix in
+    // netlify/functions/_shared/. Every file
     // under hostinger/ on this branch is a
-    // release-preparation file.
+    // release-preparation file; the same is true
+    // of the storage-adapter files on the
+    // filesystem-intelligence-stores branch.
     allowedDirPrefixes.push('hostinger/');
+    if (branch === 'hostinger/v6-8-filesystem-intelligence-stores') {
+      allowedDirPrefixes.push('netlify/functions/_shared/');
+    }
   }
   // Allowed exact top-level paths.
   const allowedExactPaths = new Set([
