@@ -37,6 +37,24 @@ complete, or independently audited.
 | Source-health states | All public sources report `ok` or `unavailable` (never `error`) | Inspect the `refresh-baseline-background` logs |
 | No fabricated changes | The "What changed" panel reports no fabricated previous-version changes | Roll back if fabricated changes are present |
 
+### Hostinger Business managed-Node scheduler (when enabled)
+
+When `THREATPULSE_MANAGED_SCHEDULER=1` is set on a
+managed-hosting deployment, the in-process scheduler
+runs inside the same Node process as the HTTP
+server. Additional observation signals:
+
+| Signal | What to look for | Recovery action |
+| --- | --- | --- |
+| `managed-scheduler.activated` log line | The scheduler started after the HTTP server began listening | None — informational |
+| `managed-scheduler.scheduled` log line per entry | Each of the six jobs has a scheduled next occurrence | Investigate when a job is missing |
+| `managed-scheduler.bootstrap.scheduled` / `.skipped` log line | Bootstrap was scheduled when the dataset was missing and skipped when present | None — informational |
+| `cron.lock.held` warnings | Another process holds the cron lock | Investigate duplicate processes; do NOT delete the lock |
+| `cron.signal` log lines | The application received SIGINT or SIGTERM | Confirm the Hostinger control panel initiated the restart |
+| `managed-scheduler.stopped` log line on shutdown | The scheduler cleared every active timer before exit | None — informational |
+| `managed-scheduler.error` log line | A job threw an unhandled exception | Inspect the inner job's logs; the lock is released before the next occurrence is scheduled |
+| `cron.done` `status: 'lock-held'` | A concurrent run was already in progress | None — the next scheduled occurrence is still armed |
+
 ### First 24–48 hours — long-term stability
 
 | Signal | What to look for | Recovery action |

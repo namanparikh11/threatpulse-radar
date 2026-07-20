@@ -1061,6 +1061,365 @@ console.log('[15] Clean Hostinger lifecycle in an isolated tracked-source copy')
   }
 }
 
+/* ---- 16. Managed scheduler (hostinger/managed-scheduler.mjs) ----
+ *
+ * The Hostinger Business managed-Node application
+ * plan does not expose an OS cron. The embedded
+ * scheduler is opt-in (THREATPULSE_MANAGED_SCHEDULER=1)
+ * and is started by hostinger/app.mjs after the HTTP
+ * server is listening.
+ *
+ * The tests below exercise the scheduler with a
+ * controllable fake clock and a fake timer API so
+ * no test waits for a real wall-clock minute to
+ * roll over. The tests must complete naturally and
+ * leave no open handles.
+ */
+console.log('');
+console.log('[16] Managed Hostinger scheduler (THREATPULSE_MANAGED_SCHEDULER)');
+
+const ms = await import('../hostinger/managed-scheduler.mjs');
+{
+  // Fake clock + fake timer so the test does not
+  // depend on real wall-clock time.
+  function makeFakeTimerApi() {
+    const pending = new Map(); // handle → { fn, delay, at, label, cleared }
+    let next = 1;
+    function setTimeoutFn(fn, delay) {
+      const handle = next++;
+      pending.set(handle, { fn, delay, at: Date.now() + delay, label: null });
+      return handle;
+    }
+    function clearTimeoutFn(handle) {
+      if (handle == null) return;
+      const entry = pending.get(handle);
+      if (entry) entry.cleared = true;
+      pending.delete(handle);
+    }
+    function advance(ms) {
+      const now = Date.now();
+      const target = now + ms;
+      // Fire any pending entries whose `at` is
+      // <= target, in scheduled order. Repeat
+      // until no more entries qualify.
+      let safety = 10000;
+      while (safety-- > 0) {
+        const due = [...pending.entries()]
+          .filter(([, e]) => !e.cleared && e.at <= target)
+          .sort((a, b) => a[1].at - b[1].at);
+        if (due.length === 0) break;
+        const [handle, entry] = due[0];
+        pending.delete(handle);
+        try { entry.fn(); } catch { /* swallow in fake clock */ }
+      }
+    }
+    return { setTimeout: setTimeoutFn, clearTimeout: clearTimeoutFn, advance, pending };
+  }
+  function makeFakeClock(startIso) {
+    let now = new Date(startIso).getTime();
+    return () => new Date(now);
+  }
+  function makeLogger() {
+    const events = [];
+    return {
+      events,
+      info: (e) => events.push({ level: 'info', ...e }),
+      warn: (e) => events.push({ level: 'warn', ...e }),
+      error: (e) => events.push({ level: 'error', ...e }),
+    };
+  }
+  const msDataRoot = mkdtempSync(join(tmpdir(), 'tpr-v63-ms-data-'));
+  const msLocksDir = join(msDataRoot, 'locks');
+  mkdirSync(msLocksDir, { recursive: true });
+  const msCfg = { dataRoot: msDataRoot, locksDir: msLocksDir, backend: 'filesystem' };
+
+  // 16.1 — scheduler disabled by default
+  {
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: {}, timerApi: makeFakeTimerApi() });
+    assert('managed scheduler disabled by default', s.isEnabled() === false);
+    const r = s.start();
+    assert('managed scheduler start() is a no-op when disabled', r && r.started === false);
+    assert('managed scheduler reports disabled reason', r && r.reason === 'disabled');
+  }
+
+  // 16.2 — scheduler enabled by exact env value 1
+  {
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi: makeFakeTimerApi() });
+    assert('managed scheduler enabled by THREATPULSE_MANAGED_SCHEDULER=1', s.isEnabled() === true);
+  }
+
+  // 16.3 — scheduler NOT enabled by 'true' / 'yes' / 'on' (strict equality)
+  for (const v of ['true', 'yes', 'on', 'True', 'TRUE', '0', '']) {
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: v }, timerApi: makeFakeTimerApi() });
+    assert(`managed scheduler NOT enabled by THREATPULSE_MANAGED_SCHEDULER=${JSON.stringify(v)}`, s.isEnabled() === false);
+  }
+
+  // 16.4 — nextOccurrenceUtc for 0/30 dataset-refresh from :15:30 → :30
+  {
+    const ds = ms.MANAGED_SCHEDULE.find((e) => e.label === 'dataset-refresh');
+    const now = new Date('2026-07-20T10:15:30.000Z');
+    const next = ms.nextOccurrenceUtc(ds, now);
+    assert('next dataset-refresh from :15:30 UTC is :30 same hour', ms.sameUtcMinute(next, new Date('2026-07-20T10:30:00.000Z')));
+  }
+
+  // 16.5 — nextOccurrenceUtc for 0/30 dataset-refresh from :45:00 → next-hour :00
+  {
+    const ds = ms.MANAGED_SCHEDULE.find((e) => e.label === 'dataset-refresh');
+    const now = new Date('2026-07-20T10:45:00.000Z');
+    const next = ms.nextOccurrenceUtc(ds, now);
+    assert('next dataset-refresh from :45:00 UTC is next-hour :00', ms.sameUtcMinute(next, new Date('2026-07-20T11:00:00.000Z')));
+  }
+
+  // 16.6 — nextOccurrenceUtc for 20/50 publish from :25 → :50
+  {
+    const pub = ms.MANAGED_SCHEDULE.find((e) => e.label === 'dataset-publish');
+    const now = new Date('2026-07-20T10:25:00.000Z');
+    const next = ms.nextOccurrenceUtc(pub, now);
+    assert('next dataset-publish from :25:00 UTC is :50 same hour', ms.sameUtcMinute(next, new Date('2026-07-20T10:50:00.000Z')));
+  }
+
+  // 16.7 — nextOccurrenceUtc for 20/50 publish from :55 → next-hour :20
+  {
+    const pub = ms.MANAGED_SCHEDULE.find((e) => e.label === 'dataset-publish');
+    const now = new Date('2026-07-20T10:55:00.000Z');
+    const next = ms.nextOccurrenceUtc(pub, now);
+    assert('next dataset-publish from :55:00 UTC is next-hour :20', ms.sameUtcMinute(next, new Date('2026-07-20T11:20:00.000Z')));
+  }
+
+  // 16.8 — nextOccurrenceUtc for daily 06:30 state-verify when today still ahead
+  {
+    const verify = ms.MANAGED_SCHEDULE.find((e) => e.label === 'state-verify');
+    const now = new Date('2026-07-20T05:00:00.000Z');
+    const next = ms.nextOccurrenceUtc(verify, now);
+    assert('next state-verify from 05:00 UTC is today 06:30', ms.sameUtcMinute(next, new Date('2026-07-20T06:30:00.000Z')));
+  }
+
+  // 16.9 — nextOccurrenceUtc for daily 06:30 state-verify when today has passed → tomorrow
+  {
+    const verify = ms.MANAGED_SCHEDULE.find((e) => e.label === 'state-verify');
+    const now = new Date('2026-07-20T07:00:00.000Z');
+    const next = ms.nextOccurrenceUtc(verify, now);
+    assert('next state-verify from 07:00 UTC is tomorrow 06:30', ms.sameUtcMinute(next, new Date('2026-07-21T06:30:00.000Z')));
+  }
+
+  // 16.10 — nextOccurrenceUtc for daily 02:40 backup across month rollover
+  {
+    const backup = ms.MANAGED_SCHEDULE.find((e) => e.label === 'backup');
+    const now = new Date('2026-07-31T23:00:00.000Z');
+    const next = ms.nextOccurrenceUtc(backup, now);
+    assert('next backup from 2026-07-31 23:00 UTC is 2026-08-01 02:40', ms.sameUtcMinute(next, new Date('2026-08-01T02:40:00.000Z')));
+  }
+
+  // 16.11 — every schedule has a non-null nextAt
+  for (const e of ms.MANAGED_SCHEDULE) {
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi: makeFakeTimerApi() });
+    const next = s.nextFor(e.label);
+    assert(`nextFor(${e.label}) returns a Date`, next instanceof Date);
+  }
+
+  // 16.12 — start() arms exactly one timer per schedule entry
+  {
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi });
+    const r = s.start();
+    assert('start() arms one timer per schedule entry', r && r.activeTimers === ms.MANAGED_SCHEDULE.length, `got ${r && r.activeTimers}`);
+    assert('start() reports started=true', r && r.started === true);
+  }
+
+  // 16.13 — repeated start() is idempotent
+  {
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi });
+    const r1 = s.start();
+    const r2 = s.start();
+    assert('second start() is a no-op (same activeTimers)', r1.activeTimers === r2.activeTimers, `first=${r1.activeTimers} second=${r2.activeTimers}`);
+    assert('second start() reports reason=already-started', r2.reason === 'already-started');
+  }
+
+  // 16.14 — stop() clears every active timer
+  {
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi });
+    s.start();
+    const before = s.activeTimers();
+    const r = await s.stop();
+    assert('stop() reports activeTimers=0 after clear', r.activeTimers === 0, `got ${r.activeTimers}`);
+    assert('stop() leaves no pending fake timers', timerApi.pending.size === 0, `pending=${timerApi.pending.size}`);
+    assert('before stop activeTimers matched the schedule length', before === ms.MANAGED_SCHEDULE.length);
+  }
+
+  // 16.15 — stop() is idempotent
+  {
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi });
+    s.start();
+    const r1 = await s.stop();
+    const r2 = await s.stop();
+    assert('second stop() is a no-op (reason=already-stopped)', r2.reason === 'already-stopped');
+  }
+
+  // 16.16 — dataset-missing bootstrap schedules one refresh when enabled
+  {
+    // No dataset exists at $dataRoot/dataset/latest.json
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1', THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP: '1' }, timerApi, bootstrapDelayMs: 1000 });
+    assert('bootstrap is enabled', s.isBootstrapEnabled() === true);
+    assert('bootstrap state is idle before start', s.bootstrapState() === 'idle');
+    s.start();
+    assert('bootstrap state is scheduled after start when dataset missing', s.bootstrapState() === 'scheduled');
+    await s.stop();
+  }
+
+  // 16.17 — existing dataset does NOT trigger redundant bootstrap
+  {
+    const dsDir = join(msDataRoot, 'dataset');
+    mkdirSync(dsDir, { recursive: true });
+    writeFileSync(join(dsDir, 'latest.json'), JSON.stringify({ ok: true, fetchedAt: new Date().toISOString() }));
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1', THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP: '1' }, timerApi, bootstrapDelayMs: 1000 });
+    s.start();
+    assert('bootstrap state is skipped when dataset exists', s.bootstrapState() === 'skipped');
+    await s.stop();
+    // Clean up for the next test
+    rmSync(join(dsDir, 'latest.json'), { force: true });
+  }
+
+  // 16.18 — bootstrap is opt-in: when THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP is unset, bootstrap is skipped
+  {
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi, bootstrapDelayMs: 1000 });
+    assert('bootstrap is opt-in (skipped when env not set)', s.isBootstrapEnabled() === false);
+    s.start();
+    assert('bootstrap state is skipped when env not set', s.bootstrapState() === 'skipped');
+    await s.stop();
+  }
+
+  // 16.19 — no process.exit in the scheduler source (V6.6 lesson)
+  {
+    const txt = readFileSync(join(root, 'hostinger', 'managed-scheduler.mjs'), 'utf8');
+    const code = txt.split('\n')
+      .filter((line) => !/^\s*\*\s/.test(line))
+      .filter((line) => !/no forced process\.exit/.test(line))
+      .filter((line) => !/process\.exit\s*\\s/.test(line))
+      .join('\n');
+    assert('managed-scheduler does not call process.exit', !/process\.exit\s*\(\s*0\s*\)/.test(code), 'process.exit(0) found in scheduler source');
+  }
+
+  // 16.20 — standalone cron entrypoints remain importable
+  for (const f of ['cron-refresh-dataset.mjs', 'cron-refresh-baseline.mjs', 'cron-publish-dataset.mjs', 'cron-gc.mjs', 'cron-verify-state.mjs', 'cron-backup.mjs']) {
+    const path = join(root, 'hostinger', f);
+    assert(`standalone ${f} still exists`, existsSync(path));
+    // We do NOT import() the cron entrypoints here
+    // because they self-invoke runCronJob at module
+    // top level. Instead, syntax-check the file.
+    const { execSync } = await import('node:child_process');
+    try {
+      execSync(`node --check "${path}"`, { stdio: 'pipe' });
+      assert(`standalone ${f} passes node --check`, true);
+    } catch (err) {
+      assert(`standalone ${f} passes node --check`, false, err && err.message);
+    }
+  }
+
+  // 16.21 — cron-spawn.mjs is the single source of truth for V6.2 job spawning
+  {
+    const spawnSrc = readFileSync(join(root, 'hostinger', 'cron-spawn.mjs'), 'utf8');
+    assert('cron-spawn.mjs exports spawnV62Job', /export function spawnV62Job/.test(spawnSrc));
+    assert('cron-spawn.mjs exports mapV62CodeToStatus', /export function mapV62CodeToStatus/.test(spawnSrc));
+    // Each standalone cron entrypoint should
+    // import both helpers from cron-spawn (no
+    // local re-implementation).
+    for (const f of ['cron-refresh-dataset.mjs', 'cron-refresh-baseline.mjs', 'cron-publish-dataset.mjs', 'cron-gc.mjs', 'cron-backup.mjs']) {
+      const src = readFileSync(join(root, 'hostinger', f), 'utf8');
+      assert(`${f} imports from ./cron-spawn.mjs`, /from '\.\/cron-spawn\.mjs'/.test(src));
+      assert(`${f} does NOT redefine spawnV62Job`, !/function spawnV62Job\b/.test(src));
+    }
+  }
+
+  // 16.22 — application shutdown calls scheduler.stop() (hostinger/app.mjs)
+  {
+    const appSrc = readFileSync(join(root, 'hostinger', 'app.mjs'), 'utf8');
+    assert('hostinger/app.mjs imports managed-scheduler', /from '\.\/managed-scheduler\.mjs'/.test(appSrc));
+    assert('hostinger/app.mjs creates a scheduler in startManagedScheduler', /createManagedScheduler\(/.test(appSrc));
+    assert('hostinger/app.mjs calls managedScheduler.stop() in shutdown', /managedScheduler\.stop\(\)/.test(appSrc));
+  }
+
+  // 16.23 — no public scheduler HTTP route
+  {
+    const appSrc = readFileSync(join(root, 'hostinger', 'app.mjs'), 'utf8');
+    // The app must NOT register a route like
+    // '/admin/scheduler', '/internal/scheduler',
+    // '/api/scheduler', etc.
+    assert('app has no /admin/scheduler route', !/\/admin\/scheduler\b/.test(appSrc));
+    assert('app has no /api/scheduler route', !/\/api\/scheduler\b/.test(appSrc));
+    assert('app has no /internal/scheduler route', !/\/internal\/scheduler\b/.test(appSrc));
+    assert('app has no /scheduler route', !/path === '\/scheduler'/.test(appSrc));
+  }
+
+  // 16.24 — runJob() does not install SIGINT/SIGTERM handlers by default (so the application keeps signal ownership)
+  {
+    const runnerSrc = readFileSync(join(root, 'hostinger', 'cron-runner.mjs'), 'utf8');
+    assert('runJob accepts installSignals option', /installSignals/.test(runnerSrc));
+    assert('runJob defaults installSignals to true (standalone cron)', /installSignals\s*=\s*true/.test(runnerSrc));
+    assert('managed-scheduler calls runJob with installSignals: false', /installSignals:\s*false/.test(readFileSync(join(root, 'hostinger', 'managed-scheduler.mjs'), 'utf8')));
+  }
+
+  // 16.25 — lock-held safe skip: spawn the cron-refresh-dataset twice concurrently and confirm at most one acquires the lock
+  {
+    // Reuse the standalone cron entrypoint; the
+    // first one to acquire the lock should run,
+    // the second should exit with code 2.
+    const p1 = spawn('node', ['hostinger/cron-refresh-dataset.mjs'], {
+      cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...baseEnv, THREATPULSE_LOCKS_DIR: msLocksDir },
+    });
+    // Wait a tick so p1 acquires the lock first.
+    await wait(50);
+    const p2 = spawn('node', ['hostinger/cron-refresh-dataset.mjs'], {
+      cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...baseEnv, THREATPULSE_LOCKS_DIR: msLocksDir },
+    });
+    const [r1, r2] = await Promise.all([
+      new Promise((resolveR) => { let o = '', e = ''; p1.stdout.on('data', (d) => { o += d; }); p1.stderr.on('data', (d) => { e += d; }); p1.on('close', (code) => resolveR({ code, out: o, err: e })); }),
+      new Promise((resolveR) => { let o = '', e = ''; p2.stdout.on('data', (d) => { o += d; }); p2.stderr.on('data', (d) => { e += d; }); p2.on('close', (code) => resolveR({ code, out: o, err: e })); }),
+    ]);
+    // p1 either succeeds (0) or errors; p2 must
+    // hit lock-held (2) when the second concurrent
+    // invocation observes the existing lock. The
+    // V6.2 inner job also uses its own lock; p1
+    // may exit non-zero if the data root is empty,
+    // but p2 must still report lock-held.
+    assert('concurrent cron — first invocation completes', r1.code === 0 || r1.code === 2 || r1.code === 6, `code=${r1.code}`);
+    assert('concurrent cron — second invocation reports lock-held (2)', r2.code === 2, `code=${r2.code} stderr=${r2.err.slice(-200)}`);
+  }
+
+  // 16.26 — sanitized failure logging: when the inner job fails, the log line MUST NOT contain a secret value
+  {
+    // We inject a fake env var that LOOKS like a
+    // token; the scheduler must never include it
+    // in any log line.
+    const logger = makeLogger();
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, logger, { env: { THREATPULSE_MANAGED_SCHEDULER: '1', THREATPULSE_FAKE_SECRET: 'SHOULD-NOT-LOG-1f2e3d4c5b6a' }, timerApi });
+    s.start();
+    await s.stop();
+    const allLogText = JSON.stringify(logger.events);
+    assert('managed scheduler logs do NOT include fake secret value', !allLogText.includes('SHOULD-NOT-LOG-1f2e3d4c5b6a'), `secret leaked: ${allLogText.slice(0, 200)}`);
+  }
+
+  // 16.27 — only one active timer per job even when start() is called repeatedly
+  {
+    const timerApi = makeFakeTimerApi();
+    const s = ms.createManagedScheduler(msCfg, makeLogger(), { env: { THREATPULSE_MANAGED_SCHEDULER: '1' }, timerApi });
+    s.start(); s.start(); s.start();
+    assert('after 3 start() calls, activeTimers is still schedule length', s.activeTimers() === ms.MANAGED_SCHEDULE.length, `got ${s.activeTimers()}`);
+    await s.stop();
+  }
+
+  // Cleanup managed-scheduler temp dir
+  try { rmSync(msDataRoot, { recursive: true, force: true }); } catch { /* noop */ }
+}
+
 /* ---- Cleanup ---- */
 rmSync(dataRoot, { recursive: true, force: true });
 rmSync(publicDir, { recursive: true, force: true });

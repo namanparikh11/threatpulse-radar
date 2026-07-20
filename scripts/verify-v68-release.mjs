@@ -90,8 +90,22 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
   // explicitly commits them. The preflight script
   // is itself such a file. Any other working-tree
   // change is a release-preparation blocker.
+  //
+  // The hostinger/v6-8-managed-scheduler branch
+  // is a SEPARATE branch from the V6.8
+  // deployment-preparation branch. On that branch
+  // the working tree is expected to carry files
+  // under hostinger/ (the embedded scheduler and
+  // the refactored cron entrypoints) plus the same
+  // top-level documentation. The preflight is
+  // branch-aware: it widens the allowed dir
+  // prefixes to include hostinger/ ONLY when the
+  // current branch is hostinger/v6-8-managed-scheduler.
+  // Other branches still see the strict allowlist.
   const status = git('status --short');
   const lines = status.split('\n').filter(Boolean);
+  const branch = git('branch --show-current');
+  const isHostingerBranch = branch === 'hostinger/v6-8-managed-scheduler';
   // Allowed directory prefixes — any file under
   // these paths is permitted with any status code.
   const allowedDirPrefixes = [
@@ -99,6 +113,14 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
     'docs/',
     'scripts/',
   ];
+  if (isHostingerBranch) {
+    // The hostinger branch carries the managed
+    // scheduler, the shared cron-spawn helper, and
+    // the refactored cron entrypoints. Every file
+    // under hostinger/ on this branch is a
+    // release-preparation file.
+    allowedDirPrefixes.push('hostinger/');
+  }
   // Allowed exact top-level paths.
   const allowedExactPaths = new Set([
     'README.md',

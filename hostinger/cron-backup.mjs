@@ -11,29 +11,10 @@
  * simply wraps it with the Hostinger lock.
  */
 
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, '..');
-
+import { resolve } from 'node:path';
 import { LOCK_NAMES } from './locks.mjs';
 import { runCronJob } from './cron-runner.mjs';
-
-function spawnHostingerBackup(env = {}) {
-  return new Promise((resolveJob) => {
-    const proc = spawn('node', [resolve(root, 'hostinger/backup.mjs'), '--json'], {
-      cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...env },
-    });
-    let out = ''; let err = '';
-    proc.stdout.on('data', (d) => { out += d.toString(); });
-    proc.stderr.on('data', (d) => { err += d.toString(); });
-    proc.on('error', (e) => resolveJob({ code: 1, out, err: err + '\n' + (e && e.message || String(e)) }));
-    proc.on('close', (code) => resolveJob({ code, out, err }));
-  });
-}
+import { spawnV62Job } from './cron-spawn.mjs';
 
 function mapBackupCodeToStatus(code, stdout) {
   if (code === 0) {
@@ -50,12 +31,12 @@ runCronJob({
   name: LOCK_NAMES.BACKUP_IMPORT,
   job: async ({ logger, config }) => {
     logger.info({ msg: 'backup.invoking-hostinger-backup' });
-    const r = await spawnHostingerBackup({
+    const r = await spawnV62Job('hostinger/backup.mjs', {
       THREATPULSE_STORAGE_BACKEND: config.backend,
       THREATPULSE_DATA_ROOT: config.dataRoot,
       THREATPULSE_BACKUP_DIR: process.env.THREATPULSE_BACKUP_DIR || resolve(config.dataRoot, '..', 'threatpulse-backups'),
-    });
-    logger.info({ msg: 'backup.result', code: r.code, outBytes: r.out.length, errBytes: r.err.length });
+    }, { extraArgs: ['--json'], logger });
+    logger.info({ msg: 'backup.result', code: r.code, timedOut: r.timedOut, outBytes: r.out.length, errBytes: r.err.length });
     return mapBackupCodeToStatus(r.code, r.out);
   },
 }).then((code) => process.exit(code)).catch((err) => {

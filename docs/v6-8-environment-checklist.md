@@ -127,6 +127,53 @@ PHASE 1 (merge approval) and again before PHASE 2
 | Change a `THREATPULSE_BASELINE_SITE_ID` value | yes |
 | Change a `THREATPULSE_BLOBS_ACCESS_TOKEN` value | yes |
 | Change a `THREATPULSE_CREDENTIAL_PEPPER` value | yes (emergency rotation) |
+
+## Hostinger Business managed-Node scheduler (optional)
+
+For Hostinger Business managed-Node deployments
+that do not expose an OS-level cron, the
+application ships an opt-in in-process scheduler.
+The variable names are listed below; no values are
+documented here.
+
+| Variable | Required | Runtime scope | Sensitive | Source | Verification | Rotation impact | Redeploy |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `THREATPULSE_MANAGED_SCHEDULER` | optional | runtime-only | no | Hostinger UI | confirm `/health` reports `{"status":"ok"}` and the log line `managed-scheduler.activated` appears | none (start/stop only) | yes |
+| `THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP` | optional | runtime-only | no | Hostinger UI | confirm the bootstrap log line `managed-scheduler.bootstrap.scheduled` appears when the dataset is missing, or `managed-scheduler.bootstrap.skipped` when it exists | none (start/stop only) | yes |
+
+`THREATPULSE_MANAGED_SCHEDULER` accepts the literal
+value `1`. Every other value (unset, empty, `true`,
+`yes`, `on`, anything else) keeps the scheduler
+disabled.
+
+`THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP` accepts
+the literal value `1`. Every other value disables
+the startup bootstrap.
+
+When the scheduler is enabled:
+
+- The application reuses the same
+  `hostinger/cron-*.mjs` job implementations and the
+  same `hostinger/locks.mjs` mkdir-based locks. No
+  provider, storage, publication, or canonicalization
+  logic is duplicated.
+- Timers are process-local. Cross-process exclusion
+  is provided by the existing mkdir-based cron
+  locks; multiple managed processes cannot
+  concurrently mutate the same job state.
+- The scheduler does NOT add a public HTTP trigger
+  route. The bootstrap, when enabled, inspects the
+  dataset on the local filesystem only.
+- A process restart is safe: the scheduler starts
+  again from the next calculated UTC occurrence, the
+  bootstrap is retried when the dataset is missing,
+  and the existing locks prevent duplicate active
+  jobs.
+- The standalone `hostinger/cron-*.mjs` entrypoints
+  remain available for VPS deployments and for
+  operator-run ad-hoc schedules. The managed
+  scheduler is an additive compatibility layer, not
+  a replacement.
 | Add a new variable to the public site | yes |
 | Add a new variable to the gateway site | yes |
 | Remove a variable from the public site | yes |

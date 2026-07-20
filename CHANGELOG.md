@@ -7,6 +7,56 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## Hostinger Business managed-Node scheduler
+
+A separate `hostinger/v6-8-managed-scheduler` branch
+adds an opt-in in-process scheduler for Hostinger
+Business managed-Node deployments that do not
+expose an OS-level cron. The scheduler is disabled
+by default and reuses the existing
+`hostinger/cron-*.mjs` job implementations and the
+existing `hostinger/locks.mjs` mkdir-based locks.
+No provider, storage, publication, or
+canonicalization logic is duplicated; the
+standalone cron entrypoints remain available for
+VPS deployments.
+
+- `hostinger/cron-spawn.mjs` (new): the single
+  source of truth for V6.2 job spawning, shared
+  by every cron entrypoint and the managed
+  scheduler.
+- `hostinger/cron-runner.mjs`: extracted a
+  `runJob` helper that does NOT install
+  SIGINT/SIGTERM handlers by default, so the
+  embedded scheduler can call it without taking
+  over the application's signal lifecycle. The
+  legacy `runCronJob` exit-on-signal contract is
+  preserved for the standalone entrypoints.
+- `hostinger/managed-scheduler.mjs` (new): the
+  embedded scheduler. Accepts an injected clock
+  and timer API for tests. Schedules every job by
+  computing the next UTC occurrence and arming a
+  single bounded `setTimeout`; reschedules
+  exactly one timer after each execution. Never
+  accumulates duplicate timers. Never calls
+  `process.exit`.
+- `hostinger/app.mjs`: starts the embedded
+  scheduler after the HTTP server is listening
+  when `THREATPULSE_MANAGED_SCHEDULER=1`, and
+  calls `scheduler.stop()` during graceful
+  shutdown with a bounded grace period for any
+  in-flight job.
+- `scripts/acceptance-v63-hostinger.mjs`:
+  extended with 77 new tests covering the
+  managed scheduler. The total acceptance suite
+  count remains 37 — no new suite file is added.
+
+The exact variable names are
+`THREATPULSE_MANAGED_SCHEDULER` and
+`THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP` (the
+latter only meaningful when the former is `1`).
+No values are documented in this changelog.
+
 ## V6.8 controlled deployment preparation
 
 A separate `release/v6-8-deployment-preparation` branch

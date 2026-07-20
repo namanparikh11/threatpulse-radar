@@ -172,6 +172,60 @@ order; deviations must be explicitly justified.
 - This runbook does NOT include any actual
   environment-variable value.
 
+## Hostinger Business managed-Node scheduler (optional)
+
+The Hostinger Business managed-Node application
+plan does NOT expose Cron Jobs in the operator
+dashboard and the ordinary SSH shell does not
+expose `node` or `npm`. The standalone
+`hostinger/cron-*.mjs` entrypoints therefore cannot
+be launched directly on a managed Business-hosting
+deployment.
+
+For managed-hosting deployments, the application
+ships an opt-in **in-process scheduler** that runs
+inside the same Node process as the HTTP server:
+
+- Enable with `THREATPULSE_MANAGED_SCHEDULER=1`.
+- Optional bootstrap with
+  `THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP=1`.
+- The scheduler reuses the existing
+  `hostinger/cron-*.mjs` job implementations and the
+  existing `hostinger/locks.mjs` mkdir-based locks.
+  No provider, storage, publication or
+  canonicalization logic is duplicated.
+- Timers are process-local. Cross-process exclusion
+  is provided by the existing mkdir-based cron
+  locks; multiple managed processes cannot
+  concurrently mutate the same job state.
+- The scheduler does NOT add a public HTTP trigger
+  route. The bootstrap, when enabled, inspects the
+  dataset on the local filesystem only.
+- A process restart is safe: the scheduler starts
+  again from the next calculated UTC occurrence,
+  the bootstrap is retried when the dataset is
+  missing, and the existing locks prevent duplicate
+  active jobs.
+- The standalone `hostinger/cron-*.mjs` entrypoints
+  remain available for VPS deployments and for
+  operator-run ad-hoc schedules. The managed
+  scheduler is an additive compatibility layer, not
+  a replacement.
+
+Schedules (UTC):
+
+- dataset refresh: minute 0 and 30 of every hour
+- baseline refresh: minute 10 of every hour
+- dataset publish: minute 20 and 50 of every hour
+- public-intel GC: minute 25 of every hour
+- state verify: 06:30 UTC daily
+- backup: 02:40 UTC daily
+
+The exact variable names are listed in
+[`docs/v6-8-environment-checklist.md`](./v6-8-environment-checklist.md).
+No values are documented in this runbook; only the
+variable names.
+
 ## Approval matrix
 
 | Action | Required role | Approval step |

@@ -47,6 +47,7 @@ import { resolveHostingerConfig, sanitizeError, isPathInside } from './_lib.mjs'
 import { createLogger, dailyLogPath } from './logger.mjs';
 import { checkReadiness, sanitizeReadinessForPublic } from './readiness.mjs';
 import { serveStatic, applySecurityHeaders, MAX_PATH_LENGTH } from './static.mjs';
+import { createManagedScheduler } from './managed-scheduler.mjs';
 
 // Defense-in-depth cap on the total size of all
 // request headers. Node's default
@@ -331,18 +332,50 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
+// 4a. Managed scheduler. The Hostinger Business
+// managed-Node plan does not expose an OS cron.
+// When THREATPULSE_MANAGED_SCHEDULER=1, start an
+// in-process scheduler after the HTTP server is
+// listening. The scheduler is process-local and
+// reuses the same locks and V6.2 jobs as the
+// standalone cron entrypoints. The application
+// keeps the only signal-handler installation;
+// the scheduler is stopped via `stop()` during
+// shutdown, not via a signal.
+let managedScheduler = null;
+function startManagedScheduler() {
+  managedScheduler = createManagedScheduler(cfg, logger);
+  if (!managedScheduler.isEnabled()) {
+    logger.info({ msg: 'managed-scheduler.disabled' });
+    return;
+  }
+  try {
+    const r = managedScheduler.start();
+    logger.info({ msg: 'managed-scheduler.activated', activeTimers: r.activeTimers, bootstrap: r.bootstrap });
+  } catch (err) {
+    logger.error({ msg: 'managed-scheduler.activation-failed', error: sanitizeError(err) });
+  }
+}
+
 server.listen(cfg.port, cfg.host, () => {
   logger.info({ msg: 'listening', host: cfg.host, port: cfg.port });
   // eslint-disable-next-line no-console
   console.error(`[v6.3 hostinger] listening on http://${cfg.host}:${cfg.port} (storage=${cfg.backend}, data=${cfg.dataRoot})`);
+  // Start the embedded scheduler AFTER the HTTP
+  // server is listening so a slow startup or a
+  // refresh-failure cannot delay first-byte.
+  startManagedScheduler();
 });
 
 // 5. Graceful shutdown. The Hostinger control panel
 // sends SIGTERM (preferred) or SIGINT (fallback) when
 // the application needs to restart. We:
 //   a) stop accepting new connections (server.close)
-//   b) wait up to 5 seconds for in-flight requests
-//   c) exit 0
+//   b) stop the managed scheduler (clear timers
+//      and wait for any in-flight job within a
+//      bounded grace period)
+//   c) wait up to 5 seconds for in-flight requests
+//   d) exit 0
 function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -352,10 +385,18 @@ function shutdown(signal) {
     process.exit(0);
   }, 5000);
   timeout.unref();
-  server.close(() => {
-    clearTimeout(timeout);
-    logger.info({ msg: 'shutdown.done' });
-    process.exit(0);
+  // Stop the scheduler first so no NEW jobs start
+  // after server.close() begins. The scheduler's
+  // own grace period (default 5s) caps the wait.
+  const stopScheduler = managedScheduler && managedScheduler.isEnabled()
+    ? managedScheduler.stop().catch((err) => logger.error({ msg: 'managed-scheduler.stop-error', error: sanitizeError(err) }))
+    : Promise.resolve();
+  stopScheduler.finally(() => {
+    server.close(() => {
+      clearTimeout(timeout);
+      logger.info({ msg: 'shutdown.done' });
+      process.exit(0);
+    });
   });
 }
 

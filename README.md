@@ -556,6 +556,44 @@ diff). The V6.8 release-candidate baseline carried
 branch carries 37 (the V6.8 deployment-preparation
 acceptance suite).
 
+## Hostinger Business managed-Node scheduler (additive)
+
+A separate `hostinger/v6-8-managed-scheduler`
+branch adds an opt-in in-process scheduler for
+Hostinger Business managed-Node deployments that
+do not expose an OS-level cron. The scheduler is
+disabled by default and reuses the existing
+`hostinger/cron-*.mjs` job implementations and the
+existing `hostinger/locks.mjs` mkdir-based locks.
+No provider, storage, publication, or
+canonicalization logic is duplicated; the standalone
+cron entrypoints remain available for VPS
+deployments.
+
+- Enable with `THREATPULSE_MANAGED_SCHEDULER=1`
+  (literal value; any other value keeps the
+  scheduler disabled).
+- Optional one-shot bootstrap on a missing dataset
+  with `THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP=1`.
+- Schedules (UTC): dataset refresh on minute 0 and
+  30, baseline refresh at :10, dataset publish at
+  :20 and :50, public-intel GC at :25, state
+  verify at 06:30 daily, backup at 02:40 daily.
+- The scheduler adds no public HTTP trigger route.
+  A process restart is safe; the scheduler starts
+  again from the next calculated UTC occurrence,
+  the bootstrap is retried when the dataset is
+  missing, and the existing locks prevent
+  duplicate active jobs.
+- The total acceptance suite count remains 37 —
+  the existing `scripts/acceptance-v63-hostinger.mjs`
+  is extended with 77 new tests for the managed
+  scheduler.
+
+The exact variable names are listed in
+[`docs/v6-8-environment-checklist.md`](docs/v6-8-environment-checklist.md).
+No values are documented; only the variable names.
+
 ## V6.8 — Release candidate consolidation (additive)
 
 V6.8 is a release-candidate consolidation milestone. It

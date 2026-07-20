@@ -125,6 +125,27 @@
     "diagnose": "npm run diagnose:hostinger",
     "manifest": "npm run manifest:hostinger"
   },
+  "hostingerManagedScheduler": {
+    "purpose": "Opt-in in-process scheduler for Hostinger Business managed-Node deployments that do not expose an OS-level cron. Disabled by default; all standalone hostinger/cron-*.mjs entrypoints remain available for VPS deployments and for operator-run schedules.",
+    "enableVariable": "THREATPULSE_MANAGED_SCHEDULER",
+    "enableAcceptedValues": ["1"],
+    "bootstrapVariable": "THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP",
+    "bootstrapAcceptedValues": ["1"],
+    "schedulesUtc": {
+      "dataset-refresh":   "minute 0 and 30 of every hour",
+      "baseline-refresh":  "minute 10 of every hour",
+      "dataset-publish":   "minute 20 and 50 of every hour",
+      "public-intel-gc":   "minute 25 of every hour",
+      "state-verify":      "06:30 UTC daily",
+      "backup":            "02:40 UTC daily"
+    },
+    "bootstrapBehavior": "When THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP=1 and the dataset is missing at $THREATPULSE_DATA_ROOT/dataset/latest.json, schedule one dataset-refresh shortly after startup. The bootstrap is one-shot per process lifetime; missing-dataset bootstrap is retried on the next process restart.",
+    "restartBehavior": "On process restart, the scheduler starts again from the next calculated UTC occurrence. Existing mkdir-based cron locks in hostinger/locks.mjs prevent duplicate active jobs across processes. Previous valid dataset remains the last-known-good after a provider failure.",
+    "exposesPublicHttpRoute": false,
+    "thirdPartyScheduler": false,
+    "usesExistingCrons": true,
+    "usesExistingLocks": true
+  },
   "knownDeferredWork": [
     "v2.0 remediation templates (V7.x roadmap)",
     "multi-org workspace collaboration",

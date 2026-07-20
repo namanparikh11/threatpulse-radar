@@ -34,25 +34,44 @@ export const CRON_EXIT = Object.freeze({
 });
 
 /**
- * Run a single cron job under a lock.
+ * Run a single cron job under a lock. Returns an
+ * exit code but NEVER calls `process.exit`. The
+ * caller is responsible for exiting the process
+ * (the standalone cron entrypoints do that; the
+ * embedded scheduler does not).
  *
- *   options.name      lock name (must be in LOCK_NAMES)
- *   options.job       async function (ctx) → { status, ... }
- *   options.owner     string; default = `${name}:${pid}`
- *   options.ttlMs     lock TTL in ms; default 15 minutes
- *   options.argv, options.env, options.cwd  override the
- *                     default process values (used by the
- *                     test suite)
+ *   options.name           lock name (must be in
+ *                          LOCK_NAMES)
+ *   options.job            async function (ctx) →
+ *                          { status, ... }
+ *   options.owner          string; default =
+ *                          `${name}:${pid}`
+ *   options.ttlMs          lock TTL in ms; default
+ *                          15 minutes
+ *   options.argv, options.env, options.cwd
+ *                          override the default
+ *                          process values (used by
+ *                          the test suite)
+ *   options.installSignals when true (default),
+ *                          install SIGINT/SIGTERM
+ *                          handlers that release
+ *                          the lock and call
+ *                          `process.exit(130)`. The
+ *                          embedded scheduler
+ *                          passes `false` because
+ *                          the application owns
+ *                          the signal handlers and
+ *                          the scheduler is stopped
+ *                          via `stop()`, not via
+ *                          a signal.
  */
-export async function runCronJob(options) {
-  const { name, job, owner, ttlMs, argv = process.argv, env = process.env, cwd = process.cwd() } = options;
+export async function runJob(options) {
+  const { name, job, owner, ttlMs, installSignals = true, argv = process.argv, env = process.env, cwd = process.cwd() } = options;
   if (!name) {
-    console.error(JSON.stringify({ error: 'invalid-args', reason: 'missing-name' }));
-    return CRON_EXIT.INVALID_ARGS;
+    return { exitCode: CRON_EXIT.INVALID_ARGS, summary: { status: 'invalid-args', reason: 'missing-name' } };
   }
   if (typeof job !== 'function') {
-    console.error(JSON.stringify({ error: 'invalid-args', reason: 'missing-job' }));
-    return CRON_EXIT.INVALID_ARGS;
+    return { exitCode: CRON_EXIT.INVALID_ARGS, summary: { status: 'invalid-args', reason: 'missing-job' } };
   }
   const cfg = resolveHostingerConfig({ argv, env, cwd });
   const logFile = dailyLogPath(cfg.logDir);
@@ -65,12 +84,13 @@ export async function runCronJob(options) {
   });
   if (!lock.acquired) {
     logger.warn({ msg: 'cron.lock.held', holder: lock.holder, expiresAt: lock.expiresAt, reason: lock.reason });
-    console.error(`[${name}] lock held (holder=${lock.holder || '?'}, expires=${lock.expiresAt || '?'}, reason=${lock.reason || '?'})`);
-    return CRON_EXIT.LOCK_HELD;
+    return { exitCode: CRON_EXIT.LOCK_HELD, summary: { status: 'lock-held', holder: lock.holder || null, expiresAt: lock.expiresAt || null, reason: lock.reason || null } };
   }
-  // Install signal handlers. The cleanup releases
-  // the lock and exits 130. We `unref` the in-flight
-  // request so the process can exit cleanly.
+  // Signal handlers (only when the caller wants
+  // them). The embedded scheduler passes
+  // `installSignals: false` so the application's
+  // own SIGINT/SIGTERM handler is the single
+  // owner of the process lifecycle.
   let stopping = false;
   const cleanup = async () => {
     try { await releaseCronLock({ locksDir: cfg.locksDir, name, owner: lockOwner }); } catch { /* noop */ }
@@ -82,8 +102,10 @@ export async function runCronJob(options) {
     await cleanup();
     process.exit(130);
   };
-  process.on('SIGINT', onSignal);
-  process.on('SIGTERM', onSignal);
+  if (installSignals) {
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
+  }
   let exitCode = CRON_EXIT.SUCCESS;
   let summary = { status: 'ok' };
   try {
@@ -115,8 +137,19 @@ export async function runCronJob(options) {
   } finally {
     await cleanup();
   }
-  // Operator-readable one-line summary on stdout
-  // (the Hostinger control panel picks it up).
-  console.log(JSON.stringify({ cron: name, ...summary, exitCode, ts: new Date().toISOString() }));
+  return { exitCode, summary };
+}
+
+/**
+ * Run a single cron job under a lock and exit the
+ * process with the canonical exit code. This is the
+ * legacy V6.3 entrypoint used by the standalone
+ * cron command files. The embedded scheduler uses
+ * `runJob` directly so it can stay alive across
+ * many executions.
+ */
+export async function runCronJob(options) {
+  const { exitCode, summary } = await runJob(options);
+  console.log(JSON.stringify({ cron: options.name, ...summary, exitCode, ts: new Date().toISOString() }));
   return exitCode;
 }

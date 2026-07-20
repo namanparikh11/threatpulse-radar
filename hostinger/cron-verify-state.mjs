@@ -17,29 +17,9 @@
  * notifications or a monitoring webhook.
  */
 
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, '..');
-
 import { LOCK_NAMES } from './locks.mjs';
 import { runCronJob } from './cron-runner.mjs';
-
-function spawnV62Job(scriptRel, env = {}) {
-  return new Promise((resolveJob) => {
-    const proc = spawn('node', [resolve(root, scriptRel), '--json'], {
-      cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...env },
-    });
-    let out = ''; let err = '';
-    proc.stdout.on('data', (d) => { out += d.toString(); });
-    proc.stderr.on('data', (d) => { err += d.toString(); });
-    proc.on('error', (e) => resolveJob({ code: 1, out, err: err + '\n' + (e && e.message || String(e)) }));
-    proc.on('close', (code) => resolveJob({ code, out, err }));
-  });
-}
+import { spawnV62Job } from './cron-spawn.mjs';
 
 function mapV62CodeToStatus(code, stdout) {
   if (code === 0) {
@@ -64,8 +44,8 @@ runCronJob({
     const r = await spawnV62Job('jobs/verify-state.mjs', {
       THREATPULSE_STORAGE_BACKEND: config.backend,
       THREATPULSE_DATA_ROOT: config.dataRoot,
-    });
-    logger.info({ msg: 'verify-state.v62-result', code: r.code });
+    }, { extraArgs: ['--json'], logger });
+    logger.info({ msg: 'verify-state.v62-result', code: r.code, timedOut: r.timedOut });
     return mapV62CodeToStatus(r.code, r.out);
   },
 }).then((code) => process.exit(code)).catch((err) => {
