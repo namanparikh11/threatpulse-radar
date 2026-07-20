@@ -54,6 +54,9 @@ server. Additional observation signals:
 | `managed-scheduler.stopped` log line on shutdown | The scheduler cleared every active timer before exit | None — informational |
 | `managed-scheduler.error` log line | A job threw an unhandled exception | Inspect the inner job's logs; the lock is released before the next occurrence is scheduled |
 | `cron.done` `status: 'lock-held'` | A concurrent run was already in progress | None — the next scheduled occurrence is still armed |
+| `spawn.error` log line with `code: 'ENOENT'` and `runtimeExecutable: 'process.execPath'` | The OS rejected the child-process spawn. ENOENT after the `process.execPath` hotfix is unexpected; investigate whether the runtime replaced the Node binary or stripped execute permission | Reapply the hotfix; if EPERM/EACCES appears instead, the runtime forbids child processes and an in-process job adapter is required |
+| `spawn.error` log line with `code: 'EPERM'` or `code: 'EACCES'` | The runtime forbids child processes entirely | The current executable-resolution hotfix does NOT cover this case. Plan a follow-up that re-implements the scheduled jobs as in-process job adapters |
+| `managed-scheduler.spawn-failed` log line | The scheduler caught a sanitized `spawnError` and will rearm the next occurrence | The job is reported as `invalid-args`; the next scheduled occurrence is still armed |
 
 ### First 24–48 hours — long-term stability
 

@@ -556,6 +556,26 @@ diff). The V6.8 release-candidate baseline carried
 branch carries 37 (the V6.8 deployment-preparation
 acceptance suite).
 
+## Hostinger managed scheduler ENOENT hotfix (additive)
+
+A separate `hostinger/v6-8-managed-scheduler-execpath`
+branch fixes a deployment-time ENOENT observed on
+the Hostinger Business managed-Node temporary
+deployment. Every scheduled child process is now
+spawned with `process.execPath` (the absolute path
+of the currently running Node executable) instead
+of the bare string `node`. The bare string failed
+because the managed-Node runtime's PATH is not
+propagated to `child_process.spawn`; the absolute
+path of the running executable is always present.
+The fix preserves every V6.6+ invariant:
+no shell is used, no provider/storage/canonicalization
+logic is duplicated, no public HTTP route is added,
+no third-party scheduler is introduced, and the
+existing standalone `hostinger/cron-*.mjs` entrypoints
+remain importable. The total acceptance suite count
+remains 37.
+
 ## Hostinger Business managed-Node scheduler (additive)
 
 A separate `hostinger/v6-8-managed-scheduler`

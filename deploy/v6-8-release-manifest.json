@@ -144,7 +144,11 @@
     "exposesPublicHttpRoute": false,
     "thirdPartyScheduler": false,
     "usesExistingCrons": true,
-    "usesExistingLocks": true
+    "usesExistingLocks": true,
+    "scheduledJobExecutable": "process.execPath",
+    "executableResolution": "Every scheduled child process is spawned with `process.execPath` as the executable (NOT the bare string 'node'). The Hostinger Business managed-Node application dashboard starts hostinger/app.mjs with a known Node executable, but the same PATH is not propagated to subsequent child_process.spawn calls, so a bare `node` would resolve with ENOENT. `process.execPath` is the absolute path of the currently running Node executable and does not depend on PATH. The `execPath` and `spawnApi` parameters in hostinger/cron-spawn.mjs are TEST-ONLY injection points; production leaves both undefined.",
+    "observedDeploymentBlocker": "On the production-style Hostinger temporary deployment the bare-spawn hotfix was required. The runtime logged both 'spawn' and 'ENOENT' for every scheduled dataset-refresh and dataset-publish.",
+    "futureFailureMode": "An EPERM or EACCES spawn failure (instead of ENOENT) would indicate that Hostinger prohibits child processes entirely. In that case the scheduled jobs would have to be re-implemented as in-process job adapters (calling the underlying job functions directly without spawn). The current hotfix does NOT cover that scenario."
   },
   "knownDeferredWork": [
     "v2.0 remediation templates (V7.x roadmap)",

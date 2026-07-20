@@ -212,6 +212,52 @@ inside the same Node process as the HTTP server:
   scheduler is an additive compatibility layer, not
   a replacement.
 
+### Child-process executable (process.execPath)
+
+Every scheduled child process is spawned with
+`process.execPath` as the executable — NOT the bare
+string `node`. The Hostinger managed-Node
+application dashboard starts `hostinger/app.mjs`
+with a known Node executable, but the same PATH is
+NOT propagated to subsequent `child_process.spawn`
+calls. A bare `spawn("node", ...)` therefore fails
+with `ENOENT` because `node` is not on the
+child-process PATH.
+
+`process.execPath` is the absolute path of the
+currently running Node executable and does not
+depend on PATH. It matches the runtime version and
+is always present. The `execPath` and `spawnApi`
+parameters in `hostinger/cron-spawn.mjs` are
+TEST-ONLY injection points; production leaves both
+undefined.
+
+Standalone environments (VPS, Docker, dev
+workstations) keep working because the bare
+`node` is on PATH there; the change to
+`process.execPath` is also safe on those
+environments because `process.execPath` is the
+executable that started the current process.
+
+### Observed deployment blocker
+
+On the production-style Hostinger temporary
+deployment the bare-spawn hotfix was required. The
+runtime logged both `spawn` and `ENOENT` for every
+scheduled dataset-refresh and dataset-publish,
+while the HTTP server (`/health`, `/ready`,
+`/api/dataset`) continued to respond.
+
+### Future failure mode
+
+A later `EPERM` or `EACCES` spawn failure (instead
+of `ENOENT`) would indicate that Hostinger prohibits
+child processes entirely. In that case the scheduled
+jobs would have to be re-implemented as in-process
+job adapters (calling the underlying job functions
+directly without spawn). The current hotfix does
+NOT cover that scenario.
+
 Schedules (UTC):
 
 - dataset refresh: minute 0 and 30 of every hour

@@ -201,16 +201,40 @@ export function sameUtcMinute(a, b) {
  * `runJob` acquires the canonical Hostinger cron
  * lock and emits the sanitized log records. The
  * job body spawns the V6.2 job as a child process
- * using the shared `spawnV62Job` helper.
+ * using the shared `spawnV62Job` helper. The
+ * `options` argument is the scheduler's options
+ * bag; only `execPath` and `spawnApi` are read,
+ * and they are TEST-ONLY injection points. In
+ * production both are undefined, so the spawner
+ * uses the managed-Node executable at
+ * `process.execPath` (see
+ * `hostinger/cron-spawn.mjs`).
  */
-function buildJob(entry) {
+function buildJob(entry, options) {
   return async ({ logger, config }) => {
-    logger.info({ msg: 'managed-scheduler.invoking-v62-module', scheduleLabel: entry.label });
+    logger.info({ msg: 'managed-scheduler.invoking-v62-module', scheduleLabel: entry.label, runtimeExecutable: 'process.execPath' });
     const r = await spawnV62Job(entry.scriptRel, {
       THREATPULSE_STORAGE_BACKEND: config.backend,
       THREATPULSE_DATA_ROOT: config.dataRoot,
-    }, { extraArgs: entry.extraArgs || [], logger });
-    logger.info({ msg: 'managed-scheduler.v62-result', scheduleLabel: entry.label, code: r.code, timedOut: r.timedOut });
+    }, {
+      extraArgs: entry.extraArgs || [],
+      logger,
+      execPath: options && options.execPath,
+      spawnApi: options && options.spawnApi,
+    });
+    // Surface a sanitized spawnError when the
+    // child could not be started. The lock-held
+    // path is mapped to a separate status so a
+    // lock-held skip is not misclassified as a
+    // spawn failure.
+    if (r.spawnError) {
+      logger.error({
+        msg: 'managed-scheduler.spawn-failed',
+        scheduleLabel: entry.label,
+        error: r.spawnError,
+      });
+    }
+    logger.info({ msg: 'managed-scheduler.v62-result', scheduleLabel: entry.label, code: r.code, timedOut: r.timedOut, runtimeExecutable: 'process.execPath' });
     return mapV62CodeToStatus(r.code);
   };
 }
@@ -338,7 +362,7 @@ export function createManagedScheduler(config, logger, options = {}) {
       try {
         const { exitCode, summary } = await runJob({
           name: entry.name,
-          job: buildJob(entry),
+          job: buildJob(entry, options),
           // The application owns SIGINT/SIGTERM; the
           // scheduler must not install handlers that
           // exit the whole process.

@@ -7,6 +7,62 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## Hostinger managed scheduler ENOENT hotfix
+
+A separate `hostinger/v6-8-managed-scheduler-execpath`
+branch fixes a deployment-time ENOENT observed on
+the Hostinger Business managed-Node temporary
+deployment. Every scheduled child process is now
+spawned with `process.execPath` (the absolute path
+of the currently running Node executable) instead
+of the bare string `node`. The bare string failed
+because the managed-Node runtime's PATH is not
+propagated to `child_process.spawn`; the absolute
+path of the running executable is always present.
+
+- `hostinger/cron-spawn.mjs`: the production
+  default for the child executable is
+  `process.execPath`. The `execPath` and
+  `spawnApi` parameters are TEST-ONLY injection
+  points; an empty, missing, or shell-metachar
+  injection is rejected with a sanitized
+  `spawnError`. ENOENT, EACCES, and EPERM failures
+  are now reported in a sanitized
+  `spawnError` record on the result object —
+  `code`, `spawnable`, `phase`, and
+  `runtimeExecutable: "process.execPath"`. The
+  absolute executable path is NEVER included.
+- `hostinger/managed-scheduler.mjs`: forwards
+  `options.execPath` and `options.spawnApi` to
+  `spawnV62Job` so the test suite can inject a
+  fake spawn. In production both are undefined and
+  the spawner uses the managed-Node executable.
+  The scheduler logs `managed-scheduler.spawn-failed`
+  with the sanitized spawnError when a child
+  could not be started.
+- `scripts/verify-v68-release.mjs`: branch-aware
+  allowlist now also accepts the
+  `hostinger/v6-8-managed-scheduler-execpath`
+  branch. Other branches still see the strict
+  deployment-preparation allowlist.
+- `scripts/acceptance-v63-hostinger.mjs`: extended
+  with a new section [17] proving the
+  `process.execPath` behavior end-to-end. Total
+  acceptance suite count remains 37.
+
+Observed deployment blocker: the runtime logged
+both `spawn` and `ENOENT` for every scheduled
+dataset-refresh and dataset-publish while the HTTP
+server (`/health`, `/ready`, `/api/dataset`)
+continued to respond.
+
+Future failure mode: a later `EPERM` or `EACCES`
+spawn failure would indicate that Hostinger
+prohibits child processes entirely. In that case
+the scheduled jobs would have to be re-implemented
+as in-process job adapters. The current hotfix
+does NOT cover that scenario.
+
 ## Hostinger Business managed-Node scheduler
 
 A separate `hostinger/v6-8-managed-scheduler` branch
