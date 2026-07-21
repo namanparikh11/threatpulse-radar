@@ -7,6 +7,54 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## Hostinger dataset-route compatibility alias
+
+A separate `hostinger/v6-8-dataset-route-compatibility`
+branch adds a read-only HTTP compatibility alias so the
+frozen V6.8 frontend (which hardcodes three URLs
+beginning with `/.netlify/functions/dataset`) can reach
+the same portable `handleDataset` implementation on a
+Hostinger Business managed-Node deployment.
+
+- `hostinger/app.mjs`: the alias
+  `/.netlify/functions/dataset` is added as a thin
+  pass-through to the same `handleDataset(req, {
+  config: portable })` call. POST / PUT / PATCH /
+  DELETE on the alias return `405` (the upstream
+  method allowlist is unchanged). Any other
+  `/.netlify/functions/{name}` path is served an
+  honest `404` so the SPA shell does not masquerade
+  as a refresh endpoint. The alias is read-only; no
+  write, refresh, publication, backup, GC, or
+  verification action is reachable through it.
+- `scripts/verify-v68-release.mjs`: branch-aware
+  clean-tree test also accepts the
+  `hostinger/v6-8-dataset-route-compatibility`
+  branch.
+- `scripts/acceptance-v63-hostinger.mjs`: extended
+  with a new section [19] (29 tests) covering the
+  alias. The total acceptance suite count remains
+  37 — no new suite file is added.
+
+Observed production state preserved:
+
+- The alias exposes no public refresh endpoint; the
+  managed Hostinger scheduler
+  (`THREATPULSE_MANAGED_SCHEDULER=1`) remains the
+  only Hostinger refresh mechanism.
+- The SPA fallback does NOT intercept the dataset
+  path; the alias is registered before the
+  `serveStatic` call.
+- Method restrictions are unchanged: GET and HEAD
+  only on the alias, 405 for any other method.
+- No dataset-building logic is duplicated. No
+  Netlify runtime API is invoked. No credential is
+  required.
+- Future cleanup: the alias exists only because the
+  frozen V6.8 frontend still uses the Netlify path.
+  A follow-up can migrate the frontend to a
+  provider-neutral endpoint and remove the alias.
+
 ## Hostinger filesystem intelligence-store parity fix
 
 A separate `hostinger/v6-8-filesystem-intelligence-stores`

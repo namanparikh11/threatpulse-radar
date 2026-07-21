@@ -267,6 +267,58 @@ const server = createServer(async (req, res) => {
       writeResponse(res, r);
       return;
     }
+    // V6.8 Hostinger dataset-route compatibility alias.
+    //
+    // The frozen V6.8 frontend hardcodes three URLs that
+    // begin with `/.netlify/functions/dataset`:
+    // the live-data proxy, the per-CVE OSV view
+    // (`?view=osv&...`), and the per-category change
+    // panel (`?view=changes&...`). The canonical
+    // Hostinger route is `/api/dataset`; this alias
+    // exists so the frozen frontend's `fetch` calls
+    // resolve to the same portable `handleDataset`
+    // implementation.
+    //
+    // Contract:
+    //   - GET and HEAD only (POST/PUT/PATCH/DELETE
+    //     remain 405 via the upstream method allowlist)
+    //   - the same query string is forwarded
+    //   - the response is the exact same JSON body
+    //     and the exact same status code as
+    //     `/api/dataset`
+    //   - the path is NOT a Netlify Function; on
+    //     Hostinger it is a plain HTTP route handled
+    //     by the portable Node server
+    //   - the path is read-only; no write, refresh,
+    //     publication, backup, GC or verification
+    //     action is reachable through it
+    if (path === '/.netlify/functions/dataset') {
+      const r = await handleDataset(req, { config: portable });
+      writeResponse(res, r);
+      return;
+    }
+    // V6.8 Hostinger Netlify-compatibility sink.
+    //
+    // Any other `/.netlify/functions/{name}` path is
+    // served an honest 404 instead of falling through
+    // to the SPA shell. The Hostinger application
+    // does NOT implement the Netlify Function
+    // surface; only the `dataset` read alias is
+    // exposed. This guard prevents the SPA shell
+    // from being returned for paths that a Netlify
+    // deployment would treat as a function — a user
+    // hitting e.g.
+    // `/.netlify/functions/refresh-dataset-background`
+    // would otherwise see a 200 OK with the SPA HTML,
+    // which is misleading. The honest 404 makes it
+    // clear that the function does not exist on the
+    // Hostinger deployment.
+    if (path.startsWith('/.netlify/functions/')) {
+      res.statusCode = 404;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: 'not-found' }));
+      return;
+    }
     // Static + SPA fallback. API routes are above
     // this branch so they always win precedence.
     const staticRes = serveStatic({

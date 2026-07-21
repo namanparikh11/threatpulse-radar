@@ -150,6 +150,18 @@
     "observedDeploymentBlocker": "On the production-style Hostinger temporary deployment the bare-spawn hotfix was required. The runtime logged both 'spawn' and 'ENOENT' for every scheduled dataset-refresh and dataset-publish.",
     "futureFailureMode": "An EPERM or EACCES spawn failure (instead of ENOENT) would indicate that Hostinger prohibits child processes entirely. In that case the scheduled jobs would have to be re-implemented as in-process job adapters (calling the underlying job functions directly without spawn). The current hotfix does NOT cover that scenario."
   },
+  "hostingerDatasetRouteCompatibility": {
+    "purpose": "Read-only HTTP compatibility alias so the frozen V6.8 frontend (which hardcodes three URLs beginning with /.netlify/functions/dataset) can reach the same portable handleDataset implementation on a Hostinger Business managed-Node deployment.",
+    "canonicalHostingerRoute": "/api/dataset",
+    "compatibilityAlias": "/.netlify/functions/dataset",
+    "notANetlifyFunction": "On Hostinger the alias is a plain HTTP route handled by the portable Node server. It is NOT a Netlify Function. No Netlify runtime is invoked; no credential is required.",
+    "methodAllowlist": ["GET", "HEAD"],
+    "methodRejection": "POST, PUT, PATCH, DELETE on the alias return 405 (the upstream method allowlist is unchanged).",
+    "readOnly": "The alias is read-only. No write, refresh, publication, backup, GC or verification action is reachable through it.",
+    "noPublicRefreshEndpoint": "Any /.netlify/functions/{name} path other than /dataset is served an honest 404. The SPA shell does NOT masquerade as a refresh endpoint. /api/dataset remains the canonical Hostinger path; future work can migrate the frontend to a provider-neutral endpoint and remove the alias.",
+    "noDuplicateLogic": "The alias is a thin pass-through to the same handleDataset(req, { config: portable }) call. No dataset-building logic is duplicated. No public refresh route is introduced.",
+    "managedSchedulerRemainsSoleRefresh": "The managed Hostinger scheduler (THREATPULSE_MANAGED_SCHEDULER=1) remains the only Hostinger refresh mechanism. The alias exposes no write trigger."
+  },
   "hostingerFilesystemIntelligenceStores": {
     "purpose": "Filesystem storage-adapter parity for every Blob-store namespace the public pipeline depends on, so the managed-Node deployment can run with THREATPULSE_STORAGE_BACKEND=filesystem and no Netlify runtime context.",
     "filesystemDataRoot": "THREATPULSE_DATA_ROOT",

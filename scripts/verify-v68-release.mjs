@@ -111,7 +111,8 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
   const branch = git('branch --show-current');
   const isHostingerBranch = branch === 'hostinger/v6-8-managed-scheduler'
     || branch === 'hostinger/v6-8-managed-scheduler-execpath'
-    || branch === 'hostinger/v6-8-filesystem-intelligence-stores';
+    || branch === 'hostinger/v6-8-filesystem-intelligence-stores'
+    || branch === 'hostinger/v6-8-dataset-route-compatibility';
   // Allowed directory prefixes — any file under
   // these paths is permitted with any status code.
   const allowedDirPrefixes = [

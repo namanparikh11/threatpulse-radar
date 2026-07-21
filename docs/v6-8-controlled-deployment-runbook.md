@@ -319,6 +319,50 @@ observation period ends: an operator can flip
 `THREATPULSE_STORAGE_BACKEND` back to `netlify` and
 the same code path serves both backends.
 
+## Hostinger dataset-route compatibility alias (frozen frontend)
+
+The frozen V6.8 frontend hardcodes three URLs that
+begin with `/.netlify/functions/dataset`:
+
+- the live-data proxy (`fetchVulnerabilities`),
+- the per-CVE OSV view (`?view=osv&...`),
+- the per-category change panel (`?view=changes&...`).
+
+On a Hostinger Business managed-Node deployment the
+canonical route is `/api/dataset`; the alias
+`/.netlify/functions/dataset` is a read-only HTTP
+compatibility path that forwards to the same
+portable `handleDataset` implementation. The alias is
+NOT a Netlify Function. On Hostinger it is a plain
+HTTP route handled by the portable Node server. No
+Netlify runtime is invoked; no credential is required.
+
+The alias is a thin pass-through: it calls the same
+`handleDataset(req, { config: portable })` and writes
+the same response. POST / PUT / PATCH / DELETE on the
+alias return `405` (the upstream method allowlist is
+unchanged). Any other `/.netlify/functions/{name}` path
+is served an honest `404` so the SPA shell does not
+masquerade as a refresh endpoint.
+
+The alias exposes no write, refresh, publication,
+backup, GC, or verification action. The managed
+Hostinger scheduler
+(`THREATPULSE_MANAGED_SCHEDULER=1`) remains the only
+Hostinger refresh mechanism. The permanent refresh
+cycle, the manual retry path, the per-CVE OSV view,
+and the per-category change panel all reach the same
+portable `handleDataset` implementation through the
+alias without ever touching the filesystem data root
+or the lock directory.
+
+Future cleanup: the alias exists only because the
+frozen V6.8 frontend still uses the Netlify path. A
+follow-up can migrate the frontend to a
+provider-neutral endpoint and remove the alias. Until
+then, both paths resolve to the same `handleDataset`
+implementation and produce identical response bodies.
+
 Schedules (UTC):
 
 - dataset refresh: minute 0 and 30 of every hour

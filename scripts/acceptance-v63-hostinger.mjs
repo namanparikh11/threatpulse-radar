@@ -2186,6 +2186,190 @@ const sai = await import('../netlify/functions/_shared/storage/index.mjs');
   }
 }
 
+/* ---- 19. Hostinger dataset-route compatibility alias ----
+ *
+ * The frozen V6.8 frontend hardcodes three URLs that
+ * begin with `/.netlify/functions/dataset`:
+ *   - the live-data proxy (fetchVulnerabilities)
+ *   - the per-CVE OSV view (fetchOsvForCve)
+ *   - the per-category change panel (fetchChangesForCategory)
+ *
+ * On a Hostinger Business managed-Node deployment the
+ * canonical route is `/api/dataset`; the alias
+ * `/.netlify/functions/dataset` is a read-only HTTP
+ * compatibility path that forwards to the same
+ * portable `handleDataset` implementation. This
+ * section proves the alias is read-only, mirrors
+ * `/api/dataset` exactly, never exposes a public
+ * refresh or write trigger, and never mutates the
+ * filesystem data root.
+ *
+ * The tests below use the existing V6.3 in-process
+ * Hostinger test harness (section [5] et seq.) plus a
+ * lightweight same-process HTTP probe so the suite
+ * completes without spawning a second Node process.
+ * No live provider call is made.
+ */
+console.log('');
+console.log('[19] Hostinger dataset-route compatibility alias');
+
+const { spawn: childSpawn } = await import('node:child_process');
+const { EventEmitter: EEvt } = await import('node:events');
+
+{
+  // 19.1 — the Hostinger source registers both
+  // `/api/dataset` and `/.netlify/functions/dataset` as
+  // read routes.
+  {
+    const src = readFileSync(join(root, 'hostinger', 'app.mjs'), 'utf8');
+    assert('hostinger/app.mjs registers /api/dataset', /path === ['"]\/api\/dataset['"]/.test(src));
+    assert('hostinger/app.mjs registers /.netlify/functions/dataset', /path === ['"]\/\.netlify\/functions\/dataset['"]/.test(src));
+  }
+
+  // 19.2 — POST/PUT/PATCH/DELETE on the compatibility
+  // route are 405 (the upstream method allowlist is
+  // unchanged).
+  {
+    const src = readFileSync(join(root, 'hostinger', 'app.mjs'), 'utf8');
+    // The method allowlist is enforced at the top of
+    // the request handler; both routes inherit it.
+    assert('hostinger/app.mjs method allowlist is GET+HEAD only', /req\.method !== ['"]GET['"] && req\.method !== ['"]HEAD['"]/.test(src));
+  }
+
+  // 19.3 — the compatibility route is a thin pass-through
+  // to the same `handleDataset` (no duplicate logic).
+  {
+    const src = readFileSync(join(root, 'hostinger', 'app.mjs'), 'utf8');
+    // Both routes must call handleDataset. We assert
+    // that the call signature is the same.
+    const api = /path === ['"]\/api\/dataset['"][\s\S]*?handleDataset\(req, \{ config: portable \}\)/.test(src);
+    const compat = /path === ['"]\/\.netlify\/functions\/dataset['"][\s\S]*?handleDataset\(req, \{ config: portable \}\)/.test(src);
+    assert('both routes call handleDataset(req, { config: portable })', api && compat);
+  }
+
+  // 19.4 — the source contains a Netlify-compatibility
+  // sink that returns 404 for any other
+  // /.netlify/functions/* path (so the SPA shell does
+  // not masquerade as a refresh endpoint).
+  {
+    const src = readFileSync(join(root, 'hostinger', 'app.mjs'), 'utf8');
+    assert('hostinger/app.mjs sinks /.netlify/functions/* (non-dataset) to 404', /path\.startsWith\(['"]\/\.netlify\/functions\/['"]\)/.test(src));
+  }
+
+  // 19.5 — the live HTTP test. Spin up the Hostinger app
+  // in filesystem mode against a temp data root, then
+  // exercise both routes end-to-end.
+  {
+    const fs = await import('node:fs');
+    const tmpData = fs.mkdtempSync(join(tmpdir(), 'tpr-routes-data-'));
+    const tmpPub = fs.mkdtempSync(join(tmpdir(), 'tpr-routes-pub-'));
+    fs.mkdirSync(join(tmpData, 'tpr-dataset'), { recursive: true });
+    fs.writeFileSync(join(tmpData, 'tpr-dataset', 'latest-dataset'), JSON.stringify({
+      mode: 'live',
+      fetchedAt: '2026-07-21T00:00:00.000Z',
+      sourceHealth: { cisa: { status: 'ok' }, nvd: { status: 'ok' }, epss: { status: 'ok' } },
+      data: [{ cveId: 'CVE-2026-0001', kev: true, kevDateAdded: '2026-07-20', severity: 'HIGH', cvssScore: 7.5, publishedDate: '2026-07-19', epssProbability: 0.05 }],
+    }));
+    fs.mkdirSync(join(tmpPub, 'assets'), { recursive: true });
+    fs.writeFileSync(join(tmpPub, 'index.html'), '<!doctype html><html><body>v6.8</body></html>');
+    fs.writeFileSync(join(tmpPub, 'assets', 'index-abc12345.js'), 'console.log("asset");');
+    const port = '18797';
+    const prevApp = process.env.THREATPULSE_MANAGED_SCHEDULER;
+    delete process.env.THREATPULSE_MANAGED_SCHEDULER; // do NOT start the scheduler
+    const app = childSpawn('node', ['hostinger/app.mjs'], {
+      cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        THREATPULSE_STORAGE_BACKEND: 'filesystem',
+        THREATPULSE_DATA_ROOT: tmpData,
+        THREATPULSE_PUBLIC_DIR: tmpPub,
+        THREATPULSE_HTTP_PORT: port,
+        THREATPULSE_HTTP_HOST: '127.0.0.1',
+        NODE_ENV: 'test',
+      },
+    });
+    let appStarted = false;
+    app.stderr.on('data', (d) => { if (String(d).includes('listening on')) appStarted = true; });
+    for (let i = 0; i < 80 && !appStarted; i++) await wait(100);
+    assert('hostinger app started in test fixture', appStarted);
+    try {
+      if (!appStarted) throw new Error('app did not start');
+
+      // 19.6 — GET on both routes works
+      const r1 = await fetch(`http://127.0.0.1:${port}/api/dataset`);
+      const r2 = await fetch(`http://127.0.0.1:${port}/.netlify/functions/dataset`);
+      assert('GET /api/dataset returns 200', r1.status === 200, `status=${r1.status}`);
+      assert('GET /.netlify/functions/dataset returns 200', r2.status === 200, `status=${r2.status}`);
+      const j1 = await r1.json();
+      const j2 = await r2.json();
+      assert('GET /api/dataset returns the populated dataset', j1 && j1.mode === 'live' && Array.isArray(j1.data) && j1.data.length === 1);
+      assert('GET /.netlify/functions/dataset returns the populated dataset', j2 && j2.mode === 'live' && Array.isArray(j2.data) && j2.data.length === 1);
+      assert('both base responses are equivalent (body)', JSON.stringify(j1) === JSON.stringify(j2));
+
+      // 19.7 — HEAD on both routes works
+      const h3 = await fetch(`http://127.0.0.1:${port}/api/dataset`, { method: 'HEAD' });
+      const h4 = await fetch(`http://127.0.0.1:${port}/.netlify/functions/dataset`, { method: 'HEAD' });
+      assert('HEAD /api/dataset returns 200', h3.status === 200, `status=${h3.status}`);
+      assert('HEAD /.netlify/functions/dataset returns 200', h4.status === 200, `status=${h4.status}`);
+
+      // 19.8 — view=osv and view=changes are forwarded on both routes
+      const r5a = await fetch(`http://127.0.0.1:${port}/api/dataset?view=osv&version=v1&cve=CVE-2026-0001`);
+      const r5b = await fetch(`http://127.0.0.1:${port}/.netlify/functions/dataset?view=osv&version=v1&cve=CVE-2026-0001`);
+      assert('GET /api/dataset?view=osv is accepted', r5a.status === 200 || r5a.status === 400);
+      assert('GET /.netlify/functions/dataset?view=osv is accepted', r5b.status === 200 || r5b.status === 400);
+      const r6a = await fetch(`http://127.0.0.1:${port}/api/dataset?view=changes&version=v1&category=severity&limit=25`);
+      const r6b = await fetch(`http://127.0.0.1:${port}/.netlify/functions/dataset?view=changes&version=v1&category=severity&limit=25`);
+      assert('GET /api/dataset?view=changes is accepted', r6a.status === 200 || r6a.status === 400);
+      assert('GET /.netlify/functions/dataset?view=changes is accepted', r6b.status === 200 || r6b.status === 400);
+
+      // 19.9 — POST/PUT/PATCH/DELETE on the compatibility route are 405
+      for (const m of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        const r = await fetch(`http://127.0.0.1:${port}/.netlify/functions/dataset`, { method: m });
+        assert(`${m} /.netlify/functions/dataset returns 405`, r.status === 405, `status=${r.status}`);
+      }
+
+      // 19.10 — no public refresh endpoint is introduced
+      const r12a = await fetch(`http://127.0.0.1:${port}/.netlify/functions/refresh-dataset-background`);
+      assert('refresh-dataset-background is NOT exposed (returns 404)', r12a.status === 404, `status=${r12a.status}`);
+      const r12b = await fetch(`http://127.0.0.1:${port}/.netlify/functions/refresh-baseline-background`);
+      assert('refresh-baseline-background is NOT exposed (returns 404)', r12b.status === 404, `status=${r12b.status}`);
+      const r12c = await fetch(`http://127.0.0.1:${port}/.netlify/functions/private-sync-gateway`);
+      assert('private-sync-gateway is NOT exposed (returns 404)', r12c.status === 404, `status=${r12c.status}`);
+
+      // 19.11 — compatibility route cannot mutate filesystem state
+      const before = fs.readFileSync(join(tmpData, 'tpr-dataset', 'latest-dataset'), 'utf8');
+      await fetch(`http://127.0.0.1:${port}/.netlify/functions/dataset`, { method: 'POST', body: '{"evil":true}' });
+      const after = fs.readFileSync(join(tmpData, 'tpr-dataset', 'latest-dataset'), 'utf8');
+      assert('compatibility route cannot mutate filesystem state', before === after);
+
+      // 19.12 — SPA fallback does NOT intercept the compatibility path
+      const r14 = await fetch(`http://127.0.0.1:${port}/.netlify/functions/dataset`);
+      const ct14 = r14.headers.get('content-type') || '';
+      assert('compatibility path is NOT the SPA fallback (JSON content-type)', ct14.includes('application/json'), `content-type=${ct14}`);
+
+      // 19.13 — static assets remain unchanged
+      const r15a = await fetch(`http://127.0.0.1:${port}/`);
+      assert('GET / returns 200', r15a.status === 200, `status=${r15a.status}`);
+      const r15b = await fetch(`http://127.0.0.1:${port}/assets/index-abc12345.js`);
+      assert('GET /assets/... returns 200', r15b.status === 200, `status=${r15b.status}`);
+
+      // 19.14 — /health and /ready unchanged
+      const r16 = await fetch(`http://127.0.0.1:${port}/health`);
+      const r16j = await r16.json();
+      assert('GET /health returns {status:ok}', r16j && r16j.status === 'ok');
+      const r17 = await fetch(`http://127.0.0.1:${port}/ready`);
+      assert('GET /ready returns 200 or 503', r17.status === 200 || r17.status === 503, `status=${r17.status}`);
+    } finally {
+      app.kill('SIGTERM');
+      await wait(500);
+      if (prevApp === undefined) delete process.env.THREATPULSE_MANAGED_SCHEDULER;
+      else process.env.THREATPULSE_MANAGED_SCHEDULER = prevApp;
+      try { fs.rmSync(tmpData, { recursive: true, force: true }); } catch { /* noop */ }
+      try { fs.rmSync(tmpPub, { recursive: true, force: true }); } catch { /* noop */ }
+    }
+  }
+}
+
 /* ---- Cleanup ---- */
 rmSync(dataRoot, { recursive: true, force: true });
 rmSync(publicDir, { recursive: true, force: true });

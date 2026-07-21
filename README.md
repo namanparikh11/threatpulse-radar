@@ -617,6 +617,38 @@ V6.1 size budgets and the NVD 429 partial-enrichment
 behavior are preserved unchanged. The total
 acceptance suite count remains 37.
 
+## Hostinger dataset-route compatibility alias (additive)
+
+A separate `hostinger/v6-8-dataset-route-compatibility`
+branch adds a read-only HTTP compatibility alias so
+the frozen V6.8 frontend (which hardcodes three URLs
+beginning with `/.netlify/functions/dataset`) can
+reach the same portable `handleDataset` implementation
+on a Hostinger Business managed-Node deployment.
+
+- Canonical Hostinger route: `/api/dataset`
+- Read-only compatibility alias:
+  `/.netlify/functions/dataset` (NOT a Netlify Function;
+  on Hostinger it is a plain HTTP route handled by
+  the portable Node server)
+- Method allowlist: `GET` and `HEAD` only; POST / PUT
+  / PATCH / DELETE return `405`
+- Any other `/.netlify/functions/{name}` path is
+  served an honest `404` so the SPA shell does not
+  masquerade as a refresh endpoint
+- The alias is a thin pass-through to the same
+  `handleDataset(req, { config: portable })` call;
+  no dataset-building logic is duplicated
+- No write, refresh, publication, backup, GC, or
+  verification action is reachable through the alias
+- The managed Hostinger scheduler remains the only
+  Hostinger refresh mechanism
+- Future cleanup: a follow-up can migrate the
+  frontend to a provider-neutral endpoint and remove
+  the alias
+
+The total acceptance suite count remains 37.
+
 ## Hostinger Business managed-Node scheduler (additive)
 
 A separate `hostinger/v6-8-managed-scheduler`

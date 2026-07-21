@@ -78,6 +78,25 @@ signals:
 | `public-snapshot uncompressed size … exceeds ceiling` log line | The V6.1 dataset-bound publication is a structured skip; the previous `latest.json` is preserved | Plan a follow-up; do NOT delete the previous `latest.json`. The hotfix preserves the last-known-good state |
 | NVD `status: 'partial'` or `lastNDVRefresh.reason` mentions `429` | NVD HTTP 429 (rate-limit) is in effect | The refresh orchestrator is preserving the previous better envelope and recording an NVD cooldown marker. The CISA KEV primary dataset remains serviceable |
 
+### Dataset route compatibility alias (Hostinger)
+
+When the V6.8 frontend reaches the Hostinger deployment
+through the `/.netlify/functions/dataset` alias, the
+following signals are expected:
+
+| Signal | What to look for | Recovery action |
+| --- | --- | --- |
+| `GET /api/dataset` returns 200 with `mode: 'live'` | The canonical Hostinger route serves the populated dataset | None — informational |
+| `GET /.netlify/functions/dataset` returns 200 with the same body as `/api/dataset` | The compatibility alias is wired and serves the populated dataset | None — informational |
+| `GET /.netlify/functions/dataset?view=osv&...` returns 200 or 400 | The OSV view is forwarded | None — informational |
+| `GET /.netlify/functions/dataset?view=changes&...` returns 200 or 400 | The change panel is forwarded | None — informational |
+| `POST / PUT / PATCH / DELETE /.netlify/functions/dataset` returns 405 | The method allowlist is enforced; no write is reachable through the alias | None — informational |
+| `GET /.netlify/functions/refresh-dataset-background` returns 404 | The refresh path is NOT exposed on the Hostinger deployment | None — informational. The managed Hostinger scheduler is the only refresh mechanism |
+| `GET /.netlify/functions/private-sync-gateway` returns 404 | The gateway is NOT exposed on the Hostinger deployment | None — informational |
+| `GET /.netlify/functions/` returns 404 | The path prefix is NOT exposed | None — informational |
+| `GET /.netlify/functions/dataset` returns a body identical to `GET /api/dataset` | The alias forwards the exact same response | None — informational |
+| `GET /api/dataset` returns a body different from `GET /.netlify/functions/dataset` | The alias is out of sync with the canonical route | Inspect `hostinger/app.mjs` and confirm both routes call the same `handleDataset` |
+
 ### First 24–48 hours — long-term stability
 
 | Signal | What to look for | Recovery action |
