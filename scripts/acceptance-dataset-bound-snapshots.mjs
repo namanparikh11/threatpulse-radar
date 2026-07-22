@@ -353,8 +353,14 @@ assert('latest.json is written',
   store1.blobs.has('dataset/latest.json'));
 const manifestKey = `dataset/versions/${pub1.publicIntelligenceVersion}/manifest.json`;
 assert('Manifest is written', store1.blobs.has(manifestKey));
-const snapshotKey = `dataset/versions/${pub1.publicIntelligenceVersion}/public-snapshot.json.gz`;
-assert('Public snapshot is written gzipped', store1.blobs.has(snapshotKey));
+// V6.8: the public-snapshot is split into deterministic
+// content-addressed shards. The per-version shard
+// manifest is the per-version pointer; the shards live
+// under dataset/shards/sha256/ and are content-addressed.
+const shardManifestKey = `dataset/versions/${pub1.publicIntelligenceVersion}/snapshot-shards-manifest.json`;
+assert('V6.8: per-version shard manifest is written', store1.blobs.has(shardManifestKey));
+assert('V6.8: at least one shard is written under dataset/shards/sha256/',
+  [...store1.blobs.keys()].some((k) => /^dataset\/shards\/sha256\/[0-9a-f]{64}\.json\.gz$/.test(k)));
 const sourceHealthKey = `dataset/versions/${pub1.publicIntelligenceVersion}/source-health.json.gz`;
 assert('Source-health observations are written gzipped', store1.blobs.has(sourceHealthKey));
 
@@ -366,6 +372,13 @@ assert('Manifest has referencedOsvProjectionVersion',
   manifest1.referencedOsvProjectionVersion === osvProjection.osvProjectionVersion);
 assert('Manifest has empty changeItems truncation',
   manifest1.truncation.changeItems.shown === 0 && manifest1.truncation.changeItems.total === 0);
+
+const latest1 = await store1.get('dataset/latest.json', { type: 'json' });
+assert('latest.json carries snapshotShardsManifestContentHash',
+  typeof latest1.snapshotShardsManifestContentHash === 'string'
+  && latest1.snapshotShardsManifestContentHash.startsWith('sha256:'));
+assert('latest.json carries snapshotShardsCount',
+  Number.isInteger(latest1.snapshotShardsCount) && latest1.snapshotShardsCount >= 1);
 
 /* ---- 7. Skip-unchanged on identical input ---- */
 console.log('');
@@ -444,16 +457,46 @@ assert('Public function entry count remains 5', entries.length === 5);
 assert('Public function entries match expected set',
   [...expected].every((e) => entries.includes(e)) && entries.length === 5);
 
-/* ---- 11. Public snapshot file structure ---- */
+/* ---- 11. Public snapshot file structure (V6.8 sharded) ---- */
 console.log('');
-console.log('[11] Public snapshot blob structure');
-const snapshotGz = store1.blobs.get(snapshotKey).value;
-const snapshotJson = gunzipSync(snapshotGz).toString('utf8');
-const snapshotParsed = JSON.parse(snapshotJson);
-assert('Snapshot has schemaVersion', snapshotParsed.schemaVersion === '1.0.0');
-assert('Snapshot has byCve', typeof snapshotParsed.byCve === 'object');
-assert('Snapshot has providerComparability', typeof snapshotParsed.providerComparability === 'object');
-assert('Snapshot has trackedCveCount', snapshotParsed.trackedCveCount === 2);
+console.log('[11] Public snapshot blob structure (V6.8 sharded)');
+// V6.8: the logical snapshot is partitioned into
+// deterministic content-addressed shards and the
+// per-version shard manifest is the per-version pointer.
+// The test reads the shard manifest, every shard, and
+// reassembles the logical snapshot. The reassembled
+// snapshot must match the original logical shape.
+const shardManifestMod = await import('../netlify/functions/_shared/publicSnapshotShards.mjs');
+const readMod = await import('../netlify/functions/_shared/publicSnapshotShardRead.mjs');
+const shardManifest = await store1.get(shardManifestKey, { type: 'json' });
+assert('Shard manifest has schemaVersion 1.0.0',
+  shardManifest.schemaVersion === '1.0.0');
+assert('Shard manifest has publicIntelligenceVersion',
+  shardManifest.publicIntelligenceVersion === pub1.publicIntelligenceVersion);
+assert('Shard manifest has logicalSnapshotContentHash',
+  /^sha256:[0-9a-f]{64}$/.test(shardManifest.logicalSnapshotContentHash));
+assert('Shard manifest has publicStateHash matching latest.json',
+  shardManifest.publicStateHash === latest1.publicStateHash);
+assert('Shard manifest has at least 1 shard',
+  Array.isArray(shardManifest.shards) && shardManifest.shards.length >= 1);
+assert('Shard manifest trackedCveCount matches logical count (2)',
+  shardManifest.trackedCveCount === 2);
+assert('Every shard descriptor has a content hash',
+  shardManifest.shards.every((s) => /^sha256:[0-9a-f]{64}$/.test(s.contentHash)));
+assert('Every shard descriptor has a positive cveCount',
+  shardManifest.shards.every((s) => Number.isInteger(s.cveCount) && s.cveCount > 0));
+// Reassemble the logical snapshot.
+const reassembled = await readMod.readReassembledSnapshot(store1, pub1.publicIntelligenceVersion);
+assert('readReassembledSnapshot succeeds', reassembled.ok === true);
+assert('Reassembled snapshot has byCve', typeof reassembled.snapshot.byCve === 'object');
+assert('Reassembled snapshot has trackedCveCount = 2',
+  reassembled.snapshot.trackedCveCount === 2);
+assert('Reassembled snapshot has 2 CVEs in byCve',
+  Object.keys(reassembled.snapshot.byCve).length === 2);
+assert('Reassembled snapshot includes CVE-2024-1234',
+  !!reassembled.snapshot.byCve['CVE-2024-1234']);
+assert('Reassembled snapshot includes CVE-2024-5678',
+  !!reassembled.snapshot.byCve['CVE-2024-5678']);
 
 /* ---- Summary ---- */
 console.log('');

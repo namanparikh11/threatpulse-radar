@@ -687,6 +687,64 @@ The exact variable names are listed in
 [`docs/v6-8-environment-checklist.md`](docs/v6-8-environment-checklist.md).
 No values are documented; only the variable names.
 
+## Hostinger public-snapshot size-boundary fix (additive)
+
+A separate `hostinger/v6-8-public-snapshot-size-boundary`
+branch resolves the V6.1 `public-snapshot uncompressed
+size 1124204 exceeds ceiling 1048576` failure on the
+production Hostinger managed-Node deployment. The 1 MiB
+per-object safety ceiling is preserved unchanged; the
+logical snapshot is split into deterministic
+content-addressed shards.
+
+What changes:
+
+- The V6.1 dataset-bound publisher now writes the
+  logical snapshot as N deterministic shards (one
+  gzipped content-addressed object per shard) plus a
+  per-version shard manifest. The atomic
+  `dataset/latest.json` pointer is preserved
+  unchanged in role; it gains two new fields
+  (`snapshotShardsManifestContentHash` and
+  `snapshotShardsCount`).
+- A new read path reassembles the logical snapshot
+  from the manifest + shards and verifies the
+  logical content hash. The reassembled snapshot has
+  the same shape as the original; the public response
+  contract is unchanged.
+- A new mark-and-sweep GC retains the current +
+  previous + rollback shard manifests. Orphan shards
+  are removed; the currently-referenced manifest and
+  shards are never collected.
+
+What is preserved:
+
+- The 1 MiB per-object safety ceiling
+  (`PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES`)
+  is unchanged.
+- No field of the per-CVE record is silently
+  truncated or dropped. The reassembled logical
+  snapshot is canonical-hash-equal to the original.
+- The composite `publicStateHash` is computed from
+  the four precomputed per-Blob hashes, not from
+  the snapshot bytes. Shard-boundary changes
+  therefore cannot change the publicStateHash.
+- The `client/**` and `netlify/gateway/**`
+  byte-equivalence to `32a8a63` is preserved.
+- The 21-column public CSV, the 5 public Netlify
+  function entries, and the 1 gateway function entry
+  are preserved.
+- The V6.3 dataset-route compatibility alias
+  continues to be read-only.
+- The V6.7 hash chain, atomic plan+ledger commit,
+  and validation-pending transition rules are
+  preserved.
+
+The total acceptance suite count remains 37 — the
+existing `scripts/acceptance-v63-hostinger.mjs` is
+extended with new tests for the sharded publication
+(section [20]).
+
 ## V6.8 — Release candidate consolidation (additive)
 
 V6.8 is a release-candidate consolidation milestone. It

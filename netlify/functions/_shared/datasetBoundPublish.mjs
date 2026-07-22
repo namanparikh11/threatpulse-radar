@@ -45,8 +45,11 @@ import {
   DATASET_LATEST_KEY,
   DATASET_PUBLICATION_LOCK_KEY,
   PUBLICATION_LOCK_TTL_MS,
+  DATASET_SHARDS_DIR,
   datasetManifestKey,
   datasetPublicSnapshotKey,
+  datasetSnapshotShardManifestKey,
+  datasetShardKey,
   datasetChangesKey,
   readJson,
   writeJson,
@@ -62,6 +65,8 @@ import {
   DATASET_MANIFEST_HARD_CEILING_BYTES,
   PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES,
   PUBLIC_SNAPSHOT_HARD_CEILING_COMPRESSED_BYTES,
+  SNAPSHOT_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES,
+  SNAPSHOT_SHARD_HARD_CEILING_COMPRESSED_BYTES,
   CHANGES_HARD_CEILING_COMPRESSED_BYTES,
   LATEST_JSON_HARD_CEILING_BYTES,
   assertUncompressedSize,
@@ -71,6 +76,16 @@ import { gzipValue, gunzipValue } from './publicIntelligenceCompression.mjs';
 import { contentHash, canonicalizeToString } from './canonicalHash.mjs';
 import { buildPublicSnapshot } from './publicSnapshot.mjs';
 import { buildSourceHealthBlob } from './sourceHealth.mjs';
+import {
+  partitionSnapshotForShards,
+  buildSnapshotShard,
+  buildSnapshotShardManifest,
+  shardContentHash,
+  snapshotShardManifestContentHash,
+  shardBodyUncompressedBytes,
+  assertAllShardsUnderCeiling,
+  verifySnapshotShardManifest,
+} from './publicSnapshotShards.mjs';
 
 /**
  * Compute the four-hash composite public state hash from
@@ -366,6 +381,14 @@ export async function publishDatasetBound(store, {
   }
 
   // Build the per-CVE public comparison snapshot.
+  // V6.8: the snapshot is partitioned into deterministic
+  // content-addressed shards so the per-object safety
+  // ceiling (PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES
+  // = 1 MiB) is preserved unchanged. The full logical
+  // snapshot is reassembled from the shards before any
+  // external read. No field is silently dropped or
+  // truncated; a single CVE's record is never split
+  // across shards.
   const snapshot = buildPublicSnapshot({
     datasetEnvelope,
     vulnrichmentCache,
@@ -374,7 +397,62 @@ export async function publishDatasetBound(store, {
     now,
   });
   snapshot.publicIntelligenceVersion = manifest.publicIntelligenceVersion;
-  assertUncompressedSize(snapshot, PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES, 'public-snapshot');
+
+  // Partition the logical snapshot into deterministic
+  // shards. Each shard is content-addressed; the
+  // manifest is the per-version pointer to the shards.
+  // The partitioner is pure and deterministic; identical
+  // input always produces the same shard layout and the
+  // same content hashes.
+  let shardPartitions = [];
+  let shardBodies = [];
+  let shardContentHashes = [];
+  let shardByteSizes = [];
+  let shardManifest = null;
+  try {
+    shardPartitions = partitionSnapshotForShards(snapshot);
+    // Build each shard body. A degenerate single-shard
+    // case (empty byCve or one CVE) produces a single
+    // shard.
+    for (let i = 0; i < shardPartitions.length; i++) {
+      const cveIds = shardPartitions[i];
+      const body = buildSnapshotShard(snapshot, cveIds, i, manifest.publicIntelligenceVersion);
+      shardBodies.push(body);
+      shardContentHashes.push(shardContentHash(body));
+      shardByteSizes.push(shardBodyUncompressedBytes(body));
+    }
+    // Per-shard ceiling check: every shard is safely
+    // below PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES
+    // (1 MiB). The per-shard ceiling is set lower
+    // (SNAPSHOT_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES)
+    // to leave explicit headroom under the per-object
+    // safety ceiling.
+    assertAllShardsUnderCeiling(shardBodies, SNAPSHOT_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES);
+    // Build the shard manifest. The manifest carries
+    // the per-version publicStateHash (the composite
+    // logical fingerprint) and the logical snapshot
+    // content hash. The reader uses both for
+    // verification.
+    shardManifest = buildSnapshotShardManifest({
+      logicalSnapshot: snapshot,
+      shards: shardBodies,
+      shardContentHashes,
+      shardByteSizes,
+      generatedAt: manifest.generatedAt,
+      publicStateHash: manifest.publicStateHash,
+      previousPublicIntelligenceVersion: previousPublicIntelligenceVersion,
+    });
+  } catch (err) {
+    if (err instanceof SizeCeilingExceededError) {
+      return {
+        skipped: true,
+        reason: 'snapshot-oversize',
+        publicIntelligenceVersion: manifest.publicIntelligenceVersion,
+        error: err && err.message ? err.message : String(err),
+      };
+    }
+    throw err;
+  }
 
   // Build the source-health observations blob.
   const sourceHealthObservations = buildSourceHealthObservationsFromCaches({
@@ -393,15 +471,81 @@ export async function publishDatasetBound(store, {
     return { skipped: true, reason: 'manifest-write-failed', publicIntelligenceVersion: manifest.publicIntelligenceVersion };
   }
 
-  // Write the public snapshot (gzipped).
-  const snapshotGz = gzipValue(snapshot);
-  if (snapshotGz.length > PUBLIC_SNAPSHOT_HARD_CEILING_COMPRESSED_BYTES) {
-    return { skipped: true, reason: 'snapshot-too-large', publicIntelligenceVersion: manifest.publicIntelligenceVersion };
+  // V6.8: write the public snapshot as a set of
+  // deterministic content-addressed shards. The
+  // per-version shard manifest is written LAST among
+  // the per-version artifacts but BEFORE the
+  // atomic `dataset/latest.json` pointer. A failure
+  // at any step preserves the previous `latest.json`
+  // pointer and the previous version directory.
+  // Shard writes are content-addressed: a shard
+  // already on disk with the same content is reused
+  // (no rewrite), so cross-version shard reuse works
+  // transparently. Each shard is verified against
+  // the per-shard compressed ceiling before write.
+  for (let i = 0; i < shardBodies.length; i++) {
+    const body = shardBodies[i];
+    const hash = shardContentHashes[i];
+    const key = datasetShardKey(hash);
+    let alreadyExists = false;
+    try {
+      const existing = await store.get(key, { type: 'arrayBuffer' });
+      if (existing && existing.length > 0) {
+        const want = gzipValue(body);
+        if (existing.length === want.length) alreadyExists = true;
+      }
+    } catch { alreadyExists = false; }
+    if (!alreadyExists) {
+      const gz = gzipValue(body);
+      if (gz.length > SNAPSHOT_SHARD_HARD_CEILING_COMPRESSED_BYTES) {
+        return {
+          skipped: true,
+          reason: 'snapshot-shard-compressed-ceiling-exceeded',
+          publicIntelligenceVersion: manifest.publicIntelligenceVersion,
+          shard: i,
+          shardContentHash: hash,
+          sizeBytes: gz.length,
+          ceilingBytes: SNAPSHOT_SHARD_HARD_CEILING_COMPRESSED_BYTES,
+        };
+      }
+      try {
+        await store.setBinary(key, gz);
+      } catch {
+        return {
+          skipped: true,
+          reason: 'snapshot-shard-write-failed',
+          publicIntelligenceVersion: manifest.publicIntelligenceVersion,
+          shard: i,
+          shardContentHash: hash,
+        };
+      }
+    }
+  }
+
+  // Write the per-version shard manifest. The shard
+  // manifest is well under the dataset manifest hard
+  // ceiling (DATASET_MANIFEST_HARD_CEILING_BYTES =
+  // 16 KiB); the size guard is a defensive check.
+  let shardManifestContentHash;
+  try {
+    verifySnapshotShardManifest(shardManifest);
+    shardManifestContentHash = snapshotShardManifestContentHash(shardManifest);
+  } catch (err) {
+    return {
+      skipped: true,
+      reason: 'snapshot-shard-manifest-invalid',
+      publicIntelligenceVersion: manifest.publicIntelligenceVersion,
+      error: err && err.message ? err.message : String(err),
+    };
   }
   try {
-    await store.setBinary(datasetPublicSnapshotKey(manifest.publicIntelligenceVersion), snapshotGz);
+    await writeJson(store, datasetSnapshotShardManifestKey(manifest.publicIntelligenceVersion), shardManifest);
   } catch {
-    return { skipped: true, reason: 'snapshot-write-failed', publicIntelligenceVersion: manifest.publicIntelligenceVersion };
+    return {
+      skipped: true,
+      reason: 'snapshot-shard-manifest-write-failed',
+      publicIntelligenceVersion: manifest.publicIntelligenceVersion,
+    };
   }
 
   // Write the source-health observations (gzipped, alongside the manifest).
@@ -455,6 +599,14 @@ export async function publishDatasetBound(store, {
     publicStateFingerprint: manifest.publicStateHash.slice('sha256:'.length, 'sha256:'.length + 12),
     referencedOsvProjectionVersion: manifest.referencedOsvProjectionVersion,
     manifestContentHash,
+    // V6.8: the per-version shard manifest content
+    // hash. The reader uses this to verify the shard
+    // manifest on read. The hash is independent of the
+    // logical publicStateHash and the dataset manifest
+    // content hash; it is the identity of the per-
+    // version snapshot storage representation.
+    snapshotShardsManifestContentHash: shardManifestContentHash,
+    snapshotShardsCount: shardBodies.length,
     previousPublicIntelligenceVersion,
   };
   const latestJson = canonicalizeToString(latest);
@@ -473,6 +625,8 @@ export async function publishDatasetBound(store, {
     publicStateHash: manifest.publicStateHash,
     publicStateFingerprint: latest.publicStateFingerprint,
     manifestContentHash,
+    snapshotShardsManifestContentHash: shardManifestContentHash,
+    snapshotShardsCount: shardBodies.length,
   };
 }
 

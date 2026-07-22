@@ -7,6 +7,124 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## Hostinger public-snapshot size-boundary fix (deterministic sharding)
+
+A separate `hostinger/v6-8-public-snapshot-size-boundary`
+branch resolves the V6.1 dataset-bound
+`public-snapshot uncompressed size 1124204 exceeds
+ceiling 1048576` failure on the production Hostinger
+managed-Node deployment. The 1 MiB per-object safety
+ceiling is preserved unchanged; the logical snapshot is
+split into deterministic content-addressed shards.
+
+- `netlify/functions/_shared/publicSnapshotShards.mjs`
+  (new): the partitioner (`partitionSnapshotForShards`),
+  the per-shard body builder (`buildSnapshotShard`),
+  the per-version shard manifest builder
+  (`buildSnapshotShardManifest`), the verifier
+  (`verifySnapshotShardManifest`), and the reassembler
+  (`reassembleSnapshotFromShards`). All functions are
+  pure and deterministic.
+- `netlify/functions/_shared/publicSnapshotShardRead.mjs`
+  (new): the read path. Reads the per-version shard
+  manifest, every referenced shard, verifies shard
+  hashes, verifies the logical content hash, and
+  reassembles the logical snapshot. Returns a
+  structured result (never throws on a structured
+  failure).
+- `netlify/functions/_shared/publicSnapshotShardGc.mjs`
+  (new): mark-and-sweep GC. Retains the current +
+  previous + rollback shard manifests. Orphan shards
+  are removed; the currently-referenced manifest and
+  shards are never collected.
+- `netlify/functions/_shared/datasetBoundPublish.mjs`:
+  the dataset-bound publication now writes the
+  logical snapshot as N deterministic shards (one
+  gzipped content-addressed object per shard) plus a
+  per-version shard manifest. The atomic
+  `dataset/latest.json` pointer gains two new fields
+  (`snapshotShardsManifestContentHash` and
+  `snapshotShardsCount`); the existing
+  `publicStateHash` is preserved unchanged. A failed
+  shard or manifest write preserves the previous
+  `latest.json` byte-identical.
+- `netlify/functions/_shared/publicIntelligenceSize.mjs`:
+  the public-snapshot size constants are annotated;
+  the per-shard target, hard ceiling, and minimum
+  CVEs-per-shard are added as documented constants.
+- `netlify/functions/_shared/publicIntelligenceStore.mjs`:
+  the per-version shard manifest key helper
+  (`datasetSnapshotShardManifestKey`) and the
+  content-addressed shard key helper
+  (`datasetShardKey`) are added. The
+  `DATASET_SHARDS_DIR` directory is documented.
+- `scripts/verify-v68-release.mjs`: branch-aware
+  clean-tree test also accepts the
+  `hostinger/v6-8-public-snapshot-size-boundary`
+  branch. The branch's `netlify/functions/_shared/`
+  files are allowed (the same allowance the
+  filesystem-intelligence-stores branch already has).
+- `scripts/acceptance-dataset-bound-snapshots.mjs`:
+  the section [6] and [11] tests are updated for the
+  sharded storage layout. The total test count is
+  preserved (the new sharded-shape assertions
+  replace the old single-blob assertions).
+- `scripts/acceptance-v63-hostinger.mjs`: extended
+  with a new section [20] (≈ 50 tests) covering the
+  sharded publication, the read/reassemble round
+  trip, the GC, the atomic commit, the failed-write
+  preservation, the corruption detection, the
+  traversal rejection, the no-silent-field-drop
+  invariant, the no-silent-provider-switch invariant,
+  the logical-fingerprint stability, the HTTP
+  regression on both routes, and the filesystem
+  round trip. The total V6.3 suite count is now 425
+  tests.
+
+Preserved invariants (deliberately):
+
+- The 1 MiB per-object safety ceiling
+  (`PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES`)
+  is unchanged. The ceiling is NOT raised, NOT
+  removed, and NOT silently bypassed.
+- No field of the per-CVE record is silently
+  truncated.
+- No field of the per-CVE record is silently dropped.
+- No silent provider switch. The sharding is a pure
+  function of the logical snapshot; the same logical
+  snapshot always produces the same shard layout and
+  the same content hashes.
+- The composite `publicStateHash` is computed from
+  the four precomputed per-Blob hashes (dataset,
+  Vulnrichment, GitHub Advisory, OSV manifest) — NOT
+  from the snapshot bytes. Shard-boundary changes
+  therefore CANNOT change the publicStateHash.
+- The `client/**` and `netlify/gateway/**`
+  byte-equivalence to `32a8a63` is preserved (no
+  changes in either directory).
+- The 21-column public CSV is preserved unchanged.
+- The 5 public Netlify function entries are preserved
+  unchanged.
+- The 1 gateway function entry is preserved
+  unchanged.
+- No new public HTTP route is introduced; the
+  read-only compatibility alias at
+  `/.netlify/functions/dataset` continues to work.
+- The V6.3 dataset-route compatibility alias
+  continues to be read-only.
+- The V6.7 hash chain, atomic plan+ledger commit,
+  `validation-pending → failed-locally` transition
+  rules, and 1 MiB file-fingerprint worker
+  invariants are preserved.
+- The V6.8 ErrorBoundary scope (local panels only),
+  LocalDataCentre shape (per-dataset cards), and
+  lazy-loading of the public dashboard are
+  preserved.
+- The V6.8 deployment-preparation release manifest
+  contract is preserved (no values are added, no
+  values are removed; the sharding is documented as
+  an additive observation).
+
 ## Hostinger dataset-route compatibility alias
 
 A separate `hostinger/v6-8-dataset-route-compatibility`

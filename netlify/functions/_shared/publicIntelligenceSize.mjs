@@ -43,11 +43,38 @@ export const OSV_SHARD_TARGET_UNCOMPRESSED_BYTES = 256 * 1024;     // 256 KiB
 export const OSV_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES = 1024 * 1024; // 1 MiB
 export const OSV_SHARD_HARD_CEILING_COMPRESSED_BYTES = 256 * 1024;   // 256 KiB
 
-/* ---- Dataset public comparison snapshot ---- */
-
+/* ---- Dataset public comparison snapshot (logical) ---- */
+// The public-snapshot hard ceiling applies to the LOGICAL
+// snapshot as a single virtual object. Production data
+// has been observed at 1,124,204 bytes (about 74 KiB
+// over the 1 MiB hard ceiling). The 1 MiB hard ceiling
+// is preserved unchanged as a per-object safety ceiling;
+// the per-version snapshot is split into deterministic
+// content-addressed shards so every stored object remains
+// below this ceiling. See
+// `publicSnapshotShards.mjs` for the sharding algorithm.
 export const PUBLIC_SNAPSHOT_TARGET_UNCOMPRESSED_BYTES = 256 * 1024;     // 256 KiB
 export const PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES = 1024 * 1024; // 1 MiB
 export const PUBLIC_SNAPSHOT_HARD_CEILING_COMPRESSED_BYTES = 256 * 1024;   // 256 KiB
+
+/* ---- Dataset public comparison snapshot shards ---- */
+// Per-shard size budgets. Each shard is a content-addressed
+// immutable object holding a portion of the logical
+// snapshot. Every shard is kept SAFELY BELOW the
+// per-object safety ceiling (PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES)
+// with explicit headroom. The shard manifest itself is
+// well under the dataset manifest hard ceiling so it can
+// always be written atomically.
+export const SNAPSHOT_SHARD_TARGET_UNCOMPRESSED_BYTES = 192 * 1024;          // 192 KiB target
+export const SNAPSHOT_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES = 768 * 1024;     // 768 KiB ceiling (safely under 1 MiB)
+export const SNAPSHOT_SHARD_HARD_CEILING_COMPRESSED_BYTES = 192 * 1024;      // 192 KiB ceiling
+// Minimum number of CVEs per shard. A single shard must
+// hold at least this many CVEs; a smaller dataset is a
+// degenerate single-shard case. The partitioner NEVER
+// produces a shard with fewer CVEs than this cap; when
+// the logical snapshot has fewer than this many CVEs the
+// partitioner returns a single shard.
+export const SNAPSHOT_SHARD_MIN_CVES_PER_SHARD = 8;
 
 /* ---- Dataset changes.json.gz ---- */
 

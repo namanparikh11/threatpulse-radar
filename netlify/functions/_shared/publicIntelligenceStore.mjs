@@ -77,6 +77,42 @@ export function datasetChangesKey(version) {
 }
 
 /**
+ * V6.8: per-version shard manifest key. The dataset
+ * public-snapshot is split into N deterministic
+ * content-addressed shards (see
+ * `publicSnapshotShards.mjs`) so the logical snapshot
+ * can exceed the 1 MiB per-object safety ceiling
+ * without raising the ceiling itself. The shard
+ * manifest is the per-version pointer to the shards.
+ */
+export function datasetSnapshotShardManifestKey(version) {
+  assertSafeVersionId(version);
+  return `${DATASET_VERSIONS_DIR}/${version}/snapshot-shards-manifest.json`;
+}
+
+/** V6.8: content-addressed shard directory. The shard
+ * key itself is built from the content hash; the
+ * directory is the shared namespace across all
+ * dataset-bound versions. */
+export const DATASET_SHARDS_DIR = `${DATASET_DIR}/shards/sha256`;
+
+/** V6.8: build the content-addressed shard key. The
+ * hash IS the key; cross-version shard reuse is
+ * allowed when the bucket content is identical. */
+export function datasetShardKey(contentHash) {
+  if (typeof contentHash !== 'string' || contentHash.length === 0) {
+    throw new Error('publicIntelligenceStore: shard content hash must be a non-empty string');
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(contentHash) && !/^[0-9a-f]{64}$/.test(contentHash)) {
+    throw new Error('publicIntelligenceStore: shard content hash must be sha256:<64 hex> or <64 hex>');
+  }
+  const hash = contentHash.startsWith('sha256:')
+    ? contentHash.slice('sha256:'.length)
+    : contentHash;
+  return `${DATASET_SHARDS_DIR}/${hash}.json.gz`;
+}
+
+/**
  * Per-OSV-version manifest and shard key helpers. The shard
  * key is content-addressed: the bucket content hash IS the
  * key. This allows cross-version shard reuse.

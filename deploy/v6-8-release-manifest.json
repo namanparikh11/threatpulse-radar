@@ -179,6 +179,81 @@
     ],
     "preservedLimits": "All V6.1 size budgets (PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES, OSV_SHARD_HARD_CEILING_*, etc.) and the last-known-good write contract are preserved unchanged. A dataset that exceeds the public-snapshot ceiling is a structured skip; the previous dataset/latest.json is preserved."
   },
+  "hostingerPublicSnapshotSizeBoundary": {
+    "purpose": "Bounded storage/publication scalability correction for the V6.1 public comparison snapshot. The 1 MiB per-object safety ceiling (PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES) is preserved unchanged. The full logical snapshot is split into deterministic content-addressed shards; the per-version shard manifest is the per-version pointer; the reader reassembles the logical snapshot from the shards.",
+    "observedFailure": {
+      "logicalSnapshotUncompressedBytes": 1124204,
+      "perObjectSafetyCeiling": 1048576,
+      "skippedReason": "publish-threw",
+      "skippedError": "public-snapshot uncompressed size 1124204 exceeds ceiling 1048576",
+      "downstreamEffect": "publicIntelligenceStatus=unavailable, publicIntelligenceVersion=null, publicStateFingerprint=null"
+    },
+    "designContract": {
+      "perObjectSafetyCeilingUnchanged": "PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES remains 1024*1024 (1 MiB). The ceiling is NOT raised, NOT removed, and NOT silently bypassed. Every stored object remains below this ceiling with explicit headroom.",
+      "noSilentTruncation": "No field of the per-CVE record is silently truncated. The partitioner moves WHOLE records between shards; a single CVE's record is never split across shards.",
+      "noSilentFieldDrop": "No field of the per-CVE record is silently dropped. The reassembled logical snapshot is byte-equivalent (canonical-hash-equal) to the original logical snapshot. The reader's logical content hash check rejects the read on any deviation.",
+      "noSilentProviderSwitch": "The sharding is a pure function of the logical snapshot. The same logical snapshot always produces the same shard layout and the same content hashes. No provider switch is performed; the storage backend remains the same (Netlify Blobs or filesystem).",
+      "deterministicSharding": "The partition is pure and deterministic. Identical input always produces the same shard layout, the same shard content hashes, and the same manifest content. The same shard can be reused across dataset-bound versions when the bucket content is identical.",
+      "logicalFingerprintStability": "The composite publicStateHash is computed from the four precomputed per-Blob hashes (dataset, Vulnrichment, GitHub Advisory, OSV manifest) — NOT from the snapshot bytes. Shard-boundary changes therefore CANNOT change the publicStateHash. The logicalSnapshotContentHash is the canonical identity of the LOGICAL snapshot; it is also independent of the storage partitioning.",
+      "noShardExposedAsStaticAsset": "Shards are private to the public-intelligence Blob store. No shard is exposed as an arbitrary static asset. No new public HTTP route is introduced.",
+      "traversalSafeObjectNames": "The shard key helper validates the content hash and rejects traversal/control characters. The storage adapter's path-traversal guard provides the second layer of defense.",
+      "atomicCommit": "dataset/latest.json is the only mutable commit point. On a shard-write or manifest-write failure, the previous dataset/latest.json is preserved byte-identical. The per-version shard manifest is written AFTER every shard and BEFORE dataset/latest.json.",
+      "lastKnownGoodReadableAfterFailure": "A failed publication leaves the previous dataset/latest.json valid and readable. The reader can reassemble the previous version's logical snapshot from the previous shard manifest and the previous shards.",
+      "filesystemAndNetlifyParity": "The sharding is implemented in pure helpers in netlify/functions/_shared/publicSnapshotShards.mjs. Both Netlify Blobs and the Hostinger filesystem adapter honor the same logical behavior.",
+      "contentAddressedSharedNamespace": "Shards are content-addressed; the shard key IS the content hash. Two versions with identical shard content share the same key. Cross-version shard reuse is automatic.",
+      "gracePeriodGc": "Mark-and-sweep GC retains the current + previous + rollback shard manifests. Orphan shards are only removed after the safe grace period (the GC never deletes based only on timestamp or age). The currently-referenced manifest and shards are never collected."
+    },
+    "shardLayout": {
+      "shardDirectory": "tpr-public-intelligence/dataset/shards/sha256/<hash>.json.gz",
+      "shardManifestDirectory": "tpr-public-intelligence/dataset/versions/{v}/snapshot-shards-manifest.json",
+      "shardKeyShape": "dataset/shards/sha256/<64 hex>.json.gz",
+      "shardManifestKeyShape": "dataset/versions/{publicIntelligenceVersion}/snapshot-shards-manifest.json"
+    },
+    "shardSizeBudgets": {
+      "SNAPSHOT_SHARD_TARGET_UNCOMPRESSED_BYTES": 196608,
+      "SNAPSHOT_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES": 786432,
+      "SNAPSHOT_SHARD_HARD_CEILING_COMPRESSED_BYTES": 196608,
+      "SNAPSHOT_SHARD_MIN_CVES_PER_SHARD": 8,
+      "explicitHeadroomBytes": 262144,
+      "explicitHeadroomRationale": "768 KiB (per-shard hard ceiling) leaves 256 KiB headroom under the 1 MiB per-object safety ceiling. Compressed ceiling is 192 KiB; the random-entropy upper bound is 192 KiB as well. The partitioner's per-shard target is 192 KiB; the hard ceiling is 768 KiB."
+    },
+    "shardManifestContract": {
+      "schemaVersion": "1.0.0",
+      "publicIntelligenceVersion": "the per-version id (derived from generatedAt + publicStateHash)",
+      "generatedAt": "ISO timestamp of publication",
+      "publicStateHash": "the composite logical hash",
+      "logicalSnapshotContentHash": "SHA-256 of the canonical LOGICAL snapshot",
+      "trackedCveCount": "logical tracked CVE count",
+      "shardCount": "number of shards",
+      "shards": "array of { index, contentHash, cveCount, byteSize } records in partition order",
+      "previousPublicIntelligenceVersion": "preserved for change-intelligence use",
+      "providerComparability": "the small per-provider comparability map (carried for canonical-fingerprint verification)"
+    },
+    "datasetLatestJsonFields": {
+      "snapshotShardsManifestContentHash": "the canonical content hash of the per-version shard manifest",
+      "snapshotShardsCount": "the number of shards for this version",
+      "publicIntelligenceVersion": "preserved from V6.1",
+      "publicStateHash": "preserved from V6.1",
+      "publicStateFingerprint": "preserved from V6.1"
+    },
+    "gcContract": {
+      "module": "netlify/functions/_shared/publicSnapshotShardGc.mjs",
+      "retainedVersions": "current + previous + rollback (= at most 3, per MAX_RETAINED_VERSIONS_PER_PATH)",
+      "markStrategy": "collect contentHash from each retained shard manifest; mark every referenced hash as retained",
+      "sweepStrategy": "enumerate dataset/shards/sha256/* candidates; delete only those not in the marked set AND not in-progress",
+      "neverDeleteOnAge": "the GC never deletes based only on timestamp or age; mark-and-sweep only",
+      "atomicPreservation": "the currently-referenced manifest and shards are never collected"
+    },
+    "readContract": {
+      "module": "netlify/functions/_shared/publicSnapshotShardRead.mjs",
+      "readReassembledSnapshot": "reads the per-version shard manifest, every referenced shard, verifies shard hashes, verifies the logical content hash, and reassembles the logical snapshot. Returns a structured result (never throws).",
+      "missingManifest": "{ ok: false, reason: 'missing-manifest' }",
+      "missingShard": "{ ok: false, reason: 'missing-shard', shard, contentHash }",
+      "corruptShard": "{ ok: false, reason: 'corrupt-shard', shard, contentHash, error }",
+      "logicalHashMismatch": "{ ok: false, reason: 'logical-hash-mismatch' }",
+      "structuredFailuresNeverThrow": "the function NEVER throws on a structured failure; callers receive the same shape on every error path"
+    }
+  },
   "observedNvdPartialEnrichment": {
     "status": "transient",
     "reason": "NVD public-anonymous endpoint rate-limits (HTTP 429). The refresh orchestrator preserves the previous better envelope and records an NVD cooldown marker. The primary CISA KEV dataset is serviceable without NVD enrichment; the response truthfully reports partial enrichment."

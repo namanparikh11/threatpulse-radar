@@ -97,6 +97,32 @@ following signals are expected:
 | `GET /.netlify/functions/dataset` returns a body identical to `GET /api/dataset` | The alias forwards the exact same response | None — informational |
 | `GET /api/dataset` returns a body different from `GET /.netlify/functions/dataset` | The alias is out of sync with the canonical route | Inspect `hostinger/app.mjs` and confirm both routes call the same `handleDataset` |
 
+### Public-snapshot size boundary (deterministic sharding)
+
+When the V6.8 public-snapshot size boundary is in
+effect (Hostinger managed-Node redeploy of
+`hostinger/v6-8-public-snapshot-size-boundary`), the
+following signals are expected:
+
+| Signal | What to look for | Recovery action |
+| --- | --- | --- |
+| `publicIntelligenceStatus: "available"` on `/api/dataset` | The V6.1 dataset-bound publication succeeded | None — informational |
+| `publicIntelligenceVersion` is non-null | A new dataset-bound version was written | None — informational |
+| `publicStateFingerprint` is non-null (12 hex chars) | The composite logical fingerprint is present | None — informational |
+| `lastV61DatasetBoundRefresh.published === true` | The dataset-bound chain published successfully | None — informational |
+| `lastV61DatasetBoundRefresh.published !== true` AND `lastV61DatasetBoundRefresh.skipped === true` | The dataset-bound chain skipped this cycle; the previous `latest.json` is preserved | Inspect the `reason` and `error` fields. A persistent skip with `reason: 'snapshot-oversize'` is unexpected after the sharding hotfix; the per-shard ceiling should always be met for the production CISA KEV universe |
+| `snapshotShardsManifestContentHash` is present in `dataset/latest.json` | The shard manifest is wired into the latest.json pointer | None — informational |
+| `snapshotShardsCount >= 2` on a typical publication | The sharding actually partitioned the logical snapshot into multiple shards | None — informational. A `snapshotShardsCount === 1` is a degenerate single-shard case (very small dataset); the sharding layer is still in effect |
+| A per-version `snapshot-shards-manifest.json` exists under `dataset/versions/{v}/` | The per-version shard manifest is on disk | None — informational |
+| At least one content-addressed shard exists under `dataset/shards/sha256/<hash>.json.gz` | The shards are on disk | None — informational |
+| `shard-write-failed` log line | A shard write failed; the previous `latest.json` is preserved | Investigate disk permissions or adapter error. The atomic commit guarantees the previous pointer remains valid |
+| `snapshot-shard-manifest-write-failed` log line | The per-version shard manifest write failed; the previous `latest.json` is preserved | Investigate disk permissions or adapter error |
+| `snapshot-shard-manifest-invalid` log line | The shard manifest failed structural verification; the previous `latest.json` is preserved | This should be impossible under normal operation; collect the manifest body for analysis |
+| `snapshot-shard-compressed-ceiling-exceeded` log line | A single shard exceeded the per-shard compressed ceiling (192 KiB); the previous `latest.json` is preserved | This should not occur for the production CISA KEV universe; if it does, the per-CVE record is unexpectedly large and warrants an investigation |
+| `missing-stard` or `corrupt-shard` from the read path | A reader detected a missing or corrupt shard | The read returns a structured failure with a sanitized reason; the previous `latest.json` (if any) remains the last-known-good |
+| NVD `lastNDVRefresh.reason` mentions `429` or `timeout` | NVD is rate-limiting or timing out; the dataset envelope carries a partial-enrichment state | The refresh orchestrator preserves the previous NVD-enriched envelope. The CISA KEV primary dataset remains serviceable |
+| `public-snapshot uncompressed size … exceeds ceiling` log line | The legacy (pre-sharding) error path fired; the per-shard ceiling is below the per-object ceiling | This should not occur after the sharding hotfix. If it does, the per-CVE record is unexpectedly large (above 768 KiB uncompressed) and warrants a per-record field-cap review |
+
 ### First 24–48 hours — long-term stability
 
 | Signal | What to look for | Recovery action |

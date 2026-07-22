@@ -112,7 +112,8 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
   const isHostingerBranch = branch === 'hostinger/v6-8-managed-scheduler'
     || branch === 'hostinger/v6-8-managed-scheduler-execpath'
     || branch === 'hostinger/v6-8-filesystem-intelligence-stores'
-    || branch === 'hostinger/v6-8-dataset-route-compatibility';
+    || branch === 'hostinger/v6-8-dataset-route-compatibility'
+    || branch === 'hostinger/v6-8-public-snapshot-size-boundary';
   // Allowed directory prefixes — any file under
   // these paths is permitted with any status code.
   const allowedDirPrefixes = [
@@ -130,9 +131,13 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
     // under hostinger/ on this branch is a
     // release-preparation file; the same is true
     // of the storage-adapter files on the
-    // filesystem-intelligence-stores branch.
+    // filesystem-intelligence-stores branch and
+    // the public-snapshot-size-boundary branch
+    // (which adds the deterministic sharding
+    // modules in netlify/functions/_shared/).
     allowedDirPrefixes.push('hostinger/');
-    if (branch === 'hostinger/v6-8-filesystem-intelligence-stores') {
+    if (branch === 'hostinger/v6-8-filesystem-intelligence-stores'
+      || branch === 'hostinger/v6-8-public-snapshot-size-boundary') {
       allowedDirPrefixes.push('netlify/functions/_shared/');
     }
   }

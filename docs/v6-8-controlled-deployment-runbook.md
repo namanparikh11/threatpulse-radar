@@ -363,6 +363,166 @@ provider-neutral endpoint and remove the alias. Until
 then, both paths resolve to the same `handleDataset`
 implementation and produce identical response bodies.
 
+## Hostinger public-snapshot size boundary (deterministic sharding)
+
+Production data — the full CISA KEV universe, roughly
+1,200 CVEs — produces a logical public-comparison
+snapshot of ~1.1 MB uncompressed. That is about 74
+KiB above the V6.1 `PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES`
+(1 MiB) per-object safety ceiling. The deployment
+surfaces this as:
+
+```
+lastV61DatasetBoundRefresh:
+  { skipped: true,
+    reason: 'publish-threw',
+    error: 'public-snapshot uncompressed size 1124204 exceeds ceiling 1048576' }
+```
+
+…and `publicIntelligenceStatus: 'unavailable'`. The
+fix is a bounded storage/publication scalability
+correction. The 1 MiB safety ceiling is preserved
+unchanged; the logical snapshot is split into
+deterministic content-addressed shards.
+
+### What is preserved
+
+- The 1 MiB per-object safety ceiling
+  (`PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES`)
+  is unchanged. The ceiling is NOT raised, NOT
+  removed, and NOT silently bypassed.
+- No field of the per-CVE record is silently
+  truncated. The partitioner moves WHOLE records
+  between shards; a single CVE's record is never
+  split across shards.
+- No field of the per-CVE record is silently
+  dropped. The reassembled logical snapshot is
+  byte-equivalent (canonical-hash-equal) to the
+  original logical snapshot. The reader's logical
+  content hash check rejects the read on any
+  deviation.
+- No silent provider switch. The sharding is a pure
+  function of the logical snapshot. The same logical
+  snapshot always produces the same shard layout and
+  the same content hashes. The storage backend
+  remains the same (Netlify Blobs or filesystem).
+
+### What changes
+
+- `datasetBoundPublish` partitions the logical
+  snapshot into N deterministic shards; each shard
+  is gzipped and written under
+  `tpr-public-intelligence/dataset/shards/sha256/<hash>.json.gz`
+  (the OSV projection uses the same content-addressed
+  shape; the dataset snapshot now follows the same
+  pattern).
+- A per-version shard manifest is written at
+  `tpr-public-intelligence/dataset/versions/{v}/snapshot-shards-manifest.json`.
+  The manifest is the per-version pointer to the
+  shards.
+- The atomic `dataset/latest.json` pointer gains
+  two new fields: `snapshotShardsManifestContentHash`
+  and `snapshotShardsCount`. The existing
+  `publicStateHash` is preserved unchanged; the
+  publicStateHash is computed from the four
+  precomputed per-Blob hashes and is therefore
+  independent of shard-boundary changes.
+- A new read module
+  (`netlify/functions/_shared/publicSnapshotShardRead.mjs`)
+  reassembles the logical snapshot from the manifest
+  + shards and verifies the logical content hash.
+  The reassembled snapshot has the same shape as the
+  original; the public response contract is
+  unchanged.
+- A new GC module
+  (`netlify/functions/_shared/publicSnapshotShardGc.mjs`)
+  performs mark-and-sweep GC on the shards. The
+  current + previous + rollback manifests' shards are
+  retained; orphan shards are removed. The currently
+  referenced manifest and shards are never collected.
+
+### Per-shard size budgets
+
+- target: 192 KiB (uncompressed)
+- per-shard hard ceiling: 768 KiB (uncompressed)
+- per-shard compressed ceiling: 192 KiB
+- per-object safety ceiling (unchanged): 1 MiB
+
+The 768 KiB per-shard hard ceiling leaves 256 KiB
+explicit headroom under the 1 MiB per-object safety
+ceiling. Every stored shard is below the per-object
+ceiling; the safety invariant is preserved.
+
+### Atomicity and rollback
+
+- Every shard is written atomically (temp file +
+  rename on the filesystem adapter; equivalent
+  semantics on Netlify Blobs).
+- The per-version shard manifest is written AFTER
+  every shard and BEFORE `dataset/latest.json`. A
+  failed shard write or a failed manifest write
+  preserves the previous `dataset/latest.json`
+  byte-identical.
+- The reader verifies shard existence, order, size
+  and hash before reassembling. A missing or corrupt
+  shard returns a structured failure
+  (`{ ok: false, reason: 'missing-shard' }` or
+  `reason: 'corrupt-shard'`) rather than serving a
+  partial logical snapshot.
+- The composite publicStateHash is stable across
+  shard-boundary changes (it is computed from the
+  four precomputed per-Blob hashes, not from the
+  snapshot bytes). Changing only the shard
+  boundaries does not change the logical
+  fingerprint.
+
+### NVD partial enrichment
+
+The deployment also reported an NVD timeout /
+partial enrichment. The existing V5.4.2 quality
+guard classifies the failure as transient, preserves
+the previous NVD-enriched envelope, and writes the
+NVD cooldown marker. The main CISA KEV dataset is
+serviceable without NVD enrichment; the response
+truthfully reports partial enrichment. No aggressive
+retry loop is added; the partial-enrichment state is
+honestly surfaced.
+
+### Operator verification during the next redeploy
+
+1. `git log --oneline -1` on the
+   `hostinger/v6-8-public-snapshot-size-boundary`
+   branch shows the new sharding commit(s).
+2. `git status --short` is empty after the
+   redeploy.
+3. `curl -fsS https://<hostinger>/api/dataset |
+   jq` reports `publicIntelligenceStatus:
+   "available"` (was `unavailable` before the
+   redeploy), `publicIntelligenceVersion` non-null,
+   `publicStateFingerprint` non-null.
+4. `lastV61DatasetBoundRefresh.published === true`
+   on the dataset envelope.
+5. The dataset-bound bundle content is byte-equal
+   to the previous valid bundle (no silent field
+   drop).
+6. The per-version directory contains
+   `snapshot-shards-manifest.json` and at least one
+   `dataset/shards/sha256/<hash>.json.gz`.
+7. `dataset/latest.json` carries
+   `snapshotShardsManifestContentHash` and
+   `snapshotShardsCount` fields.
+8. The full V6.3 Hostinger acceptance suite passes
+   (425 tests, including the new section [20]
+   public-snapshot size-boundary tests).
+9. The full V6.1 dataset-bound snapshot acceptance
+   suite passes (73 tests, updated for sharded
+   storage).
+10. No `logs/` or `state/` artifact is left in the
+    repo root.
+11. No new public HTTP route is introduced; the
+    V6.3 dataset-route compatibility alias
+    continues to be read-only.
+
 Schedules (UTC):
 
 - dataset refresh: minute 0 and 30 of every hour
