@@ -199,8 +199,8 @@ export default function EnvironmentPanel() {
         </p>
       )}
 
-      <div className="rounded-md border border-radar-border bg-radar-panel2/40">
-        <table className="w-full border-collapse text-[12px]">
+      <div className="overflow-x-auto rounded-md border border-radar-border bg-radar-panel2/40">
+        <table className="w-full min-w-[640px] border-collapse text-[12px]">
           <caption className="sr-only">Local assets</caption>
           <thead>
             <tr className="text-left text-[10px] uppercase tracking-wider text-radar-muted">

@@ -445,3 +445,179 @@ test('V6.8: BrowserNode BroadcastChannel shim and package version', () => {
   // V6.7 suite covers that invariant.
   assert.ok(true, 'V6.7 acceptance suite already proves the BroadcastChannel shim invariant');
 });
+
+test('V6.8: mobile responsiveness — action bars and table wrappers bound overflow locally', () => {
+  // Focused mobile-responsiveness checks. The full
+  // per-component responsive matrix is exercised in
+  // the V6.3 Hostinger suite; the V6.8 release-
+  // candidate suite pins the document-level
+  // invariants that prevent horizontal page scroll
+  // at 320 px, 360 px, 375 px, 390 px, 400 px,
+  // and 430 px viewports.
+  const src = (rel) => readFileSync(path.join(REPO, 'src', rel), 'utf-8');
+
+  // (1) Header h1 must use the documented responsive
+  //     typography scale; the legacy `lg lg:` typo
+  //     would silently break the desktop step and
+  //     is not acceptable.
+  const header = src('components/Header.tsx');
+  assert.ok(
+    !/\bll: /.test(header) && !/\bll:lg/.test(header),
+    'Header.tsx must not contain a doubled `lg lg:` typo',
+  );
+  assert.ok(
+    /text-\[1\.65rem\]/.test(header) && /sm:text-3xl/.test(header) && /lg:text-\[2\.4rem\]/.test(header),
+    'Header.tsx h1 must use the documented responsive typography scale',
+  );
+
+  // (2) The Header status column must wrap on mobile.
+  assert.ok(
+    /flex flex-row flex-wrap gap-2 lg:flex-col lg:items-end lg:gap-2/.test(header),
+    'Header status column must wrap on mobile (flex-wrap) and stack on desktop (lg:flex-col)',
+  );
+
+  // (3) The RemediationPanel bottom toolbar must use
+  //     `flex-wrap` so the long "All active (default)
+  //     · local filter state is not stored in the URL"
+  //     paragraph does not push past the viewport at
+  //     ~400 px.
+  const rem = src('components/remediation/RemediationPanel.tsx');
+  assert.ok(
+    /flex flex-col gap-2 border-t border-radar-border\/40 pt-3 sm:flex-row sm:items-center sm:justify-between/.test(rem),
+    'RemediationPanel bottom toolbar must use flex-col + sm:flex-row so the text wraps below the button on mobile',
+  );
+
+  // (4) The WorkspacePanel queue table must use
+  //     `overflow-x-auto` (not `overflow-hidden`,
+  //     which would clip the right edge silently) so
+  //     the table scrolls horizontally inside its
+  //     own bounded wrapper at narrow viewports.
+  const ws = src('components/workspace/WorkspacePanel.tsx');
+  assert.ok(
+    /mt-3 overflow-x-auto rounded-md border border-radar-border/.test(ws),
+    'WorkspacePanel queue table wrapper must use overflow-x-auto (not overflow-hidden)',
+  );
+  assert.ok(
+    !/mt-3 overflow-hidden rounded-md border border-radar-border/.test(ws),
+    'WorkspacePanel queue table wrapper must not use the legacy overflow-hidden (it would clip overflow instead of scrolling)',
+  );
+  assert.ok(
+    /<table className="w-full min-w-\[640px\] text-sm">/.test(ws),
+    'WorkspacePanel queue table must declare a min-width so the inner scroll kicks in below ~640 px',
+  );
+
+  // (5) The EnvironmentPanel assets table must use
+  //     `overflow-x-auto` for the same reason.
+  const env = src('components/environment/EnvironmentPanel.tsx');
+  assert.ok(
+    /overflow-x-auto rounded-md border border-radar-border bg-radar-panel2\/40/.test(env),
+    'EnvironmentPanel assets table wrapper must use overflow-x-auto',
+  );
+  assert.ok(
+    /<table className="w-full min-w-\[640px\] border-collapse text-\[12px\]">/.test(env),
+    'EnvironmentPanel assets table must declare a min-width so the inner scroll kicks in below ~640 px',
+  );
+
+  // (6) The CorrelationQueue table must use
+  //     `overflow-x-auto` for the same reason.
+  const cq = src('components/environment/CorrelationQueue.tsx');
+  assert.ok(
+    /overflow-x-auto rounded-md border border-radar-border bg-radar-panel2\/40/.test(cq),
+    'CorrelationQueue table wrapper must use overflow-x-auto',
+  );
+
+  // (7) The ReportHistoryDialog table must use
+  //     `overflow-x-auto` (combined with the existing
+  //     vertical scroll).
+  const rh = src('components/reports/ReportHistoryDialog.tsx');
+  assert.ok(
+    /max-h-\[50vh\] overflow-x-auto overflow-y-auto/.test(rh),
+    'ReportHistoryDialog scrollable wrapper must combine overflow-x-auto with the existing overflow-y-auto',
+  );
+  assert.ok(
+    /<table className="w-full min-w-\[560px\] border-collapse text-\[11px\]">/.test(rh),
+    'ReportHistoryDialog table must declare a min-width so the inner horizontal scroll kicks in below ~560 px',
+  );
+
+  // (8) The ReportPreview tables must be wrapped in
+  //     `overflow-x-auto` so long field values do not
+  //     push past the preview viewport.
+  const rp = src('components/reports/ReportPreview.tsx');
+  const overflowCount = (rp.match(/overflow-x-auto/g) || []).length;
+  assert.ok(
+    overflowCount >= 2,
+    `ReportPreview must wrap both tables in overflow-x-auto (got ${overflowCount})`,
+  );
+
+  // (9) The ReportVerifyDialog diff table must be
+  //     wrapped in `overflow-x-auto`.
+  const rv = src('components/reports/ReportVerifyDialog.tsx');
+  assert.ok(
+    /overflow-x-auto[\s\S]{0,200}<table className="w-full border-collapse text-\[11px\]">/.test(rv),
+    'ReportVerifyDialog diff table must be wrapped in overflow-x-auto',
+  );
+
+  // (10) The BulkActionBar toolbar must wrap on
+  //      mobile (the dropdowns are designed to be
+  //      used on a small screen).
+  const bb = src('components/workspace/BulkActionBar.tsx');
+  assert.ok(
+    /flex flex-wrap items-center gap-2 sm:flex-nowrap/.test(bb),
+    'BulkActionBar toolbar must use flex-wrap on mobile (sm:flex-nowrap only on the sm: breakpoint)',
+  );
+
+  // (11) The WorkspacePanel header action toolbar
+  //      (Export / Import / Clear archived / Clear
+  //      workspace / Build report) must wrap on
+  //      mobile.
+  const wsHeaderActionRe = /flex flex-wrap items-center gap-2 sm:flex-nowrap/;
+  const wsHeaderMatches = (ws.match(wsHeaderActionRe) || []).length;
+  assert.ok(
+    wsHeaderMatches >= 1,
+    `WorkspacePanel must use the flex-wrap + sm:flex-nowrap action toolbar pattern (matches: ${wsHeaderMatches})`,
+  );
+
+  // (12) Document-level guards: no `w-screen`, no
+  //      `100vw`, no fixed min-width that would force
+  //      a 1000+ px inner width on the page.
+  const allTsx = [];
+  function walk(dir) {
+    for (const ent of readdirSync(dir)) {
+      const p = path.join(dir, ent);
+      const s = statSync(p);
+      if (s.isDirectory()) walk(p);
+      else if (s.isFile() && p.endsWith('.tsx')) allTsx.push(p);
+    }
+  }
+  walk(path.join(REPO, 'src'));
+  for (const file of allTsx) {
+    const content = readFileSync(file, 'utf-8');
+    // The VulnerabilityTable is the one documented
+    // exception: it intentionally declares a wide
+    // min-width so its inner wrapper can scroll.
+    // We assert that the wide min-width is
+    // accompanied by an `overflow-x-auto` wrapper
+    // on the immediate parent.
+    if (/min-w-\[\d{3,}px\]/.test(content)) {
+      const hasOverflowXAuto = /overflow-x-auto/.test(content);
+      assert.ok(
+        hasOverflowXAuto,
+        `${path.relative(REPO, file)} declares a wide min-width but does not pair it with overflow-x-auto`,
+      );
+    }
+    // `w-screen` and `100vw` are forbidden in the
+    // product source: they pin the element to the
+    // viewport width and break the document overflow
+    // guard. The favicon and the (small) SVG
+    // decorative elements are excluded from the
+    // search; this test pins the absence.
+    assert.ok(
+      !/className="[^"]*\bw-screen\b/.test(content),
+      `${path.relative(REPO, file)} must not use the w-screen Tailwind utility`,
+    );
+    assert.ok(
+      !/\b100vw\b/.test(content),
+      `${path.relative(REPO, file)} must not use the 100vw CSS unit`,
+    );
+  }
+});

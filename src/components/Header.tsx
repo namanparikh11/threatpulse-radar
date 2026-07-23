@@ -179,7 +179,7 @@ export default function Header({ meta }: HeaderProps) {
               <span className="pointer-events-none absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-radar-accent shadow-[0_0_8px_rgba(34,211,238,0.7)] animate-pulseDot" />
             </div>
             <div className="min-w-0 flex-1">
-              <h1 className="text-[1.65rem] font-bold leading-[1.1] tracking-tight text-radar-text sm:text-3xl lg lg:text-[2.4rem]">
+              <h1 className="text-[1.65rem] font-bold leading-[1.1] tracking-tight text-radar-text sm:text-3xl lg:text-[2.4rem]">
                 ThreatPulse Radar
               </h1>
               <p className="mt-2 max-w-2xl text-sm leading-relaxed text-radar-muted sm:text-[0.95rem]">

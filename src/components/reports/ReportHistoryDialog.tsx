@@ -135,7 +135,7 @@ export default function ReportHistoryDialog({ onClose }: ReportHistoryDialogProp
         </p>
       )}
 
-      <div className="mt-3 max-h-[50vh] overflow-y-auto rounded-md border border-radar-border bg-radar-panel2/40">
+      <div className="mt-3 max-h-[50vh] overflow-x-auto overflow-y-auto rounded-md border border-radar-border bg-radar-panel2/40">
         {busy && entries.length === 0 ? (
           <p className="px-3 py-3 text-center text-[11px] text-radar-dim">Loading…</p>
         ) : entries.length === 0 ? (
@@ -143,7 +143,7 @@ export default function ReportHistoryDialog({ onClose }: ReportHistoryDialogProp
             No history entries yet. Build and export a report to add one.
           </p>
         ) : (
-          <table className="w-full border-collapse text-[11px]">
+          <table className="w-full min-w-[560px] border-collapse text-[11px]">
             <caption className="sr-only">Local report history entries</caption>
             <thead>
               <tr className="text-left text-[10px] uppercase tracking-wider text-radar-muted">

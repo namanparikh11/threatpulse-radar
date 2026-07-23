@@ -589,8 +589,8 @@ function QueueList({
   }, [someSelected]);
 
   return (
-    <div className="mt-3 overflow-hidden rounded-md border border-radar-border">
-      <table className="w-full text-sm">
+    <div className="mt-3 overflow-x-auto rounded-md border border-radar-border">
+      <table className="w-full min-w-[640px] text-sm">
         <thead className="bg-radar-panel2/60 text-[10px] uppercase tracking-wider text-radar-dim">
           <tr>
             <th scope="col" className="w-8 px-2 py-1.5">

@@ -203,6 +203,7 @@ export default function ReportVerifyDialog({ mode, onClose }: ReportVerifyDialog
                 <span className="font-mono">{compareResult.right?.reportId}</span>
                 <span className="text-radar-dim"> · {compareResult.right?.generatedAt}</span>
               </p>
+              <div className="overflow-x-auto">
               <table className="w-full border-collapse text-[11px]">
                 <caption className="sr-only">Report diff summary</caption>
                 <tbody>
@@ -216,6 +217,7 @@ export default function ReportVerifyDialog({ mode, onClose }: ReportVerifyDialog
                   <DiffRow label="Limitations added / removed" value={`${compareResult.limitations?.added?.length || 0} / ${compareResult.limitations?.removed?.length || 0}`} />
                 </tbody>
               </table>
+              </div>
             </div>
           )}
         </div>

@@ -117,12 +117,12 @@ export function RemediationPanel({ onExportPlan }: RemediationPanelProps) {
       )}
 
       {ctx.state.status !== 'unavailable' && (
-        <div className="flex items-center justify-between border-t border-radar-border/40 pt-3">
+        <div className="flex flex-col gap-2 border-t border-radar-border/40 pt-3 sm:flex-row sm:items-center sm:justify-between">
           <button
             type="button"
             onClick={onClearAll}
             disabled={ctx.state.plans.length === 0}
-            className="focus-ring inline-flex items-center gap-1 rounded-md border border-radar-border bg-radar-panel2 px-2 py-1 text-[11px] text-radar-muted hover:border-radar-warn/40 hover:text-radar-warn disabled:opacity-50"
+            className="focus-ring inline-flex items-center gap-1 self-start rounded-md border border-radar-border bg-radar-panel2 px-2 py-1 text-[11px] text-radar-muted hover:border-radar-warn/40 hover:text-radar-warn disabled:opacity-50 sm:self-auto"
             data-testid="remediation-clear-button"
           >
             Clear all remediation data

@@ -7,6 +7,93 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## Mobile responsiveness — document-level overflow + action-toolbar wrap (additive)
+
+A focused mobile responsiveness correction on the
+`hostinger/v6-8-final-provider-neutral-label` branch.
+At ~400 px viewport width the page produced a
+horizontal scrollbar; the RemediationPanel bottom
+toolbar and several table wrappers were not bounded
+by `overflow-x-auto`. This patch wraps every wide
+table in a bounded scrollable container, makes the
+RemediationPanel bottom toolbar stack on mobile, and
+fixes the legacy `lg lg:` typo in the Header h1.
+
+- `src/components/Header.tsx` — fix the `lg lg:text-[2.4rem]`
+  typo on the brand h1 (the duplicate `lg` was a
+  silent no-op that prevented the documented
+  `lg:` typography step from applying).
+- `src/components/remediation/RemediationPanel.tsx` —
+  the bottom toolbar (`flex items-center justify-between`)
+  is changed to
+  `flex flex-col gap-2 ... sm:flex-row sm:items-center sm:justify-between`
+  so the long "All active (default) · local filter
+  state is not stored in the URL" paragraph wraps
+  below the "Clear all remediation data" button on
+  narrow viewports.
+- `src/components/workspace/WorkspacePanel.tsx` — the
+  queue table wrapper is changed from
+  `overflow-hidden` to `overflow-x-auto`; the table
+  itself declares `min-w-[640px]` so the inner
+  horizontal scroll kicks in below ~640 px.
+- `src/components/environment/EnvironmentPanel.tsx`
+  — the assets table wrapper is wrapped in
+  `overflow-x-auto`; the table declares
+  `min-w-[640px]`.
+- `src/components/environment/CorrelationQueue.tsx` —
+  the correlation table wrapper is wrapped in
+  `overflow-x-auto`; the table declares
+  `min-w-[640px]`.
+- `src/components/reports/ReportHistoryDialog.tsx` —
+  the scrollable wrapper combines `overflow-x-auto`
+  with the existing `overflow-y-auto`; the table
+  declares `min-w-[560px]`.
+- `src/components/reports/ReportPreview.tsx` — both
+  preview tables (KeyValueRows + Source provenance)
+  are wrapped in `overflow-x-auto`; the provenance
+  table declares `min-w-[480px]`.
+- `src/components/reports/ReportVerifyDialog.tsx` —
+  the diff table is wrapped in `overflow-x-auto`.
+- `scripts/acceptance-v68-release-candidate.mjs` — new
+  "V6.8: mobile responsiveness" test pins the
+  document-level invariants: no `w-screen` or
+  `100vw` in the product source, every wide
+  `min-w-[…px]` is paired with an `overflow-x-auto`
+  wrapper, the Header h1 typography scale is
+  correct, the RemediationPanel bottom toolbar
+  uses `flex-col sm:flex-row`, the Header status
+  column uses `flex-wrap lg:flex-col`, the
+  BulkActionBar uses `flex-wrap sm:flex-nowrap`,
+  the WorkspacePanel uses `flex-wrap sm:flex-nowrap`
+  on its header action toolbar, and all five
+  bounded tables (Workspace queue, Environment
+  assets, Correlation, Report history, Report
+  preview / verify) are wrapped in
+  `overflow-x-auto` with a `min-w-[…px]` floor.
+
+Preserved invariants:
+
+- Provider-neutral "Data route" label from
+  `abb60b8` is intact.
+- No "Proxy: Netlify" user-facing label.
+- 5 public Netlify function entries, 1 gateway
+  function entry, `CSV_COLUMNS` = 21.
+- `client/**` and `netlify/gateway/**` are not
+  modified.
+- The 1 MiB per-object safety ceiling, the
+  dataset-bound snapshot sharding, the
+  filesystem storage layout, the managed
+  scheduler, the dataset-route compatibility
+  alias, the public-intelligence schemas, the
+  37-suite count, and the V6.7 hash chain +
+  atomic plan+ledger commit invariants are
+  preserved.
+- Desktop and tablet layouts are unchanged.
+- The patch is presentation-only. No route,
+  API contract, scheduler, storage, schema,
+  gateway, credential, DNS, or environment
+  variable is modified.
+
 ## Hostinger final provider-neutral data-route label (additive)
 
 A separate `hostinger/v6-8-final-provider-neutral-label`

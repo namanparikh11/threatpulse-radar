@@ -764,6 +764,53 @@ all preserved unchanged. `client/**` and
 setting, environment variable, credential, DNS record,
 or deployment is triggered by this branch.
 
+## Mobile responsiveness — document-level overflow + action-toolbar wrap (additive)
+
+A focused mobile responsiveness correction on the
+`hostinger/v6-8-final-provider-neutral-label` branch.
+At ~400 px viewport width the page produced a horizontal
+scrollbar; the RemediationPanel bottom toolbar and
+several table wrappers were not bounded by
+`overflow-x-auto`. This patch wraps every wide table
+in a bounded scrollable container, makes the
+RemediationPanel bottom toolbar stack on mobile, and
+fixes the legacy `lg lg:` typo in the Header h1.
+
+- Header h1: `text-[1.65rem] sm:text-3xl lg:text-[2.4rem]`
+  (legacy duplicate `lg` removed).
+- RemediationPanel bottom toolbar:
+  `flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between`
+  so the long "All active (default) · local filter
+  state is not stored in the URL" paragraph wraps
+  below the button on narrow viewports.
+- WorkspacePanel queue table:
+  `overflow-x-auto` (was `overflow-hidden`) +
+  `min-w-[640px]` on the table.
+- EnvironmentPanel assets table:
+  `overflow-x-auto` + `min-w-[640px]`.
+- CorrelationQueue table:
+  `overflow-x-auto` + `min-w-[640px]`.
+- ReportHistoryDialog table:
+  `overflow-x-auto` combined with the existing
+  `overflow-y-auto` + `min-w-[560px]`.
+- ReportPreview tables (×2):
+  `overflow-x-auto`; the provenance table declares
+  `min-w-[480px]`.
+- ReportVerifyDialog diff table:
+  `overflow-x-auto`.
+
+The patch is presentation-only. No route, API
+contract, scheduler, storage, schema, gateway,
+credential, DNS, or environment variable is modified.
+The provider-neutral data-route label, the 5 public
+Netlify function entries, the 1 gateway function
+entry, the 21-column public CSV, the dataset-bound
+snapshot sharding, the dataset-route compatibility
+alias, the managed scheduler, the filesystem
+storage, the V6.7 hash chain, and the
+`client/**` / `netlify/gateway/**` byte-equivalence
+to `32a8a63` are all preserved.
+
 ## V6.8 — Release candidate consolidation (additive)
 
 V6.8 is a release-candidate consolidation milestone. It

@@ -78,6 +78,7 @@ function KeyValueRows({ rows }: { rows: any[] }) {
     return <p className="text-[11px] text-radar-dim">No fields in this section.</p>;
   }
   return (
+    <div className="overflow-x-auto">
     <table className="w-full border-collapse text-[12px]">
       <caption className="sr-only">Section rows</caption>
       <tbody>
@@ -96,6 +97,7 @@ function KeyValueRows({ rows }: { rows: any[] }) {
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -219,7 +221,8 @@ export default function ReportPreview({ report, showChecksum = true }: ReportPre
         {provenance.length === 0 ? (
           <p className="mt-1 text-[12px] text-radar-dim">No public source metadata captured in this snapshot.</p>
         ) : (
-          <table className="mt-1 w-full border-collapse text-[12px]">
+          <div className="mt-1 overflow-x-auto">
+          <table className="w-full min-w-[480px] border-collapse text-[12px]">
             <caption className="sr-only">Source provenance</caption>
             <thead>
               <tr className="text-left text-[11px] uppercase tracking-wider text-radar-muted">
@@ -244,6 +247,7 @@ export default function ReportPreview({ report, showChecksum = true }: ReportPre
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
     </article>
