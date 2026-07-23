@@ -319,6 +319,64 @@ observation period ends: an operator can flip
 `THREATPULSE_STORAGE_BACKEND` back to `netlify` and
 the same code path serves both backends.
 
+## Hostinger function equivalence (precise wording)
+
+Hostinger does **NOT** reproduce all five Netlify
+function URLs. The five public Netlify function entry
+files remain in the repository as the canonical
+Netlify deployment surface (manifest contract); they
+are NOT routed by the Hostinger runtime. Hostinger
+reproduces the required capabilities through:
+
+- The managed scheduler (`hostinger/managed-scheduler.mjs`)
+  — opt-in, in-process replacement for the OS-level
+  cron. All six logical jobs (dataset refresh,
+  baseline refresh, publication, GC, state verify,
+  backup) run as child processes via
+  `process.execPath`.
+- The portable jobs (`jobs/*.mjs`) — invoked by the
+  managed scheduler and by the V6.2 manual cron
+  fallback. The jobs use the same
+  `resolveStorage` helper which routes through the
+  `FilesystemStorageAdapter` on Hostinger.
+- The filesystem storage adapter — the
+  `FilesystemStorageAdapter` writes atomic temp +
+  rename under `$THREATPULSE_DATA_ROOT/tpr-*`. The
+  adapter is path-traversal-safe and
+  symlink-escape-safe; it is the canonical
+  FilesystemStorageAdapter used everywhere on
+  Hostinger.
+- `/api/dataset` — the canonical Hostinger route for
+  the live-data proxy, the per-CVE OSV view, and the
+  per-category change panel.
+- `/.netlify/functions/dataset` — the **only**
+  required public compatibility alias. It is a thin
+  pass-through to the same `handleDataset`
+  implementation that `/api/dataset` uses. It is
+  **not** a request to a Netlify Function; it is a
+  local HTTP route handled by the portable Node
+  server. No Netlify runtime is invoked; no credential
+  is required.
+
+The remaining `/.netlify/functions/*` paths
+(e.g. `/.netlify/functions/refresh-dataset-background`,
+`/.netlify/functions/refresh-baseline-background`,
+`/.netlify/functions/private-sync-gateway`) remain
+closed with honest 404 responses. The SPA shell does
+NOT masquerade as a refresh or admin endpoint. No
+write, refresh, credential, or administrative HTTP
+endpoint is publicly exposed on the Hostinger
+deployment.
+
+The full closure contract — including the active
+runtime variables, the manifest-only variables, the
+filesystem namespace map, the scheduler schedule
+table, the 24–48 hour observation checklist, the
+conditions required before disabling the Netlify
+public site, and the rollback conditions — is
+documented in
+[`docs/v6-8-hostinger-migration-closure.md`](./v6-8-hostinger-migration-closure.md).
+
 ## Hostinger dataset-route compatibility alias (frozen frontend)
 
 The frozen V6.8 frontend hardcodes three URLs that
@@ -404,8 +462,14 @@ deterministic content-addressed shards.
 - No silent provider switch. The sharding is a pure
   function of the logical snapshot. The same logical
   snapshot always produces the same shard layout and
-  the same content hashes. The storage backend
-  remains the same (Netlify Blobs or filesystem).
+  the same content hashes. The storage backend is
+  the existing `FilesystemStorageAdapter` on
+  Hostinger (via
+  `netlify/functions/_shared/storage/index.mjs#createStorageAdapter`)
+  and the existing `NetlifyBlobsStorageAdapter` on the
+  Netlify public site. The sharding is a single
+  publisher-side concern; the storage adapter is the
+  only thing that differs between deployments.
 
 ### What changes
 

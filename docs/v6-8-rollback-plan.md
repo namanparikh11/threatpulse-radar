@@ -106,10 +106,18 @@ target.
 | V6.6 | `v6-6-local-environment` | derived from V6.5 | local environment |
 | V6.7 | `v6-7-local-remediation-evidence` | `9912044` | local remediation |
 | V6.8 RC | `v6-8-release-candidate-consolidation` | `0480a9f` | V6.8 release candidate |
+| V6.8 Hostinger closure | `release/v6-8-hostinger-migration-closure` | derived from `c0a14cc` | V6.8 Hostinger migration closure (this milestone) |
 
 The V6.8 release-candidate is the **forward**
 checkpoint. The **rollback** target is the V6.7
-commit `9912044`.
+commit `9912044`. The V6.8 Hostinger closure branch
+documents the canonical production domain
+(`https://threatpulse.namanp.de`), the rollback-only
+status of `https://threatpulse-radar.netlify.app`,
+the 24–48 hour observation checklist, the conditions
+required before disabling the Netlify public site, and
+the rollback conditions. See
+[`docs/v6-8-hostinger-migration-closure.md`](./v6-8-hostinger-migration-closure.md).
 
 ## What is NOT done by this plan
 
