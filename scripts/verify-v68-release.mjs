@@ -113,7 +113,8 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
     || branch === 'hostinger/v6-8-managed-scheduler-execpath'
     || branch === 'hostinger/v6-8-filesystem-intelligence-stores'
     || branch === 'hostinger/v6-8-dataset-route-compatibility'
-    || branch === 'hostinger/v6-8-public-snapshot-size-boundary';
+    || branch === 'hostinger/v6-8-public-snapshot-size-boundary'
+    || branch === 'hostinger/v6-8-final-provider-neutral-label';
   // Allowed directory prefixes — any file under
   // these paths is permitted with any status code.
   const allowedDirPrefixes = [
@@ -139,6 +140,19 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
     if (branch === 'hostinger/v6-8-filesystem-intelligence-stores'
       || branch === 'hostinger/v6-8-public-snapshot-size-boundary') {
       allowedDirPrefixes.push('netlify/functions/_shared/');
+    }
+    if (branch === 'hostinger/v6-8-final-provider-neutral-label') {
+      // The final-provider-neutral-label branch is
+      // a presentation-only patch: it changes the
+      // user-visible route-status wording in the
+      // dashboard header so the dashboard reports
+      // the delivery-route type rather than naming
+      // the hosting provider. No route, no schema,
+      // no scheduler, no storage behavior changes.
+      // Only src/components/Header.tsx and the
+      // matching acceptance test (scripts/) are
+      // modified.
+      allowedDirPrefixes.push('src/components/');
     }
   }
   // Allowed exact top-level paths.

@@ -523,6 +523,77 @@ honestly surfaced.
     V6.3 dataset-route compatibility alias
     continues to be read-only.
 
+## Hostinger final provider-neutral data-route label (presentation-only)
+
+A separate
+`hostinger/v6-8-final-provider-neutral-label` branch
+replaces the user-visible "Proxy: Netlify" badge with a
+provider-neutral delivery-route label. The dashboard now
+reports the **delivery-route type** rather than the
+hosting provider.
+
+| State | Old badge | New badge |
+| --- | --- | --- |
+| `proxyStatus === 'proxy'` | `Proxy: Netlify` | `Data route: same-origin` |
+| `proxyStatus === 'browser-direct'` | (no badge) | `Data route: direct` |
+| `proxyStatus === 'unavailable'` | (no badge) | `Data route: unavailable` |
+
+The dataset-store pill's accessibility text drops the
+"Netlify Blobs" provider claim and references the
+shared public-intelligence store instead. The Source,
+NVD, EPSS, dataset-store, cache, and refresh pills are
+preserved unchanged.
+
+### What is preserved
+
+- No public HTTP route is added or removed.
+- `/.netlify/functions/dataset` continues to be a
+  read-only compatibility alias on Hostinger.
+- The API response contract (`FetchResult`,
+  `proxyStatus`, `dataSource`, `cacheStatus`) is
+  unchanged.
+- The dataset-route alias behavior, the publication
+  and sharding logic, the scheduler behavior, the
+  filesystem storage, the public-intelligence
+  schemas, the V6.1 size budgets, the 21-column
+  public CSV, the 5 public Netlify function
+  entries, and the 1 gateway function entry are all
+  preserved unchanged.
+- `client/**` and `netlify/gateway/**` are not
+  modified.
+- No Hostinger setting, environment variable,
+  credential, DNS record, or deployment is triggered
+  by this branch.
+
+### Operator verification during the next redeploy
+
+1. `git log --oneline -1` on the
+   `hostinger/v6-8-final-provider-neutral-label`
+   branch shows the new label commit.
+2. `git status --short` is empty after the
+   redeploy.
+3. The header on the live dashboard shows
+   `Data route: same-origin` (NOT `Proxy: Netlify`).
+4. The dataset-store pill's tooltip text mentions
+   the shared public-intelligence store, NOT
+   `Netlify Blobs`.
+5. The `proxy` / `browser-direct` / `unavailable`
+   pill accessibility text is meaningful and
+   provider-neutral on every state.
+6. The full V6.3 Hostinger acceptance suite passes
+   (425 tests).
+7. The `acceptance-proxy` suite passes
+   (121 tests, including the new provider-neutral
+   assertions and the absence of "Netlify" /
+   "Hostinger" in the user-visible data-route
+   pills).
+8. The preflight passes (25/25).
+9. The build succeeds; the main bundle remains at
+   the V6.8 RC size (±1 kB tolerance for the added
+   accessibility text).
+10. No `logs/` or `state/` artifact is left in the
+    repo root.
+
 Schedules (UTC):
 
 - dataset refresh: minute 0 and 30 of every hour

@@ -7,6 +7,67 @@ audit findings behind each release, see
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).
 
+## Hostinger final provider-neutral data-route label (additive)
+
+A separate `hostinger/v6-8-final-provider-neutral-label`
+branch is the last hostinger hotfix in the V6.8 line. It
+replaces the user-visible "Proxy: Netlify" badge with a
+provider-neutral delivery-route label, so the dashboard
+reports the route type ("same-origin", "direct",
+"unavailable") rather than naming the hosting provider.
+
+This is a presentation-only patch. No route, no API
+contract, no scheduler, no storage behavior, no
+sharding, no schema, no Netlify/Hostinger setting is
+modified.
+
+- `src/components/Header.tsx`: the single
+  `proxyStatus === 'proxy'` block is replaced with
+  three provider-neutral blocks:
+    - `proxy`          → "Data route: same-origin"
+    - `browser-direct` → "Data route: direct"
+    - `unavailable`    → "Data route: unavailable"
+  The dataset-store pill's accessibility text drops the
+  "Netlify Blobs" provider claim and references the
+  shared public-intelligence store instead. The Source,
+  NVD, EPSS, dataset-store, cache, and refresh pills
+  are preserved unchanged.
+- `scripts/acceptance-proxy.mjs`: the legacy
+  "Proxy: Netlify" assertions are replaced with
+  provider-neutral assertions covering all three
+  states, the absence of "Netlify" / "Hostinger" in
+  the user-visible data-route pills, the per-state
+  tone (`info` / `warn` / `warn`), the per-state
+  accessibility text, and the preservation of the
+  source / NVD / EPSS / dataset-store badges.
+- `scripts/verify-v68-release.mjs`: the
+  branch-aware clean-tree test also accepts the
+  `hostinger/v6-8-final-provider-neutral-label`
+  branch; `src/components/` is allowed on this
+  branch only.
+
+Preserved invariants:
+
+- No public HTTP route is added or removed.
+- `/.netlify/functions/dataset` continues to be a
+  read-only compatibility alias on Hostinger.
+- The API response contract (`FetchResult`,
+  `proxyStatus`, `dataSource`, `cacheStatus`) is
+  unchanged.
+- The dataset-route alias behavior, the publication
+  and sharding logic, the scheduler behavior, the
+  filesystem storage, the public-intelligence
+  schemas, the V6.1 size budgets, the 21-column
+  public CSV, the 5 public Netlify function
+  entries, and the 1 gateway function entry are
+  all preserved unchanged.
+- `client/**` and `netlify/gateway/**` are not
+  modified.
+- No Hostinger setting, environment variable,
+  credential, DNS record, or deployment is
+  triggered by this branch.
+
+
 ## Hostinger public-snapshot size-boundary fix (deterministic sharding)
 
 A separate `hostinger/v6-8-public-snapshot-size-boundary`

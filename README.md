@@ -745,6 +745,25 @@ existing `scripts/acceptance-v63-hostinger.mjs` is
 extended with new tests for the sharded publication
 (section [20]).
 
+## Hostinger final provider-neutral data-route label (additive)
+
+A separate `hostinger/v6-8-final-provider-neutral-label`
+branch is the last hostinger hotfix in the V6.8 line. It
+replaces the user-visible "Proxy: Netlify" badge with a
+provider-neutral delivery-route label, so the dashboard
+reports the route type ("same-origin", "direct",
+"unavailable") rather than naming the hosting provider.
+
+This is a presentation-only patch. The route, the API
+contract, the scheduler, the storage, the sharding, the
+schema, the public CSV, the 5 public Netlify function
+entries, the 1 gateway function entry, and the
+`/.netlify/functions/dataset` compatibility alias are
+all preserved unchanged. `client/**` and
+`netlify/gateway/**` are not modified. No Hostinger
+setting, environment variable, credential, DNS record,
+or deployment is triggered by this branch.
+
 ## V6.8 — Release candidate consolidation (additive)
 
 V6.8 is a release-candidate consolidation milestone. It

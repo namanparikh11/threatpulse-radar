@@ -290,26 +290,44 @@ export default function Header({ meta }: HeaderProps) {
             {meta?.proxyStatus === 'proxy' && (
               <StatusPill
                 icon={<Cloud className="h-3 w-3" />}
-                label="Proxy: Netlify"
+                label="Data route: same-origin"
                 tone="info"
-                title="Live data was aggregated server-side by the Netlify Function at /.netlify/functions/dataset — the browser never hit the upstream feeds directly."
+                title="Live data was aggregated server-side on the same origin (the local /api/dataset or /.netlify/functions/dataset route) — the browser never hit the upstream feeds directly. The hosting provider is intentionally not named on this surface."
+              />
+            )}
+            {meta?.proxyStatus === 'browser-direct' && (
+              <StatusPill
+                icon={<Cloud className="h-3 w-3" />}
+                label="Data route: direct"
+                tone="warn"
+                title="The same-origin route was unreachable, so the browser fell back to a direct fetch of the upstream feeds. This still serves live data, but it bypasses the server-side cache and the host's rate-limit handling."
+              />
+            )}
+            {meta?.proxyStatus === 'unavailable' && (
+              <StatusPill
+                icon={<Cloud className="h-3 w-3" />}
+                label="Data route: unavailable"
+                tone="warn"
+                title="Both the same-origin route and the direct browser fetch were unreachable. The dashboard is showing the mock fallback or a stale cached snapshot; no live data is being served right now."
               />
             )}
             {/*
               v5.2: Dataset-store pill. Surfaced whenever the
-              current FetchResult came from the shared Netlify
-              Blobs entry (the v5.2 fast path). Tells the user
-              they're reading from the prebuilt store, not paying
-              a live build on this request. Distinct from the
-              "Proxy: Netlify" pill which describes the transport
-              layer rather than the storage layer.
+              current FetchResult came from the shared public-
+              intelligence store (the v5.2 fast path). Tells the
+              user they're reading from the prebuilt store, not
+              paying a live build on this request. Distinct from
+              the "Data route" pill which describes the transport
+              layer rather than the storage layer. The label is
+              provider-neutral so the same wording renders
+              correctly on every hosting provider.
             */}
             {dataSource === 'prebuilt-store' && (
               <StatusPill
                 icon={<Database className="h-3 w-3" />}
                 label="Dataset store: latest available"
                 tone="info"
-                title="This dataset was served from the shared Netlify Blobs store (v5.2 prebuilt dataset). A scheduled refresh rebuilds the store every 30 minutes. Data refreshes automatically in the background; the latest successfully enriched dataset remains available during provider delays."
+                title="This dataset was served from the shared public-intelligence store (the v5.2 prebuilt dataset). A scheduled refresh rebuilds the store every 30 minutes. Data refreshes automatically in the background; the latest successfully enriched dataset remains available during provider delays."
               />
             )}
             {dataSource === 'live-build' && (

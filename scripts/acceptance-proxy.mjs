@@ -412,30 +412,127 @@ assert('v5.0.1: no max-age directive is set (CDN-only caching, not browser cachi
   'expected no max-age directive so browser HTTP cache is not used (CDN only)');
 
 /* ------------------------------------------------------------------ */
-/* 7. The Header shows a Proxy pill                                   */
+/* 7. The Header shows a provider-neutral Data route pill            */
 /* ------------------------------------------------------------------ */
 
-section('Header UI — Proxy: Netlify pill');
+section('Header UI — Data route pill (provider-neutral)');
 
 const headerSrc = readFileSync(
   join(root, 'src', 'components', 'Header.tsx'), 'utf8');
 
-assert('Header imports a Cloud icon for the Proxy pill',
+assert('Header imports a Cloud icon for the Data route pill',
   /Cloud/.test(headerSrc),
   'expected a Cloud icon import in Header');
 
-assert('Header renders a "Proxy: Netlify" pill when proxyStatus === "proxy"',
-  /proxyStatus\s*===\s*['"]proxy['"][\s\S]{0,400}Proxy:\s*Netlify/.test(headerSrc),
-  'expected the Proxy: Netlify pill on a successful proxy fetch');
+assert('Header renders a "Data route: same-origin" pill when proxyStatus === "proxy"',
+  /proxyStatus\s*===\s*['"]proxy['"][\s\S]{0,400}Data route:\s*same-origin/.test(headerSrc),
+  'expected the provider-neutral "Data route: same-origin" pill on a successful proxy fetch');
 
-assert('Proxy pill uses an info tone (cyan, matches Cache: fresh)',
+assert('Header renders a "Data route: direct" pill when proxyStatus === "browser-direct"',
+  /proxyStatus\s*===\s*['"]browser-direct['"][\s\S]{0,400}Data route:\s*direct/.test(headerSrc),
+  'expected the "Data route: direct" pill on a browser-direct fallback');
+
+assert('Header renders a "Data route: unavailable" pill when proxyStatus === "unavailable"',
+  /proxyStatus\s*===\s*['"]unavailable['"][\s\S]{0,400}Data route:\s*unavailable/.test(headerSrc),
+  'expected the "Data route: unavailable" pill when both transports fail');
+
+assert('Header does NOT render the legacy "Proxy: Netlify" label',
+  !/['"]Proxy:\s*Netlify['"]/.test(headerSrc),
+  'expected the legacy "Proxy: Netlify" provider-specific label to be removed');
+
+assert('Header does NOT name a specific hosting provider in the data-route pill',
+  (() => {
+    // Slice the three proxyStatus branches and confirm
+    // none of them contain the string "Netlify" or
+    // "Hostinger" as a provider claim. The path
+    // `/.netlify/functions/dataset` is allowed because it
+    // is the documented route alias, not a provider claim.
+    const re = /proxyStatus\s*===\s*['"](?:proxy|browser-direct|unavailable)['"][\s\S]{0,500}?<\/StatusPill>/g;
+    const blocks = headerSrc.match(re) || [];
+    for (const b of blocks) {
+      if (/\bNetlify\b/.test(b) || /\bHostinger\b/.test(b)) return false;
+    }
+    return true;
+  })(),
+  'expected the three data-route pill blocks to be provider-neutral (no "Netlify" or "Hostinger" string)');
+
+assert('Data route (same-origin) pill uses an info tone (cyan, matches Cache: fresh)',
   (() => {
     const i = headerSrc.indexOf("proxyStatus === 'proxy'");
     if (i < 0) return false;
     const slice = headerSrc.slice(i, i + 500);
     return /tone\s*=\s*['"]info['"]/.test(slice);
   })(),
-  'expected tone="info" on the Proxy pill');
+  'expected tone="info" on the same-origin pill');
+
+assert('Data route (direct) pill uses a warn tone (matches the fallback honesty rule)',
+  (() => {
+    const i = headerSrc.indexOf("proxyStatus === 'browser-direct'");
+    if (i < 0) return false;
+    const slice = headerSrc.slice(i, i + 500);
+    return /tone\s*=\s*['"]warn['"]/.test(slice);
+  })(),
+  'expected tone="warn" on the direct-fallback pill');
+
+assert('Data route (unavailable) pill uses a warn tone',
+  (() => {
+    const i = headerSrc.indexOf("proxyStatus === 'unavailable'");
+    if (i < 0) return false;
+    const slice = headerSrc.slice(i, i + 500);
+    return /tone\s*=\s*['"]warn['"]/.test(slice);
+  })(),
+  'expected tone="warn" on the unavailable pill');
+
+assert('Data route (same-origin) pill accessibility text is meaningful and provider-neutral',
+  (() => {
+    const i = headerSrc.indexOf("proxyStatus === 'proxy'");
+    if (i < 0) return false;
+    const slice = headerSrc.slice(i, i + 800);
+    return /title=/.test(slice)
+      && /server-side/.test(slice)
+      && /browser/.test(slice)
+      && !/\bNetlify\b/.test(slice);
+  })(),
+  'expected the same-origin pill title to explain the route, mention "server-side" + "browser", and not name a provider');
+
+assert('Data route (direct) pill accessibility text explains the browser-direct fallback',
+  (() => {
+    const i = headerSrc.indexOf("proxyStatus === 'browser-direct'");
+    if (i < 0) return false;
+    const slice = headerSrc.slice(i, i + 800);
+    return /title=/.test(slice)
+      && /same-origin/.test(slice)
+      && /unreachable/.test(slice)
+      && /direct/.test(slice);
+  })(),
+  'expected the direct pill title to explain why the browser fell back');
+
+assert('Data route (unavailable) pill accessibility text is honest about the failure',
+  (() => {
+    const i = headerSrc.indexOf("proxyStatus === 'unavailable'");
+    if (i < 0) return false;
+    const slice = headerSrc.slice(i, i + 800);
+    return /title=/.test(slice)
+      && /unreachable/.test(slice)
+      && /mock|stale/.test(slice);
+  })(),
+  'expected the unavailable pill title to explain the failure and the fallback');
+
+assert('Other badges (Source / NVD / EPSS / Dataset store) remain unchanged',
+  (() => {
+    // The dataset-store title was updated to remove
+    // "Netlify Blobs" but the label and the rendering
+    // path are unchanged.
+    return /Dataset store: latest available/.test(headerSrc)
+      && /NVD: enriched/.test(headerSrc)
+      && /EPSS: FIRST/.test(headerSrc)
+      && /Source: /.test(headerSrc);
+  })(),
+  'expected the source / NVD / EPSS / dataset-store badges to remain in place');
+
+assert('Dataset store pill title is provider-neutral (no "Netlify Blobs" string)',
+  !/shared Netlify Blobs store/.test(headerSrc),
+  'expected the dataset-store pill title to drop the "Netlify Blobs" provider claim');
 
 /* ------------------------------------------------------------------ */
 /* 8. The function and the browser-side providers share the same URLs */
