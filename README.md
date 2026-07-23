@@ -5,7 +5,7 @@
 > probability, SSVC decision context, and reviewed package-remediation
 > guidance across your stack in one focused command-center view.
 
-![status](https://img.shields.io/badge/status-v5.6.1-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v6.8-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 
@@ -356,6 +356,506 @@ V6.0 documentation:
 
 ---
 
+## V6.4 — Local defender workspace (additive)
+
+V6.4 adds a fully-local defender workspace to the dashboard.
+A defender can watch CVEs, assign a local triage status and
+priority, add local tags, write a private note, and identify
+watched CVEs that changed since the last review. Everything
+lives on the user's device in IndexedDB (with a session-memory
+fallback); nothing is uploaded.
+
+Privacy invariants (proved by `scripts/acceptance-v64-workspace.mjs`):
+
+- No workspace field appears in the public dataset, the
+  Netlify function entries, the private gateway payloads,
+  the dashboard URL, the public CSV, or any analytics
+  endpoint.
+- The export filename is static (`threatpulse-workspace.json`).
+- The export is deterministic (sorted by `cveId`, fixed
+  field order, sha256 checksum).
+
+V6.4 documentation: [`docs/v6-4-local-workspace.md`](docs/v6-4-local-workspace.md).
+
+---
+
+## V6.5 — Local briefings and reports (additive)
+
+V6.5 adds fully-local, defensible report exports generated from
+public intelligence + V6.1 change intelligence + V6.4 local
+workspace entries. Five report types, five redaction modes,
+strict JSON schema with SHA-256 integrity, verification +
+comparison + history. All generation, preview, export, verify,
+compare, and history live inside the browser. Nothing is
+uploaded.
+
+V6.5 documentation: [`docs/v6-5-local-briefings-and-reports.md`](docs/v6-5-local-briefings-and-reports.md).
+
+---
+
+## V6.6 — Local asset, SBOM, and exposure mapping (additive)
+
+V6.6 adds a local-only environment relevance layer. The operator
+can register local assets, import supported SBOM / software-inventory
+files (CycloneDX 1.4 / 1.5 / 1.6 JSON, SPDX 2.3 JSON, ThreatPulse
+inventory JSON, bounded CSV), identify components, correlate with
+public OSV + GitHub Advisory package data, distinguish reliable
+affected-range matches from ambiguous identity-only matches,
+review / dismiss local correlations, filter the public
+vulnerability table by local relevance, and view potentially
+affected local assets from the CVE detail drawer.
+
+**All asset / SBOM / package / mapping / user-review data is
+local browser data. Nothing is uploaded.** The system NEVER
+claims a correlation proves exploitability, compromise, or
+practical exploitability.
+
+Six correlation states (none mean "this CVE was exploited
+against you"):
+
+- `affected-range-match` — range evaluator said the imported
+  version falls inside the declared affected range
+- `exact-version-match` — the imported version is in the
+  provider's `versions[]` list
+- `identity-only-potential` — identity matched but no version
+  / range was available to evaluate
+- `no-supported-match` — identity matched but the imported
+  version did NOT fall inside the declared range (NOT
+  evidence of safety)
+- `version-not-evaluable` — range syntax was unsupported
+- `public-data-unavailable` — public intelligence status
+  was not `available` when correlation ran
+
+Eight review statuses (`unreviewed`, `confirmed-relevant`,
+`dismissed`, `needs-validation`, `remediation-planned`,
+`remediation-in-progress`, `remediated` (local workflow
+statement only — NOT externally verified), `accepted-risk`).
+
+Three storage adapters (`IndexedDBEnvironmentAdapter` /
+`InMemoryEnvironmentAdapter` / `UnavailableEnvironmentAdapter`)
+with multi-tab BroadcastChannel sync and atomic inventory
+promotion. Worker dispatch (separate `parseInventory.worker`
++ `correlate.worker` chunks) with main-thread synchronous
+fallback for older browsers and the test runner.
+
+V6.5 reports gain an OPTIONAL additive `localEnvironmentSummary`
+field (counts only — no asset names, paths, owner labels, or
+review notes). Default V6.5 reports carry no environment data.
+
+Privacy invariants (proved by `scripts/acceptance-v66-local-environment.mjs`):
+
+- No network call carries asset / SBOM / note / tag / report
+  data
+- No asset / note / tag / private field enters a URL
+- No production console output contains private fields
+- No public CSV field is added (`CSV_COLUMNS` still 21)
+- No public API envelope is mutated
+- No public-intelligence fixture is mutated
+- Local-relevance filter state is never serialized to the URL
+- Raw SBOM payloads are never retained (only minimal documented
+  component fields)
+- Prototype-pollution keys are rejected by every validator
+
+V6.6 documentation: [`docs/v6-6-local-environment.md`](docs/v6-6-local-environment.md).
+
+---
+
+## V6.7 — Local remediation plans, evidence, and activity ledger (additive)
+
+V6.7 adds a fully-local remediation workflow layer on top of V6.4
+workspace, V6.5 reports, and V6.6 environment. The operator can
+create a local plan for a CVE, correlation, asset, or component;
+decompose the plan into ordered tasks with local owner labels and
+due dates; attach nine kinds of evidence; fingerprint a local
+evidence file with a Web Worker that never uploads the bytes; walk
+the plan through the documented nine-state lifecycle machine;
+record a local validation result; reopen a completed or
+accepted-risk plan without silently mutating its history; export
+and re-import integrity-checked plan bundles; and inspect a
+per-plan append-only hash-chained activity ledger.
+
+All plan, task, evidence, owner, due-date, validation, and
+ledger data is local browser data. Nothing is uploaded. The
+system never claims a recorded completion is an external
+verification, that a matching fingerprint proves authorship or
+authenticity, or that the local ledger has any legal or
+identity-significance.
+
+V6.5 reports gain an OPTIONAL additive `localRemediationSummary`
+field (counts only — no owner labels, plan / task / evidence
+content, fingerprints, blocker reasons, validation notes, or
+actor labels). Default V6.5 reports carry no remediation data.
+
+Privacy invariants (proved by `scripts/acceptance-v67-local-remediation.mjs`):
+- No fetch, XHR, `sendBeacon`, `history.pushState` /
+  `replaceState`, or production console output of plan / task /
+  evidence / owner / fingerprint / validation / actor content.
+- File bytes are never stored; only the SHA-256, file name,
+  size, MIME, and optional `lastModified` are recorded.
+- No `node:crypto` in any browser-reachable module.
+- No `sha256Node` or `fingerprintNode` chunk in the Vite build.
+- The `threatpulse-local-remediation` bundle v1.0.0 has a
+  SHA-256 integrity checksum, prototype-pollution rejection,
+  atomic ledger conflict detection, and a 25 MiB size cap.
+- Hash chain detects modified, missing, reordered, and inserted
+  events; does **not** prove authorship, identity, timestamp
+  authority, or legal authenticity.
+
+V6.7 documentation: [`docs/v6-7-local-remediation-evidence.md`](docs/v6-7-local-remediation-evidence.md).
+
+---
+
+## V6.8 controlled deployment preparation (additive)
+
+A separate `release/v6-8-deployment-preparation` branch
+carries the V6.8 release-preparation tooling without
+modifying the V6.8 product. The branch adds:
+
+- A machine-readable [`deploy/v6-8-release-manifest.json`](deploy/v6-8-release-manifest.json)
+  (names only, no secret values).
+- A read-only release preflight
+  ([`scripts/verify-v68-release.mjs`](scripts/verify-v68-release.mjs)).
+- A local smoke test
+  ([`scripts/smoke-v68-local.mjs`](scripts/smoke-v68-local.mjs)).
+- A dry-run-by-default production smoke test
+  ([`scripts/smoke-v68-production.mjs`](scripts/smoke-v68-production.mjs)).
+- A release-preparation acceptance suite
+  ([`scripts/acceptance-v68-deployment-preparation.mjs`](scripts/acceptance-v68-deployment-preparation.mjs)).
+- A phased deployment runbook
+  ([`docs/v6-8-controlled-deployment-runbook.md`](docs/v6-8-controlled-deployment-runbook.md)).
+- A rollback plan
+  ([`docs/v6-8-rollback-plan.md`](docs/v6-8-rollback-plan.md)).
+- A production observation plan
+  ([`docs/v6-8-production-observation-plan.md`](docs/v6-8-production-observation-plan.md)).
+- An environment-variable checklist (names only)
+  ([`docs/v6-8-environment-checklist.md`](docs/v6-8-environment-checklist.md)).
+- A deployment-cost controls document
+  ([`docs/v6-8-deployment-cost-controls.md`](docs/v6-8-deployment-cost-controls.md)).
+
+The preparation branch is honest about what it is. The
+release is **not** enterprise-certified, legally
+admissible, complete, or independently audited. **The
+preparation tooling does not perform any deployment,
+merge, credential, environment-variable, DNS, or
+paid-service change.** Every action gated by the runbook
+requires explicit operator authorization in the
+Netlify UI.
+
+**Preparation-branch commit history (5 commits on top
+of the V6.8 RC `0480a9f`):** the three planned
+logical commits (`6531ada` manifest + preflight +
+smokes, `0698d12` runbooks, `5dda6f7` acceptance
+suite + docs) plus two bounded verification
+corrections (`43ea1ca` loosen the V6.8
+release-candidate suite count to `>= 36` for
+forward-compat, `557023f` allow the V6.8
+release-candidate acceptance suite in the
+deployment-preparation branch's product-source
+diff). The V6.8 release-candidate baseline carried
+36 acceptance suites; the deployment-preparation
+branch carries 37 (the V6.8 deployment-preparation
+acceptance suite).
+
+## Hostinger managed scheduler ENOENT hotfix (additive)
+
+A separate `hostinger/v6-8-managed-scheduler-execpath`
+branch fixes a deployment-time ENOENT observed on
+the Hostinger Business managed-Node temporary
+deployment. Every scheduled child process is now
+spawned with `process.execPath` (the absolute path
+of the currently running Node executable) instead
+of the bare string `node`. The bare string failed
+because the managed-Node runtime's PATH is not
+propagated to `child_process.spawn`; the absolute
+path of the running executable is always present.
+The fix preserves every V6.6+ invariant:
+no shell is used, no provider/storage/canonicalization
+logic is duplicated, no public HTTP route is added,
+no third-party scheduler is introduced, and the
+existing standalone `hostinger/cron-*.mjs` entrypoints
+remain importable. The total acceptance suite count
+remains 37.
+
+## Hostinger filesystem intelligence-store parity (additive)
+
+A separate `hostinger/v6-8-filesystem-intelligence-stores`
+branch fixes three observed deployment findings on
+the Hostinger Business managed-Node deployment:
+
+  1. `lastVulnrichmentRefresh.status = failed`
+     ("Failed to write Vulnrichment cache blob.")
+  2. `lastGitHubAdvisoryRefresh.status = failed`
+     ("Failed to write GitHub Advisory cache blob.")
+  3. `lastV61DatasetBoundRefresh.status = skipped`
+     ("public-intelligence-store-unavailable")
+
+All three had the same root cause: the four
+`get*Store` helpers hardcoded the `'netlify'`
+adapter, so every cache write and every
+public-intelligence read returned an unusable handle
+on a Hostinger runtime that has no Netlify Blobs
+context. The fix routes the four helpers through
+`THREATPULSE_STORAGE_BACKEND` exactly the same way
+`server/config.mjs` and `jobs/_lib.mjs#resolveStorage`
+already do. The Netlify path is preserved unchanged
+for backward compatibility.
+
+When the backend is `'filesystem'`, every Blob
+namespace lives under the same
+`$THREATPULSE_DATA_ROOT`:
+
+- `tpr-dataset/` — primary dataset envelope
+- `tpr-vulnrichment/` — CISA Vulnrichment / SSVC cache
+- `tpr-github-advisory/` — GitHub Advisory cache
+- `tpr-public-intelligence/` — V6.1 public-intelligence
+  OSV + dataset versioned artifacts, `latest.json`
+  pointers, publication locks, change-summaries
+
+Every filesystem write uses a temp file + rename
+(atomic, last-known-good preserved on failure). The
+V6.1 size budgets and the NVD 429 partial-enrichment
+behavior are preserved unchanged. The total
+acceptance suite count remains 37.
+
+## Hostinger dataset-route compatibility alias (additive)
+
+A separate `hostinger/v6-8-dataset-route-compatibility`
+branch adds a read-only HTTP compatibility alias so
+the frozen V6.8 frontend (which hardcodes three URLs
+beginning with `/.netlify/functions/dataset`) can
+reach the same portable `handleDataset` implementation
+on a Hostinger Business managed-Node deployment.
+
+- Canonical Hostinger route: `/api/dataset`
+- Read-only compatibility alias:
+  `/.netlify/functions/dataset` (NOT a Netlify Function;
+  on Hostinger it is a plain HTTP route handled by
+  the portable Node server)
+- Method allowlist: `GET` and `HEAD` only; POST / PUT
+  / PATCH / DELETE return `405`
+- Any other `/.netlify/functions/{name}` path is
+  served an honest `404` so the SPA shell does not
+  masquerade as a refresh endpoint
+- The alias is a thin pass-through to the same
+  `handleDataset(req, { config: portable })` call;
+  no dataset-building logic is duplicated
+- No write, refresh, publication, backup, GC, or
+  verification action is reachable through the alias
+- The managed Hostinger scheduler remains the only
+  Hostinger refresh mechanism
+- Future cleanup: a follow-up can migrate the
+  frontend to a provider-neutral endpoint and remove
+  the alias
+
+The total acceptance suite count remains 37.
+
+## Hostinger Business managed-Node scheduler (additive)
+
+A separate `hostinger/v6-8-managed-scheduler`
+branch adds an opt-in in-process scheduler for
+Hostinger Business managed-Node deployments that
+do not expose an OS-level cron. The scheduler is
+disabled by default and reuses the existing
+`hostinger/cron-*.mjs` job implementations and the
+existing `hostinger/locks.mjs` mkdir-based locks.
+No provider, storage, publication, or
+canonicalization logic is duplicated; the standalone
+cron entrypoints remain available for VPS
+deployments.
+
+- Enable with `THREATPULSE_MANAGED_SCHEDULER=1`
+  (literal value; any other value keeps the
+  scheduler disabled).
+- Optional one-shot bootstrap on a missing dataset
+  with `THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP=1`.
+- Schedules (UTC): dataset refresh on minute 0 and
+  30, baseline refresh at :10, dataset publish at
+  :20 and :50, public-intel GC at :25, state
+  verify at 06:30 daily, backup at 02:40 daily.
+- The scheduler adds no public HTTP trigger route.
+  A process restart is safe; the scheduler starts
+  again from the next calculated UTC occurrence,
+  the bootstrap is retried when the dataset is
+  missing, and the existing locks prevent
+  duplicate active jobs.
+- The total acceptance suite count remains 37 —
+  the existing `scripts/acceptance-v63-hostinger.mjs`
+  is extended with 77 new tests for the managed
+  scheduler.
+
+The exact variable names are listed in
+[`docs/v6-8-environment-checklist.md`](docs/v6-8-environment-checklist.md).
+No values are documented; only the variable names.
+
+## Hostinger public-snapshot size-boundary fix (additive)
+
+A separate `hostinger/v6-8-public-snapshot-size-boundary`
+branch resolves the V6.1 `public-snapshot uncompressed
+size 1124204 exceeds ceiling 1048576` failure on the
+production Hostinger managed-Node deployment. The 1 MiB
+per-object safety ceiling is preserved unchanged; the
+logical snapshot is split into deterministic
+content-addressed shards.
+
+What changes:
+
+- The V6.1 dataset-bound publisher now writes the
+  logical snapshot as N deterministic shards (one
+  gzipped content-addressed object per shard) plus a
+  per-version shard manifest. The atomic
+  `dataset/latest.json` pointer is preserved
+  unchanged in role; it gains two new fields
+  (`snapshotShardsManifestContentHash` and
+  `snapshotShardsCount`).
+- A new read path reassembles the logical snapshot
+  from the manifest + shards and verifies the
+  logical content hash. The reassembled snapshot has
+  the same shape as the original; the public response
+  contract is unchanged.
+- A new mark-and-sweep GC retains the current +
+  previous + rollback shard manifests. Orphan shards
+  are removed; the currently-referenced manifest and
+  shards are never collected.
+
+What is preserved:
+
+- The 1 MiB per-object safety ceiling
+  (`PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES`)
+  is unchanged.
+- No field of the per-CVE record is silently
+  truncated or dropped. The reassembled logical
+  snapshot is canonical-hash-equal to the original.
+- The composite `publicStateHash` is computed from
+  the four precomputed per-Blob hashes, not from
+  the snapshot bytes. Shard-boundary changes
+  therefore cannot change the publicStateHash.
+- The `client/**` and `netlify/gateway/**`
+  byte-equivalence to `32a8a63` is preserved.
+- The 21-column public CSV, the 5 public Netlify
+  function entries, and the 1 gateway function entry
+  are preserved.
+- The V6.3 dataset-route compatibility alias
+  continues to be read-only.
+- The V6.7 hash chain, atomic plan+ledger commit,
+  and validation-pending transition rules are
+  preserved.
+
+The total acceptance suite count remains 37 — the
+existing `scripts/acceptance-v63-hostinger.mjs` is
+extended with new tests for the sharded publication
+(section [20]).
+
+## Hostinger final provider-neutral data-route label (additive)
+
+A separate `hostinger/v6-8-final-provider-neutral-label`
+branch is the last hostinger hotfix in the V6.8 line. It
+replaces the user-visible "Proxy: Netlify" badge with a
+provider-neutral delivery-route label, so the dashboard
+reports the route type ("same-origin", "direct",
+"unavailable") rather than naming the hosting provider.
+
+This is a presentation-only patch. The route, the API
+contract, the scheduler, the storage, the sharding, the
+schema, the public CSV, the 5 public Netlify function
+entries, the 1 gateway function entry, and the
+`/.netlify/functions/dataset` compatibility alias are
+all preserved unchanged. `client/**` and
+`netlify/gateway/**` are not modified. No Hostinger
+setting, environment variable, credential, DNS record,
+or deployment is triggered by this branch.
+
+## Mobile responsiveness — document-level overflow + action-toolbar wrap (additive)
+
+A focused mobile responsiveness correction on the
+`hostinger/v6-8-final-provider-neutral-label` branch.
+At ~400 px viewport width the page produced a horizontal
+scrollbar; the RemediationPanel bottom toolbar and
+several table wrappers were not bounded by
+`overflow-x-auto`. This patch wraps every wide table
+in a bounded scrollable container, makes the
+RemediationPanel bottom toolbar stack on mobile, and
+fixes the legacy `lg lg:` typo in the Header h1.
+
+- Header h1: `text-[1.65rem] sm:text-3xl lg:text-[2.4rem]`
+  (legacy duplicate `lg` removed).
+- RemediationPanel bottom toolbar:
+  `flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between`
+  so the long "All active (default) · local filter
+  state is not stored in the URL" paragraph wraps
+  below the button on narrow viewports.
+- WorkspacePanel queue table:
+  `overflow-x-auto` (was `overflow-hidden`) +
+  `min-w-[640px]` on the table.
+- EnvironmentPanel assets table:
+  `overflow-x-auto` + `min-w-[640px]`.
+- CorrelationQueue table:
+  `overflow-x-auto` + `min-w-[640px]`.
+- ReportHistoryDialog table:
+  `overflow-x-auto` combined with the existing
+  `overflow-y-auto` + `min-w-[560px]`.
+- ReportPreview tables (×2):
+  `overflow-x-auto`; the provenance table declares
+  `min-w-[480px]`.
+- ReportVerifyDialog diff table:
+  `overflow-x-auto`.
+
+The patch is presentation-only. No route, API
+contract, scheduler, storage, schema, gateway,
+credential, DNS, or environment variable is modified.
+The provider-neutral data-route label, the 5 public
+Netlify function entries, the 1 gateway function
+entry, the 21-column public CSV, the dataset-bound
+snapshot sharding, the dataset-route compatibility
+alias, the managed scheduler, the filesystem
+storage, the V6.7 hash chain, and the
+`client/**` / `netlify/gateway/**` byte-equivalence
+to `32a8a63` are all preserved.
+
+## V6.8 — Release candidate consolidation (additive)
+
+V6.8 is a release-candidate consolidation milestone. It
+contains the complete V6.1–V6.8 product and focuses on
+stabilizing, measuring, lazy-loading, and documenting the
+existing surfaces rather than introducing a new major
+subsystem.
+
+**This release is honest about what it is and what it
+is not. It is a single controlled release of a defensive
+cybersecurity intelligence product. It is NOT
+enterprise-certified, legally admissible, complete, or
+independently audited.**
+
+What V6.8 adds on top of V6.7:
+
+- A sanitized **release diagnostics** helper that
+  reports storage availability, schema versions,
+  record counts, and pending-write state — without
+  ever including private content.
+- A reusable **`ErrorBoundary`** wrapping every
+  major local surface (workspace, reports,
+  environment, remediation, local data centre) so
+  a failure on one surface cannot crash the public
+  dashboard.
+- A consolidated **Local Data Control Centre** that
+  summarizes every local dataset and exposes
+  per-dataset export and clear actions. Each
+  destructive action is gated by an accessible
+  confirmation dialog; datasets are independent.
+- A compact **first-run guide** with a dismissable
+  surface that explains the local-only storage
+  boundary and the first useful action.
+- **Lazy-loaded** report / environment / remediation
+  panels; the V6.8 main bundle is measurably
+  smaller than the V6.7 main bundle.
+- An end-to-end **release-candidate acceptance
+  suite** (`scripts/acceptance-v68-release-candidate.mjs`)
+  covering the five documented journeys, local data
+  separation, migration + recovery, privacy
+  instrumentation, and structural invariants.
+
+V6.8 documentation: [`docs/v6-8-release-candidate.md`](docs/v6-8-release-candidate.md).
+
+---
 ## Reliability & honesty
 
 The codebase's stance: **failures are visible, never hidden.**

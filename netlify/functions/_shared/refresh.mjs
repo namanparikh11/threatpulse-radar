@@ -175,6 +175,30 @@ import {
   writeNvdCooldown,
 } from './store.mjs';
 import { readNvdOutcome } from './liveBuild.mjs';
+import { computeDatasetPublicHash, computeEnrichmentPublicHash } from './publicIntelligenceHash.mjs';
+
+/**
+ * v6.1: compute the dataset public hash for a blob
+ * envelope. The hash describes the public portion of
+ * the envelope (INTERNAL_BLOB_FIELDS stripped), exactly
+ * the bytes a public response would carry. The returned
+ * value is stored in the envelope's `datasetPublicHash`
+ * internal field.
+ */
+function computeDatasetPublicHashForBlob(envelope) {
+  if (!envelope || typeof envelope !== 'object') return null;
+  const internal = new Set([
+    'lastRefreshAttemptAt', 'lastRefreshFailure',
+    'lastVulnrichmentRefresh', 'lastGithubAdvisoryRefresh',
+    'datasetPublicHash', 'vulnrichmentPublicHash', 'githubAdvisoryPublicHash',
+    'lastPublicIntelligenceRefresh', 'lastSourceHealthRefresh',
+    'lastOsvProjectionRefresh', 'lastChangeIntelligenceRefresh',
+    'lastChangeIntelligenceBaseVersion',
+  ]);
+  const out = { ...envelope };
+  for (const f of internal) delete out[f];
+  return computeDatasetPublicHash(out);
+}
 import { runGithubAdvisoryRefresh } from './githubAdvisoryRefresh.mjs';
 import { runVulnrichmentRefresh } from './vulnrichmentRefresh.mjs';
 
@@ -388,12 +412,31 @@ function truncateForFailureReason(s, max) {
  * fields (`githubAdvisoryStatus` / `githubAdvisoryCoverage`)
  * are computed at read-time in `dataset.mjs` and are NOT on
  * this strip list because they ARE public.
+ *
+ * v6.1: added `datasetPublicHash`, `vulnrichmentPublicHash`,
+ * and `githubAdvisoryPublicHash` — the per-Blob public
+ * content hashes that the V6.1 public-intelligence
+ * pipeline reads to compute the composite `publicStateHash`.
+ * The hashes are stripped at serve time so visitors never
+ * see them. A V6.1 dataset endpoint reads these internal
+ * hashes from the existing Blob reads (no additional Blob
+ * read for the hashes), preserving the V6.0 read-cost
+ * budget.
  */
 export const INTERNAL_BLOB_FIELDS = new Set([
   'lastRefreshAttemptAt',
   'lastRefreshFailure',
   'lastVulnrichmentRefresh',
   'lastGithubAdvisoryRefresh',
+  'datasetPublicHash',
+  'vulnrichmentPublicHash',
+  'githubAdvisoryPublicHash',
+  'lastPublicIntelligenceRefresh',
+  'lastSourceHealthRefresh',
+  'lastOsvProjectionRefresh',
+  'lastChangeIntelligenceRefresh',
+  'lastChangeIntelligenceBaseVersion',
+  'lastV61DatasetBoundRefresh',
 ]);
 
 /**
@@ -680,13 +723,80 @@ export async function runRefresh({ store, buildFn, now = new Date() } = {}) {
     };
   }
 
-  await writeLatestDataset(store, {
+  // v6.1: compute the per-Blob public hash for the
+  // dataset envelope. The hash is stored INSIDE the
+  // envelope as `_datasetPublicHash` (added to
+  // INTERNAL_BLOB_FIELDS) and is used by the V6.1
+  // public-intelligence pipeline to compute the
+  // composite publicStateHash without re-hashing the
+  // dataset contents.
+  const datasetPublicHash = computeDatasetPublicHashForBlob({
     ...envelope,
     lastRefreshAttemptAt: now.toISOString(),
     lastRefreshFailure: null,
     lastVulnrichmentRefresh: vulnrichmentOutcome,
     lastGithubAdvisoryRefresh: githubAdvisoryOutcome,
   });
+
+  await writeLatestDataset(store, {
+    ...envelope,
+    lastRefreshAttemptAt: now.toISOString(),
+    lastRefreshFailure: null,
+    lastVulnrichmentRefresh: vulnrichmentOutcome,
+    lastGithubAdvisoryRefresh: githubAdvisoryOutcome,
+    datasetPublicHash,
+  });
+
+  // v6.1: run the dataset-bound public-intelligence
+  // publication chain AFTER the main dataset write and
+  // BOTH enrichment cache writes. The chain reads the
+  // three envelopes back from the Blob stores and uses
+  // the precomputed per-Blob public hashes to compute
+  // the composite publicStateHash. A failure of the
+  // V6.1 chain NEVER downgrades the main refresh's
+  // 'completed' status; the main refresh remains
+  // successful.
+  let v61DatasetBoundOutcome = null;
+  try {
+    const { runDatasetPublicationChain } = await import('./v61BackgroundChain.mjs');
+    const vulnStore = getVulnrichmentStore();
+    const ghStore = getGithubAdvisoryStore();
+    v61DatasetBoundOutcome = await runDatasetPublicationChain({
+      datasetStore: store,
+      vulnrichmentStore: vulnStore,
+      githubAdvisoryStore: ghStore,
+      now,
+    });
+  } catch (err) {
+    // Defensive: the chain's contract is to never throw,
+    // but a defensive catch here keeps the main refresh's
+    // 'completed' status honest even if a future
+    // regression introduces a throw.
+    v61DatasetBoundOutcome = {
+      skipped: true,
+      reason: 'chain-threw',
+      error: err && err.message ? err.message : String(err),
+    };
+  }
+
+  // v6.1: stamp the V6.1 dataset-bound publication
+  // outcome on the dataset envelope so operators can see
+  // the chain's status without inspecting the Blobs
+  // store directly. The metadata is internal and is
+  // stripped from the public response.
+  try {
+    const latest = await readLatestDataset(store);
+    if (latest) {
+      await writeLatestDataset(store, {
+        ...latest,
+        lastV61DatasetBoundRefresh: v61DatasetBoundOutcome,
+      });
+    }
+  } catch {
+    // Best-effort metadata write; a failure here is
+    // non-fatal.
+  }
+
   if (!isNvdRateLimitedReason(envelope)) {
     await clearNvdCooldown(store);
   } else {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CircleAlert, HardDrive, Loader2, RefreshCw, Sparkles, X } from 'lucide-react';
 import Header from '../components/Header';
 import StatsCards from '../components/StatsCards';
@@ -12,7 +12,36 @@ import ErrorState from '../components/ErrorState';
 import SeverityChart, { EpssChart } from '../components/charts/SeverityChart';
 import TrendChart from '../components/charts/TrendChart';
 import KevChart from '../components/charts/KevChart';
-import { useVulnerabilityFilter } from '../hooks/useVulnerabilityFilter';
+import SourceHealthPanel from '../components/SourceHealthPanel';
+import ChangeIntelligencePanel from '../components/ChangeIntelligencePanel';
+import ConflictBanner from '../components/workspace/ConflictBanner';
+import WorkspacePanel from '../components/workspace/WorkspacePanel';
+import BulkActionBar from '../components/workspace/BulkActionBar';
+import WorkspaceDialogs, { type DialogKind } from '../components/workspace/WorkspaceDialogs';
+// V6.8: lazy-load the heavy report and local feature
+// panels so the initial dashboard render does not
+// pay the cost of the report builder, the report
+// history, the report verify/compare dialogs, the
+// environment / SBOM import dialog, or the
+// remediation UI. Each panel renders only when the
+// operator opens it for the first time.
+const ReportBuilder = lazy(() => import('../components/reports/ReportBuilder'));
+const ReportHistoryDialog = lazy(() => import('../components/reports/ReportHistoryDialog'));
+const ReportVerifyDialog = lazy(() => import('../components/reports/ReportVerifyDialog'));
+const EnvironmentPanel = lazy(() => import('../components/environment/EnvironmentPanel'));
+const RemediationPanel = lazy(() => import('../components/remediation/RemediationPanel').then((m) => ({ default: m.RemediationPanel })));
+import { LocalDataCentre } from '../components/LocalDataCentre';
+import { FirstRunGuide } from '../components/FirstRunGuide';
+import { ErrorBoundary } from '../components/ErrorBoundary';
+import { useRemediation } from '../state/RemediationContext';
+import { exportReport } from '../reports/exporters/index.mjs';
+import { downloadFile, openHtmlInNewTab } from '../reports/download.mjs';
+import { addHistoryEntry } from '../reports/history.mjs';
+import { useEnvironment } from '../state/EnvironmentContext';
+import { useVulnerabilityFilter, buildLocalRollup, type LocalRelevanceFilter } from '../hooks/useVulnerabilityFilter';
+import { useWorkspace } from '../state/WorkspaceContext';
+import { buildCounts } from '../workspace/queueFilters.mjs';
+import { computeChangeSignatureSync as computeChangeSignature } from '../workspace/changeSignature.mjs';
 import {
   fetchVulnerabilities,
   type FetchResult,
@@ -23,6 +52,7 @@ import type {
   Vulnerability,
   VulnerabilityFilters,
 } from '../types/vulnerability';
+import type { SourceStatus } from '../types/sourceHealth';
 import { DEFAULT_FILTERS, DEFAULT_SORT } from '../types/vulnerability';
 import {
   computeStats,
@@ -32,6 +62,15 @@ import {
 } from '../utils/analytics';
 import { formatAbsolute, formatRelative } from '../utils/format';
 import { formatAgeShort } from '../services/datasetCache';
+
+function PanelFallback({ label }: { label: string }) {
+  return (
+    <div className="panel flex items-center gap-2 px-4 py-3 text-[12px] text-radar-muted" aria-busy="true" data-testid={`panel-fallback-${label.toLowerCase().replace(/\s+/g, '-')}`}>
+      <Loader2 className="h-3.5 w-3.5 animate-spin text-radar-accent" />
+      <span>Loading {label}…</span>
+    </div>
+  );
+}
 
 type LoadState =
   | { kind: 'loading' }
@@ -93,6 +132,59 @@ export default function DashboardPage() {
    */
   const [refreshStatus, setRefreshStatus] = useState<RefreshResult | null>(null);
   /**
+   * v6.1: which source card to highlight in the Source
+   * Health panel (e.g. when the user clicks the "Provider
+   * status changed" chip in the What Changed panel).
+   */
+  const [highlightSourceId, setHighlightSourceId] = useState<string | null>(null);
+  /**
+   * v6.4: local workspace UI state. The CVE ids the
+   * operator has selected in the workspace queue drive
+   * the BulkActionBar. The active dialog is one of
+   * 'export' | 'import' | 'clear-archived' |
+   * 'clear-workspace' | null.
+   */
+  const [selectedCveIds, setSelectedCveIds] = useState<string[]>([]);
+  const [activeDialog, setActiveDialog] = useState<DialogKind>(null);
+  // V6.5: report-builder dialog state. The dialog is
+  // pre-seeded by entry points (workspace panel, detail
+  // drawer, "what changed" panel, local queue).
+  const [reportBuilderSeed, setReportBuilderSeed] = useState<{ cveIds: string[]; reportType?: string; title?: string } | null>(null);
+  const [activeReportDialog, setActiveReportDialog] = useState(false);
+  const [activeReportHistory, setActiveReportHistory] = useState(false);
+  const [activeReportVerify, setActiveReportVerify] = useState<'verify' | 'compare' | null>(null);
+  const workspace = useWorkspace();
+  const env = useEnvironment();
+  const remediation = useRemediation();
+  /**
+   * v6.4: keep the workspace's `changedSinceReview` count
+   * in sync with the actual public-intelligence view. The
+   * workspace's internal count is approximate; we replace
+   * it with the exact value derived from
+   * `buildCounts(...)` so the count tile and the
+   * `Changed since review` queue filter agree.
+   */
+  useEffect(() => {
+    if (state.kind !== 'ready') {
+      workspace.clearChangedSinceReview();
+      return;
+    }
+    const counts = buildCounts({
+      vulns: state.meta.data,
+      entriesByCve: workspace.state.entriesByCve,
+      publicIntelligenceVersion: state.meta.publicIntelligenceVersion ?? null,
+      publicIntelligenceStatus: state.meta.publicIntelligenceStatus ?? 'unavailable',
+      publicProjectionSchemaVersion: state.meta.publicProjectionSchemaVersion ?? null,
+      computeSignature: computeChangeSignature,
+    });
+    workspace.incrementChangedSinceReview(counts.changedSinceReview);
+  }, [
+    state.kind === 'ready' ? state.meta : null,
+    workspace.state.entriesByCve,
+    workspace.incrementChangedSinceReview,
+    workspace.clearChangedSinceReview,
+  ]);
+  /**
    * v5.1: Refs that mirror the latest `state.meta.fetchedAt`
    * and `dismissedFetchedAt` so the polling closure (started
    * once on first 'ready') can read the current values
@@ -151,14 +243,23 @@ export default function DashboardPage() {
   // active" footer can name the active preset. The hook
   // also returns `filtered` (pre-sort) for callers that
   // need the un-ordered matching set; the table and the
-  // export use the sorted view.
+  // V6.6: local-relevance filter. The state is held in a
+  // separate hook (NOT in `filters`) so it is never
+  // serialised into the URL and never contaminates the
+  // public CSV / Defender Views / What Changed surfaces.
+  const [localRelevance, setLocalRelevance] = useState<LocalRelevanceFilter>('any');
+  const envState = env.state;
+  const localRollup = useMemo(
+    () => buildLocalRollup(envState.correlationsByInventory, envState.inventoriesByAsset, envState.assets),
+    [envState.correlationsByInventory, envState.inventoriesByAsset, envState.assets]
+  );
   const {
     sorted,
     isAnyFilterActive,
     isSearchActive,
     isSearching,
     activePreset,
-  } = useVulnerabilityFilter(all, filters, sort);
+  } = useVulnerabilityFilter(all, filters, sort, { localRelevance, localRollup });
 
   const handleReset = useCallback(() => {
     // DEFAULT_FILTERS already carries `presetId: null` and
@@ -372,6 +473,42 @@ export default function DashboardPage() {
                 <EpssUnavailableBanner reason={state.meta.epssReason} />
               )}
 
+            <ConflictBanner />
+
+            <FirstRunGuide
+              hasWorkspaceEntries={Object.keys(workspace.state.entriesByCve || {}).length > 0}
+              hasEnvironment={env.state.assets.length > 0}
+              hasRemediation={remediation.state.plans.length > 0}
+            />
+
+            <BulkActionBar
+              selectedCveIds={selectedCveIds}
+              onClearSelection={() => setSelectedCveIds([])}
+            />
+
+            <ErrorBoundary
+              title="Local workspace"
+              guidance="Local workspace entries, notes, and tags could not be rendered. The public dashboard continues to function; try again or export the workspace first."
+            >
+            <WorkspacePanel
+              vulns={all}
+              publicIntelligenceVersion={state.meta.publicIntelligenceVersion ?? null}
+              publicIntelligenceStatus={state.meta.publicIntelligenceStatus ?? 'unavailable'}
+              publicProjectionSchemaVersion={state.meta.publicProjectionSchemaVersion ?? null}
+              selectedCveIds={selectedCveIds}
+              onSelectedCveIdsChange={setSelectedCveIds}
+              onOpenVuln={setSelected}
+              onExport={() => setActiveDialog('export')}
+              onImport={() => setActiveDialog('import')}
+              onClearArchived={() => setActiveDialog('clear-archived')}
+              onClearWorkspace={() => setActiveDialog('clear-workspace')}
+              onOpenReportBuilder={(cveIds) => {
+                setReportBuilderSeed({ cveIds, reportType: 'defender-daily-briefing', title: 'Defender Daily Briefing' });
+                setActiveReportDialog(true);
+              }}
+            />
+            </ErrorBoundary>
+
             <StatsCards stats={charts.stats} />
 
             <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -381,6 +518,76 @@ export default function DashboardPage() {
             </section>
 
             <TrendChart data={charts.trend} />
+
+            {state.meta.sources && state.meta.sources.length > 0 ? (
+              <SourceHealthPanel
+                sources={state.meta.sources as unknown as SourceStatus[]}
+                highlightId={highlightSourceId}
+              />
+            ) : null}
+
+            {state.meta.changeSummary ? (
+              <ChangeIntelligencePanel
+                changeSummary={state.meta.changeSummary as unknown as import('../types/change').ChangeSummary}
+                comparableAxes={state.meta.comparableAxes || []}
+                suppressedAxes={state.meta.suppressedAxes || []}
+                publicIntelligenceVersion={state.meta.publicIntelligenceVersion ?? null}
+                sources={state.meta.sources as unknown as SourceStatus[]}
+                onOpen={(cveId) => {
+                  const hit = all.find((v) => v.cveId === cveId);
+                  if (hit) setSelected(hit);
+                }}
+                onHighlightSource={(sourceId) => setHighlightSourceId(sourceId)}
+                onOpenReportBuilder={() => {
+                  setReportBuilderSeed({ cveIds: [], reportType: 'change-briefing', title: 'Change Briefing' });
+                  setActiveReportDialog(true);
+                }}
+              />
+            ) : null}
+
+            <Suspense fallback={<PanelFallback label="environment" />}>
+              <ErrorBoundary
+                title="My Environment"
+                guidance="Local asset, inventory, correlation, and review data could not be rendered. The public dashboard continues to function; try again or export the environment first."
+              >
+                <EnvironmentPanel />
+              </ErrorBoundary>
+            </Suspense>
+
+            <Suspense fallback={<PanelFallback label="remediation" />}>
+              <ErrorBoundary
+                title="Local remediation"
+                guidance="Local plan, task, evidence, and ledger data could not be rendered. The public dashboard continues to function; try again or export the remediation data first."
+              >
+              <RemediationPanel
+                onExportPlan={async (planId: string) => {
+                try {
+                  const r = await remediation.exportPlan(planId);
+                  if (!r.ok) {
+                    // eslint-disable-next-line no-console
+                    console.warn('[threatpulse] remediation export failed:', r.reason);
+                    return;
+                  }
+                  const { buildBundle } = await import('../remediation/exportImport.mjs');
+                  const bundle = await buildBundle(
+                    r.bundle.plan,
+                    r.bundle.tasks,
+                    r.bundle.evidence,
+                    r.bundle.events,
+                    { applicationVersion: '1.0.0' },
+                  );
+                  const body = JSON.stringify(bundle, null, 2);
+                  const shortId = String(bundle.planId || bundle.exportedAt || Date.now()).slice(-8);
+                  const filename = `threatpulse-remediation-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                  downloadFile(filename, body, 'application/json;charset=utf-8');
+                } catch (err) {
+                  // eslint-disable-next-line no-console
+                  console.warn('[threatpulse] remediation export failed:', err instanceof Error ? err.message : 'unknown');
+                }
+              }}
+            />
+              </ErrorBoundary>
+            </Suspense>
 
             <DefenderViewsPanel
               rows={sorted}
@@ -400,6 +607,17 @@ export default function DashboardPage() {
               isSearchActive={isSearchActive}
               onReset={handleReset}
               allVulnerabilities={all}
+            />
+
+            {/* V6.6: local-relevance filter. The control is
+                separate from <FiltersPanel> so the local
+                state never enters the URL and never
+                contaminates the public CSV / Defender
+                Views / What Changed surfaces. */}
+            <LocalRelevanceFilterControl
+              value={localRelevance}
+              onChange={setLocalRelevance}
+              localRollup={localRollup}
             />
 
             {sorted.length === 0 ? (
@@ -433,13 +651,190 @@ export default function DashboardPage() {
               </p>
             )}
 
+            <ErrorBoundary
+              title="Local data centre"
+              guidance="The local data control centre could not be rendered. Each local dataset can still be cleared or exported from the public dashboard's other surfaces."
+            >
+            <LocalDataCentre
+              onExportWorkspace={async () => {
+                const r = await workspace.exportWorkspace();
+                if (r && r.format) {
+                  const body = JSON.stringify(r, null, 2);
+                  const shortId = String(r.exportedAt || Date.now()).slice(-8);
+                  const filename = `threatpulse-workspace-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                  downloadFile(filename, body, 'application/json;charset=utf-8');
+                }
+              }}
+              onExportEnvironment={async () => {
+                const r = await env.exportEnvironment();
+                if (r.ok) {
+                  const body = JSON.stringify(r.payload, null, 2);
+                  const shortId = String(r.payload.reportId || r.payload.exportedAt || Date.now()).slice(-8);
+                  const filename = `threatpulse-environment-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                  downloadFile(filename, body, 'application/json;charset=utf-8');
+                }
+              }}
+              onExportRemediation={async () => {
+                const { buildFullBundle } = await import('../remediation/exportImport.mjs');
+                const plans = remediation.state.plans || [];
+                const tasks: any[] = [];
+                const evidence: any[] = [];
+                const ledger: any[] = [];
+                for (const p of plans) {
+                  tasks.push(...((remediation.state.tasksByPlan && remediation.state.tasksByPlan[p.planId]) || []));
+                  evidence.push(...((remediation.state.evidenceByPlan && remediation.state.evidenceByPlan[p.planId]) || []));
+                  ledger.push(...((remediation.state.ledgerByPlan && remediation.state.ledgerByPlan[p.planId]) || []));
+                }
+                const bundle = await buildFullBundle(plans, tasks, evidence, ledger, { applicationVersion: '1.0.0' });
+                const body = JSON.stringify(bundle, null, 2);
+                const shortId = String(bundle.exportedAt || Date.now()).slice(-8);
+                const filename = `threatpulse-remediation-${shortId}-${new Date().toISOString().slice(0, 10)}.json`;
+                downloadFile(filename, body, 'application/json;charset=utf-8');
+              }}
+              onClearWorkspace={async () => {
+                const r = await workspace.clearWorkspace();
+                return r && r.ok ? { ok: true } : { ok: false, reason: (r as any)?.reason || 'clear-failed' };
+              }}
+              onClearEnvironment={async () => {
+                const r = await env.clearEnvironment();
+                return r;
+              }}
+              onClearRemediation={async () => {
+                const r = await remediation.clearAll();
+                return r;
+              }}
+              onClearReportHistory={async () => {
+                const { clearHistory } = await import('../reports/history.mjs');
+                return await clearHistory();
+              }}
+            />
+            </ErrorBoundary>
+
             <Footer />
           </>
         )}
       </main>
 
-      <DetailDrawer vuln={selected} onClose={() => setSelected(null)} />
+      <DetailDrawer
+        vuln={selected}
+        onClose={() => setSelected(null)}
+        publicIntelligenceVersion={
+          state.kind === 'ready' ? state.meta.publicIntelligenceVersion ?? null : null
+        }
+        publicIntelligenceStatus={
+          state.kind === 'ready' ? state.meta.publicIntelligenceStatus ?? 'unavailable' : 'unavailable'
+        }
+        publicProjectionSchemaVersion={
+          state.kind === 'ready' ? state.meta.publicProjectionSchemaVersion ?? null : null
+        }
+        onOpenReportBuilder={(cveIds, reportType, title) => {
+          setReportBuilderSeed({ cveIds, reportType: reportType || 'selected-cve', title: title || `Selected CVE Report: ${cveIds.join(', ')}` });
+          setActiveReportDialog(true);
+        }}
+      />
+
+      <WorkspaceDialogs
+        active={activeDialog}
+        onClose={() => setActiveDialog(null)}
+      />
+
+      {activeReportDialog && reportBuilderSeed && (
+        <Suspense fallback={<PanelFallback label="report builder" />}>
+        <ReportBuilder
+          initialCveIds={reportBuilderSeed.cveIds}
+          initialReportType={reportBuilderSeed.reportType}
+          initialTitle={reportBuilderSeed.title}
+          publicMeta={state.kind === 'ready' ? state.meta : null}
+          publicVulns={all}
+          onClose={() => { setActiveReportDialog(false); setReportBuilderSeed(null); }}
+          onExport={(report, format) => {
+            // V6.5: render the chosen format and trigger
+            // a local download (or open the print HTML in
+            // a new tab so the operator can use the
+            // browser's "Save as PDF" command). The
+            // successful export is recorded in the local
+            // history (summary-only — no full report).
+            try {
+              const out = exportReport(report, format);
+              if (format === 'print') {
+                const win = openHtmlInNewTab(out.body, '_blank');
+                if (!win) {
+                  // Pop-up blocked; fall back to a download.
+                  downloadFile(out.filename, out.body, out.mimeType);
+                }
+              } else {
+                downloadFile(out.filename, out.body, out.mimeType);
+              }
+              void addHistoryEntry(report, { redactionMode: (report.selection && (report.selection as any).redactionMode) || 'none', exportFormat: format, exportStatus: 'exported' });
+            } catch (err) {
+              // Surface a minimal sanitized error in the
+              // console without leaking private content.
+              const msg = err instanceof Error ? err.message : 'export-failed';
+              // eslint-disable-next-line no-console
+              console.warn('[threatpulse] report export failed:', msg);
+            }
+          }}
+          onOpenHistory={() => { setActiveReportDialog(false); setReportBuilderSeed(null); setActiveReportHistory(true); }}
+          onOpenVerify={(m) => { setActiveReportDialog(false); setReportBuilderSeed(null); setActiveReportVerify(m); }}
+        />
+        </Suspense>
+      )}
+
+      {activeReportHistory && (
+        <Suspense fallback={<PanelFallback label="report history" />}>
+          <ReportHistoryDialog onClose={() => setActiveReportHistory(false)} />
+        </Suspense>
+      )}
+
+      {activeReportVerify && (
+        <Suspense fallback={<PanelFallback label="report verify" />}>
+          <ReportVerifyDialog mode={activeReportVerify} onClose={() => setActiveReportVerify(null)} />
+        </Suspense>
+      )}
     </div>
+  );
+}
+
+function LocalRelevanceFilterControl({ value, onChange, localRollup }: { value: LocalRelevanceFilter; onChange: (v: LocalRelevanceFilter) => void; localRollup: ReturnType<typeof buildLocalRollup> }) {
+  const options: { value: LocalRelevanceFilter; label: string }[] = [
+    { value: 'any', label: 'All CVEs' },
+    { value: 'potentially-relevant', label: 'Potentially relevant locally' },
+    { value: 'affected-range', label: 'Affected-range match' },
+    { value: 'exact-version', label: 'Exact-version match' },
+    { value: 'identity-only', label: 'Identity-only potential' },
+    { value: 'version-not-evaluable', label: 'Version not evaluable' },
+    { value: 'no-local-data', label: 'No local correlation data' },
+  ];
+  const cveCount = Object.keys(localRollup).length;
+  return (
+    <section className="panel px-3 py-2 text-[11px] text-radar-text" aria-label="Local relevance filter">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-radar-muted">Local relevance</span>
+        <span className="text-radar-dim">({cveCount} CVE(s) with local correlation data)</span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1">
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onChange(o.value)}
+            className={[
+              'focus-ring inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] transition',
+              value === o.value
+                ? 'border-radar-accent/40 bg-radar-accent/10 text-radar-accent'
+                : 'border-radar-border bg-radar-panel2 text-radar-muted hover:border-radar-accent/40 hover:text-radar-text',
+            ].join(' ')}
+            data-testid={`local-relevance-filter-${o.value}`}
+            aria-pressed={value === o.value}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] text-radar-dim">
+        Filters here use only your local imported environment. Local filters are not serialised into the URL and are not mixed into the public CSV.
+      </p>
+    </section>
   );
 }
 

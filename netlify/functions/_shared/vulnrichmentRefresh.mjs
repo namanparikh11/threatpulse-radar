@@ -76,6 +76,13 @@ import {
   readVulnrichmentCache,
   writeVulnrichmentCache,
 } from './store.mjs';
+import { computeEnrichmentPublicHash } from './publicIntelligenceHash.mjs';
+
+function computeEnrichmentPublicHashForCache(cache) {
+  if (!cache || typeof cache !== 'object') return null;
+  const { vulnrichmentPublicHash, githubAdvisoryPublicHash, ...rest } = cache;
+  return computeEnrichmentPublicHash(rest);
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point.
@@ -232,9 +239,19 @@ export async function runVulnrichmentRefresh(opts = {}) {
   const totalCves = cveList.length;
   const enrichedTotal = countEnriched(cacheMap, cveList);
 
-  const writeOk = await writeVulnrichmentCache(store, {
+  // v6.1: compute the Vulnrichment cache public hash.
+  // The hash describes the publicly projected `records`
+  // map only (not the `updatedAt` metadata). The returned
+  // value is stored in the cache envelope's
+  // `vulnrichmentPublicHash` internal field.
+  const cachePayload = {
     records: cacheMap,
     updatedAt: lastAttemptAt,
+  };
+  const vulnrichmentPublicHash = computeEnrichmentPublicHashForCache(cachePayload);
+  const writeOk = await writeVulnrichmentCache(store, {
+    ...cachePayload,
+    vulnrichmentPublicHash,
   });
   if (!writeOk) {
     return {

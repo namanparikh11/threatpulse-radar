@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/source-registry-v1.1.schema.json",
+  "title": "ThreatPulse Radar Source Registry v1.1 (additive over v1.0)",
+  "description": "Static list of sources that contribute to the canonical baseline and the public dataset. V6.1 is additive over v1.0: new fields (provenanceUrl, authentication, refreshSchedule, limitations, backfill) are required in 1.1. The source type adds the new 'canonical' value for OSV. v1.0 records remain readable by the V6.1 source-health module, which backfills defaults.",
+  "type": "object",
+  "required": ["schemaVersion", "sources"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.1.0" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "displayName",
+          "type",
+          "purpose",
+          "provenanceUrl",
+          "authentication",
+          "refreshSchedule",
+          "thresholdMinutes",
+          "limitations"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": ["cisa_kev", "nvd", "first_epss", "cisa_vulnrichment", "github_advisory", "osv"]
+          },
+          "displayName": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["gating", "enrichment", "incremental", "canonical"]
+          },
+          "purpose": { "type": "string", "minLength": 1 },
+          "provenanceUrl": { "type": "string", "pattern": "^https://", "minLength": 8 },
+          "authentication": {
+            "type": "string",
+            "enum": ["none", "optional-server-side", "required-server-side"]
+          },
+          "refreshSchedule": {
+            "type": "object",
+            "required": ["cron", "description"],
+            "properties": {
+              "cron": { "type": "string", "minLength": 1 },
+              "description": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          "thresholdMinutes": { "type": "number", "minimum": 1 },
+          "limitations": { "type": "string", "minLength": 1 },
+          "backfill": {
+            "type": "object",
+            "required": ["cadenceDays", "maxPerCycle"],
+            "properties": {
+              "cadenceDays": { "type": "number", "minimum": 0 },
+              "maxPerCycle": { "type": "number", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

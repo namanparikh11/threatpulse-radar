@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/public-snapshot-v1.schema.json",
+  "title": "ThreatPulse Radar V6.1 Public Comparison Snapshot",
+  "description": "Server-side per-version compact public comparison snapshot. Carries ONLY the fields needed for deterministic change classification. The browser does not parse this Blob.",
+  "type": "object",
+  "required": ["schemaVersion", "publicIntelligenceVersion", "generatedAt", "providerComparability", "trackedCveCount", "byCve"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "publicIntelligenceVersion": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}Z-[0-9a-f]{12}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "providerComparability": { "$ref": "#/$defs/providerComparability" },
+    "trackedCveCount": { "type": "number", "minimum": 0 },
+    "byCve": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/snapshotRecord" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "providerComparability": {
+      "type": "object",
+      "required": ["cisaKev", "nvd", "firstEpss", "ssvc", "githubAdvisory", "osv"],
+      "properties": {
+        "cisaKev":        { "$ref": "#/$defs/comparable" },
+        "nvd":            { "$ref": "#/$defs/comparable" },
+        "firstEpss":      { "$ref": "#/$defs/comparable" },
+        "ssvc":           { "$ref": "#/$defs/comparable" },
+        "githubAdvisory": { "$ref": "#/$defs/comparable" },
+        "osv":            { "$ref": "#/$defs/comparable" }
+      },
+      "additionalProperties": false
+    },
+    "comparable": {
+      "type": "object",
+      "required": ["comparable", "asOf"],
+      "properties": {
+        "comparable": { "type": ["boolean", "string"], "enum": [true, false, "partial"] },
+        "asOf": { "type": ["string", "null"], "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "snapshotRecord": {
+      "type": "object",
+      "required": [
+        "tracked",
+        "kev",
+        "severity",
+        "epssProbability",
+        "ssvcExploitation",
+        "githubAdvisory",
+        "firstPatchedAvailable",
+        "osv",
+        "withdrawn",
+        "affectedSignature"
+      ],
+      "properties": {
+        "tracked": { "type": "boolean" },
+        "kev": { "$ref": "#/$defs/kevObs" },
+        "severity": { "$ref": "#/$defs/severityObs" },
+        "nvd": { "$ref": "#/$defs/nvdObs" },
+        "epssProbability": { "type": ["number", "null"] },
+        "epss": { "$ref": "#/$defs/epssObs" },
+        "ssvcExploitation": { "$ref": "#/$defs/ssvcObs" },
+        "githubAdvisory": { "$ref": "#/$defs/githubAdvisoryObs" },
+        "firstPatchedAvailable": { "type": "boolean" },
+        "osv": { "$ref": "#/$defs/osvObs" },
+        "withdrawn": { "type": "boolean" },
+        "affectedSignature": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "kevObs": {
+      "type": "object",
+      "required": ["observation", "present"],
+      "properties": {
+        "observation": { "type": "string", "enum": ["present", "checked-absent", "unknown"] },
+        "present": { "type": "boolean" },
+        "kevDateAdded": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "severityObs": {
+      "type": "object",
+      "required": ["observation", "value"],
+      "properties": {
+        "observation": { "type": "string", "enum": ["present", "checked-absent", "unknown"] },
+        "value": { "type": ["string", "null"], "enum": ["Critical", "High", "Medium", "Low", null] },
+        "cvssSource": { "type": ["string", "null"] },
+        "cvssVersion": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "nvdObs": {
+      "type": "object",
+      "required": ["observation", "severity", "cvssSource", "cvssVersion"],
+      "properties": {
+        "observation": { "type": "string", "enum": ["present", "checked-absent", "unknown"] },
+        "severity": { "type": ["string", "null"], "enum": ["Critical", "High", "Medium", "Low", null] },
+        "cvssSource": { "type": ["string", "null"] },
+        "cvssVersion": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "epssObs": {
+      "type": "object",
+      "required": ["observation", "probability"],
+      "properties": {
+        "observation": { "type": "string", "enum": ["present", "checked-absent", "unknown"] },
+        "probability": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "ssvcObs": {
+      "type": "object",
+      "required": ["observation", "exploitation"],
+      "properties": {
+        "observation": { "type": "string", "enum": ["present", "checked-absent", "unknown"] },
+        "exploitation": { "type": ["string", "null"], "enum": ["none", "poc", "active", null] }
+      },
+      "additionalProperties": false
+    },
+    "githubAdvisoryObs": {
+      "type": "object",
+      "required": ["observation", "ghsaId", "firstPatchedAvailable"],
+      "properties": {
+        "observation": { "type": "string", "enum": ["present", "checked-absent", "unknown"] },
+        "ghsaId": { "type": ["string", "null"] },
+        "firstPatchedAvailable": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "osvObs": {
+      "type": "object",
+      "required": ["observation", "recordIds", "affectedSignature", "withdrawn"],
+      "properties": {
+        "observation": { "type": "string", "enum": ["present", "checked-absent", "unknown"] },
+        "recordIds": { "type": "array", "items": { "type": "string" } },
+        "affectedSignature": { "type": ["string", "null"] },
+        "withdrawn": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -104,6 +104,14 @@ import {
   readGithubAdvisoryCache,
   writeGithubAdvisoryCache,
 } from './store.mjs';
+import { computeEnrichmentPublicHash } from './publicIntelligenceHash.mjs';
+
+function computeEnrichmentPublicHashForCache(cache) {
+  if (!cache || typeof cache !== 'object') return null;
+  // Strip the internal hash field before hashing.
+  const { vulnrichmentPublicHash, githubAdvisoryPublicHash, ...rest } = cache;
+  return computeEnrichmentPublicHash(rest);
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point.
@@ -336,9 +344,19 @@ export async function runGithubAdvisoryRefresh(opts = {}) {
   // the partial coverage. The `rateLimited` flag on the
   // result envelope lets the next cycle short-circuit if
   // appropriate.
-  const writeOk = await writeGithubAdvisoryCache(store, {
+  // v6.1: compute the GitHub Advisory cache public hash.
+  // The hash describes the publicly projected `records`
+  // map only (not the `updatedAt` metadata). The returned
+  // value is stored in the cache envelope's
+  // `githubAdvisoryPublicHash` internal field.
+  const cachePayload = {
     records: cacheMap,
     updatedAt: lastAttemptAt,
+  };
+  const githubAdvisoryPublicHash = computeEnrichmentPublicHashForCache(cachePayload);
+  const writeOk = await writeGithubAdvisoryCache(store, {
+    ...cachePayload,
+    githubAdvisoryPublicHash,
   });
   if (!writeOk) {
     return {

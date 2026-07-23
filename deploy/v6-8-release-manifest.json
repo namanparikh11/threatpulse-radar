@@ -1,0 +1,274 @@
+{
+  "schemaVersion": "1.0.0",
+  "releaseName": "threatpulse-radar-v6-8-release-candidate",
+  "expectedReleaseCandidateCommit": "0480a9f414f9dd452191f99e07b94a505e6cb003",
+  "expectedSourceBranch": "v6-8-release-candidate-consolidation",
+  "expectedTargetBranch": "main",
+  "expectedPreparationBranch": "release/v6-8-deployment-preparation",
+  "nodeVersionRange": ">=18.18.0 <25.0.0",
+  "build": {
+    "command": "npm run build",
+    "frontendOutputDirectory": "dist",
+    "frontendOutputType": "static"
+  },
+  "publicNetlifySite": {
+    "name": "threatpulse-radar-public",
+    "publishDirectory": "dist",
+    "functionsDirectory": "netlify/functions",
+    "publicFunctionEntries": [
+      "dataset.mjs",
+      "refresh-baseline-background.mjs",
+      "refresh-baseline-scheduled.mjs",
+      "refresh-dataset-background.mjs",
+      "refresh-dataset-scheduled.mjs"
+    ],
+    "scheduledFunctionEntries": [
+      "refresh-baseline-scheduled.mjs",
+      "refresh-dataset-scheduled.mjs"
+    ],
+    "backgroundFunctionEntries": [
+      "refresh-baseline-background.mjs",
+      "refresh-dataset-background.mjs"
+    ],
+    "blobStoresOwned": [
+      "tpr-dataset",
+      "tpr-vulnrichment",
+      "tpr-github-advisory",
+      "tpr-baseline"
+    ]
+  },
+  "gatewayNetlifySite": {
+    "name": "threatpulse-radar-gateway",
+    "baseDirectory": "netlify/gateway/",
+    "functionsDirectory": "netlify/gateway/src",
+    "gatewayFunctionEntry": "private-sync-gateway.mjs",
+    "blobStoresOwned": [
+      "tpr-private-credentials"
+    ],
+    "blobStoresReadCrossSite": [
+      "tpr-baseline"
+    ]
+  },
+  "requiredEnvironmentVariables": {
+    "publicNetlifySite": [
+      "THREATPULSE_REFRESH_TRIGGER_SECRET",
+      "THREATPULSE_OSV_ECOSYSTEMS",
+      "THREATPULSE_STORAGE_BACKEND"
+    ],
+    "publicNetlifySiteStorage": {
+      "THREATPULSE_STORAGE_BACKEND": "netlify",
+      "THREATPULSE_SITE_ID": "auto-populated by Netlify runtime when backend=netlify",
+      "THREATPULSE_BLOBS_TOKEN": "auto-populated by Netlify runtime when backend=netlify"
+    },
+    "publicNetlifySiteFilesystem": {
+      "THREATPULSE_STORAGE_BACKEND": "filesystem (Hostinger portability only)",
+      "THREATPULSE_DATA_ROOT": "absolute path to the runtime data root"
+    },
+    "gatewayNetlifySite": [
+      "THREATPULSE_BASELINE_SITE_ID",
+      "THREATPULSE_BLOBS_ACCESS_TOKEN",
+      "THREATPULSE_CREDENTIAL_PEPPER"
+    ]
+  },
+  "optionalEnvironmentVariables": {
+    "publicNetlifySite": [
+      "THREATPULSE_DATA_ROOT",
+      "THREATPULSE_SITE_ID",
+      "THREATPULSE_BLOBS_TOKEN"
+    ],
+    "gatewayNetlifySite": [
+      "THREATPULSE_CREDENTIALS_BLOBS_ACCESS_TOKEN"
+    ]
+  },
+  "publicSiteHealthAndSmokeRoutes": [
+    "/",
+    "/index.html",
+    "/assets/"
+  ],
+  "publicSiteDataSmokeRoutes": [
+    "/.netlify/functions/dataset"
+  ],
+  "publicSiteBackgroundFunctionSmokeRoutes": [
+    "/.netlify/functions/refresh-dataset-background",
+    "/.netlify/functions/refresh-baseline-background"
+  ],
+  "gatewaySmokeRoutes": [
+    "/.netlify/functions/private-sync-gateway"
+  ],
+  "expectedAnonymousGatewayStatus": 401,
+  "csvColumnCount": 21,
+  "acceptanceSuiteCount": 37,
+  "rollbackCommit": "0480a9f414f9dd452191f99e07b94a505e6cb003",
+  "preservedCheckpointBranches": [
+    "v6-0-canonical-baseline",
+    "v6-1-public-intelligence",
+    "v6-2-portability",
+    "v6-3-hostinger",
+    "v6-4-local-workspace",
+    "v6-5-local-briefings-and-reports",
+    "v6-6-local-environment",
+    "v6-7-local-remediation-evidence",
+    "v6-8-release-candidate-consolidation"
+  ],
+  "hostingerCommands": {
+    "start": "npm run start:hostinger",
+    "build": "npm run build",
+    "cronRefreshDataset": "npm run cron:refresh-dataset",
+    "cronRefreshBaseline": "npm run cron:refresh-baseline",
+    "cronPublishDataset": "npm run cron:publish-dataset",
+    "cronGc": "npm run cron:gc",
+    "cronVerifyState": "npm run cron:verify-state",
+    "cronBackup": "npm run cron:backup",
+    "backup": "npm run backup:hostinger",
+    "verifyBackup": "npm run verify:backup",
+    "restore": "npm run restore:hostinger",
+    "diagnose": "npm run diagnose:hostinger",
+    "manifest": "npm run manifest:hostinger"
+  },
+  "hostingerManagedScheduler": {
+    "purpose": "Opt-in in-process scheduler for Hostinger Business managed-Node deployments that do not expose an OS-level cron. Disabled by default; all standalone hostinger/cron-*.mjs entrypoints remain available for VPS deployments and for operator-run schedules.",
+    "enableVariable": "THREATPULSE_MANAGED_SCHEDULER",
+    "enableAcceptedValues": ["1"],
+    "bootstrapVariable": "THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP",
+    "bootstrapAcceptedValues": ["1"],
+    "schedulesUtc": {
+      "dataset-refresh":   "minute 0 and 30 of every hour",
+      "baseline-refresh":  "minute 10 of every hour",
+      "dataset-publish":   "minute 20 and 50 of every hour",
+      "public-intel-gc":   "minute 25 of every hour",
+      "state-verify":      "06:30 UTC daily",
+      "backup":            "02:40 UTC daily"
+    },
+    "bootstrapBehavior": "When THREATPULSE_MANAGED_SCHEDULER_BOOTSTRAP=1 and the dataset is missing at $THREATPULSE_DATA_ROOT/dataset/latest.json, schedule one dataset-refresh shortly after startup. The bootstrap is one-shot per process lifetime; missing-dataset bootstrap is retried on the next process restart.",
+    "restartBehavior": "On process restart, the scheduler starts again from the next calculated UTC occurrence. Existing mkdir-based cron locks in hostinger/locks.mjs prevent duplicate active jobs across processes. Previous valid dataset remains the last-known-good after a provider failure.",
+    "exposesPublicHttpRoute": false,
+    "thirdPartyScheduler": false,
+    "usesExistingCrons": true,
+    "usesExistingLocks": true,
+    "scheduledJobExecutable": "process.execPath",
+    "executableResolution": "Every scheduled child process is spawned with `process.execPath` as the executable (NOT the bare string 'node'). The Hostinger Business managed-Node application dashboard starts hostinger/app.mjs with a known Node executable, but the same PATH is not propagated to subsequent child_process.spawn calls, so a bare `node` would resolve with ENOENT. `process.execPath` is the absolute path of the currently running Node executable and does not depend on PATH. The `execPath` and `spawnApi` parameters in hostinger/cron-spawn.mjs are TEST-ONLY injection points; production leaves both undefined.",
+    "observedDeploymentBlocker": "On the production-style Hostinger temporary deployment the bare-spawn hotfix was required. The runtime logged both 'spawn' and 'ENOENT' for every scheduled dataset-refresh and dataset-publish.",
+    "futureFailureMode": "An EPERM or EACCES spawn failure (instead of ENOENT) would indicate that Hostinger prohibits child processes entirely. In that case the scheduled jobs would have to be re-implemented as in-process job adapters (calling the underlying job functions directly without spawn). The current hotfix does NOT cover that scenario."
+  },
+  "hostingerDatasetRouteCompatibility": {
+    "purpose": "Read-only HTTP compatibility alias so the frozen V6.8 frontend (which hardcodes three URLs beginning with /.netlify/functions/dataset) can reach the same portable handleDataset implementation on a Hostinger Business managed-Node deployment.",
+    "canonicalHostingerRoute": "/api/dataset",
+    "compatibilityAlias": "/.netlify/functions/dataset",
+    "notANetlifyFunction": "On Hostinger the alias is a plain HTTP route handled by the portable Node server. It is NOT a Netlify Function. No Netlify runtime is invoked; no credential is required.",
+    "methodAllowlist": ["GET", "HEAD"],
+    "methodRejection": "POST, PUT, PATCH, DELETE on the alias return 405 (the upstream method allowlist is unchanged).",
+    "readOnly": "The alias is read-only. No write, refresh, publication, backup, GC or verification action is reachable through it.",
+    "noPublicRefreshEndpoint": "Any /.netlify/functions/{name} path other than /dataset is served an honest 404. The SPA shell does NOT masquerade as a refresh endpoint. /api/dataset remains the canonical Hostinger path; future work can migrate the frontend to a provider-neutral endpoint and remove the alias.",
+    "noDuplicateLogic": "The alias is a thin pass-through to the same handleDataset(req, { config: portable }) call. No dataset-building logic is duplicated. No public refresh route is introduced.",
+    "managedSchedulerRemainsSoleRefresh": "The managed Hostinger scheduler (THREATPULSE_MANAGED_SCHEDULER=1) remains the only Hostinger refresh mechanism. The alias exposes no write trigger."
+  },
+  "hostingerFilesystemIntelligenceStores": {
+    "purpose": "Filesystem storage-adapter parity for every Blob-store namespace the public pipeline depends on, so the managed-Node deployment can run with THREATPULSE_STORAGE_BACKEND=filesystem and no Netlify runtime context.",
+    "filesystemDataRoot": "THREATPULSE_DATA_ROOT",
+    "filesystemLayout": {
+      "tpr-dataset":                "primary dataset envelope + refresh lock + NVD cooldown",
+      "tpr-vulnrichment":           "CISA Vulnrichment / SSVC cache",
+      "tpr-github-advisory":        "GitHub Advisory Database cache",
+      "tpr-public-intelligence":    "V6.1 public-intelligence OSV + dataset versioned artifacts, latest.json pointers, publication locks, change-summaries"
+    },
+    "commonBoundary": "Every filesystem adapter rooted at the same THREATPULSE_DATA_ROOT. The HTTP server, the managed scheduler, and the V6.2 CLI jobs (refresh-dataset, refresh-baseline, publish-dataset-intelligence, gc-public-intelligence, verify-state) resolve the same data root; no store is hidden from any other component.",
+    "atomicityGuarantee": "Every filesystem write uses a temp file + rename. A crash or a failed write leaves the previous valid object intact. The adapter's path-traversal and symlink-escape guards are applied at every write boundary.",
+    "fixedObservations": [
+      "Vulnrichment cache write used to fail with 'Failed to write Vulnrichment cache blob.' because getVulnrichmentStore hardcoded the 'netlify' adapter. The same root cause applied to getGithubAdvisoryStore (GitHub Advisory cache) and to getPublicIntelligenceStore ('public-intelligence-store-unavailable').",
+      "All four get*Store helpers now route through THREATPULSE_STORAGE_BACKEND exactly the same way server/config.mjs and jobs/_lib.mjs#resolveStorage already do. The Netlify path is preserved unchanged for backward compatibility."
+    ],
+    "preservedLimits": "All V6.1 size budgets (PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES, OSV_SHARD_HARD_CEILING_*, etc.) and the last-known-good write contract are preserved unchanged. A dataset that exceeds the public-snapshot ceiling is a structured skip; the previous dataset/latest.json is preserved."
+  },
+  "hostingerPublicSnapshotSizeBoundary": {
+    "purpose": "Bounded storage/publication scalability correction for the V6.1 public comparison snapshot. The 1 MiB per-object safety ceiling (PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES) is preserved unchanged. The full logical snapshot is split into deterministic content-addressed shards; the per-version shard manifest is the per-version pointer; the reader reassembles the logical snapshot from the shards.",
+    "observedFailure": {
+      "logicalSnapshotUncompressedBytes": 1124204,
+      "perObjectSafetyCeiling": 1048576,
+      "skippedReason": "publish-threw",
+      "skippedError": "public-snapshot uncompressed size 1124204 exceeds ceiling 1048576",
+      "downstreamEffect": "publicIntelligenceStatus=unavailable, publicIntelligenceVersion=null, publicStateFingerprint=null"
+    },
+    "designContract": {
+      "perObjectSafetyCeilingUnchanged": "PUBLIC_SNAPSHOT_HARD_CEILING_UNCOMPRESSED_BYTES remains 1024*1024 (1 MiB). The ceiling is NOT raised, NOT removed, and NOT silently bypassed. Every stored object remains below this ceiling with explicit headroom.",
+      "noSilentTruncation": "No field of the per-CVE record is silently truncated. The partitioner moves WHOLE records between shards; a single CVE's record is never split across shards.",
+      "noSilentFieldDrop": "No field of the per-CVE record is silently dropped. The reassembled logical snapshot is byte-equivalent (canonical-hash-equal) to the original logical snapshot. The reader's logical content hash check rejects the read on any deviation.",
+      "noSilentProviderSwitch": "The sharding is a pure function of the logical snapshot. The same logical snapshot always produces the same shard layout and the same content hashes. No provider switch is performed; the storage backend remains the same (Netlify Blobs or filesystem).",
+      "deterministicSharding": "The partition is pure and deterministic. Identical input always produces the same shard layout, the same shard content hashes, and the same manifest content. The same shard can be reused across dataset-bound versions when the bucket content is identical.",
+      "logicalFingerprintStability": "The composite publicStateHash is computed from the four precomputed per-Blob hashes (dataset, Vulnrichment, GitHub Advisory, OSV manifest) — NOT from the snapshot bytes. Shard-boundary changes therefore CANNOT change the publicStateHash. The logicalSnapshotContentHash is the canonical identity of the LOGICAL snapshot; it is also independent of the storage partitioning.",
+      "noShardExposedAsStaticAsset": "Shards are private to the public-intelligence Blob store. No shard is exposed as an arbitrary static asset. No new public HTTP route is introduced.",
+      "traversalSafeObjectNames": "The shard key helper validates the content hash and rejects traversal/control characters. The storage adapter's path-traversal guard provides the second layer of defense.",
+      "atomicCommit": "dataset/latest.json is the only mutable commit point. On a shard-write or manifest-write failure, the previous dataset/latest.json is preserved byte-identical. The per-version shard manifest is written AFTER every shard and BEFORE dataset/latest.json.",
+      "lastKnownGoodReadableAfterFailure": "A failed publication leaves the previous dataset/latest.json valid and readable. The reader can reassemble the previous version's logical snapshot from the previous shard manifest and the previous shards.",
+      "filesystemAndNetlifyParity": "The sharding is implemented in pure helpers in netlify/functions/_shared/publicSnapshotShards.mjs. Both Netlify Blobs and the Hostinger filesystem adapter honor the same logical behavior.",
+      "contentAddressedSharedNamespace": "Shards are content-addressed; the shard key IS the content hash. Two versions with identical shard content share the same key. Cross-version shard reuse is automatic.",
+      "gracePeriodGc": "Mark-and-sweep GC retains the current + previous + rollback shard manifests. Orphan shards are only removed after the safe grace period (the GC never deletes based only on timestamp or age). The currently-referenced manifest and shards are never collected."
+    },
+    "shardLayout": {
+      "shardDirectory": "tpr-public-intelligence/dataset/shards/sha256/<hash>.json.gz",
+      "shardManifestDirectory": "tpr-public-intelligence/dataset/versions/{v}/snapshot-shards-manifest.json",
+      "shardKeyShape": "dataset/shards/sha256/<64 hex>.json.gz",
+      "shardManifestKeyShape": "dataset/versions/{publicIntelligenceVersion}/snapshot-shards-manifest.json"
+    },
+    "shardSizeBudgets": {
+      "SNAPSHOT_SHARD_TARGET_UNCOMPRESSED_BYTES": 196608,
+      "SNAPSHOT_SHARD_HARD_CEILING_UNCOMPRESSED_BYTES": 786432,
+      "SNAPSHOT_SHARD_HARD_CEILING_COMPRESSED_BYTES": 196608,
+      "SNAPSHOT_SHARD_MIN_CVES_PER_SHARD": 8,
+      "explicitHeadroomBytes": 262144,
+      "explicitHeadroomRationale": "768 KiB (per-shard hard ceiling) leaves 256 KiB headroom under the 1 MiB per-object safety ceiling. Compressed ceiling is 192 KiB; the random-entropy upper bound is 192 KiB as well. The partitioner's per-shard target is 192 KiB; the hard ceiling is 768 KiB."
+    },
+    "shardManifestContract": {
+      "schemaVersion": "1.0.0",
+      "publicIntelligenceVersion": "the per-version id (derived from generatedAt + publicStateHash)",
+      "generatedAt": "ISO timestamp of publication",
+      "publicStateHash": "the composite logical hash",
+      "logicalSnapshotContentHash": "SHA-256 of the canonical LOGICAL snapshot",
+      "trackedCveCount": "logical tracked CVE count",
+      "shardCount": "number of shards",
+      "shards": "array of { index, contentHash, cveCount, byteSize } records in partition order",
+      "previousPublicIntelligenceVersion": "preserved for change-intelligence use",
+      "providerComparability": "the small per-provider comparability map (carried for canonical-fingerprint verification)"
+    },
+    "datasetLatestJsonFields": {
+      "snapshotShardsManifestContentHash": "the canonical content hash of the per-version shard manifest",
+      "snapshotShardsCount": "the number of shards for this version",
+      "publicIntelligenceVersion": "preserved from V6.1",
+      "publicStateHash": "preserved from V6.1",
+      "publicStateFingerprint": "preserved from V6.1"
+    },
+    "gcContract": {
+      "module": "netlify/functions/_shared/publicSnapshotShardGc.mjs",
+      "retainedVersions": "current + previous + rollback (= at most 3, per MAX_RETAINED_VERSIONS_PER_PATH)",
+      "markStrategy": "collect contentHash from each retained shard manifest; mark every referenced hash as retained",
+      "sweepStrategy": "enumerate dataset/shards/sha256/* candidates; delete only those not in the marked set AND not in-progress",
+      "neverDeleteOnAge": "the GC never deletes based only on timestamp or age; mark-and-sweep only",
+      "atomicPreservation": "the currently-referenced manifest and shards are never collected"
+    },
+    "readContract": {
+      "module": "netlify/functions/_shared/publicSnapshotShardRead.mjs",
+      "readReassembledSnapshot": "reads the per-version shard manifest, every referenced shard, verifies shard hashes, verifies the logical content hash, and reassembles the logical snapshot. Returns a structured result (never throws).",
+      "missingManifest": "{ ok: false, reason: 'missing-manifest' }",
+      "missingShard": "{ ok: false, reason: 'missing-shard', shard, contentHash }",
+      "corruptShard": "{ ok: false, reason: 'corrupt-shard', shard, contentHash, error }",
+      "logicalHashMismatch": "{ ok: false, reason: 'logical-hash-mismatch' }",
+      "structuredFailuresNeverThrow": "the function NEVER throws on a structured failure; callers receive the same shape on every error path"
+    }
+  },
+  "observedNvdPartialEnrichment": {
+    "status": "transient",
+    "reason": "NVD public-anonymous endpoint rate-limits (HTTP 429). The refresh orchestrator preserves the previous better envelope and records an NVD cooldown marker. The primary CISA KEV dataset is serviceable without NVD enrichment; the response truthfully reports partial enrichment."
+  },
+  "knownDeferredWork": [
+    "v2.0 remediation templates (V7.x roadmap)",
+    "multi-org workspace collaboration",
+    "server-side report-history persistence (out of scope for the local-only product)",
+    "public corpus extension beyond CISA KEV / NVD / FIRST EPSS / GitHub Advisory / OSV",
+    "real-time push (the V6.0 architecture is pull-only by design)",
+    "optional server-side trends view (out of scope)"
+  ],
+  "valuesAreNamesOrPlaceholdersOnly": true,
+  "secretsDisclosure": {
+    "includeActualValues": false,
+    "rationale": "This manifest contains variable names and structural metadata only. No secret value (token, pepper, key, password) is present. The deployment runbook (docs/v6-8-controlled-deployment-runbook.md) and the environment checklist (docs/v6-8-environment-checklist.md) are written to the same contract."
+  }
+}

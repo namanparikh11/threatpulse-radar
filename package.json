@@ -8,7 +8,19 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "start:hostinger": "node hostinger/app.mjs",
+    "cron:refresh-dataset": "node hostinger/cron-refresh-dataset.mjs",
+    "cron:refresh-baseline": "node hostinger/cron-refresh-baseline.mjs",
+    "cron:publish-dataset": "node hostinger/cron-publish-dataset.mjs",
+    "cron:gc": "node hostinger/cron-gc.mjs",
+    "cron:verify-state": "node hostinger/cron-verify-state.mjs",
+    "cron:backup": "node hostinger/cron-backup.mjs",
+    "backup:hostinger": "node hostinger/backup.mjs",
+    "verify:backup": "node hostinger/verify-backup.mjs",
+    "restore:hostinger": "node hostinger/restore.mjs",
+    "diagnose:hostinger": "node hostinger/diagnose.mjs",
+    "manifest:hostinger": "node hostinger/manifest.mjs"
   },
   "dependencies": {
     "@netlify/blobs": "^10.0.0",

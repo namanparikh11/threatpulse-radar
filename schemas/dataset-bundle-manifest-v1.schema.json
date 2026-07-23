@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://threatpulse-radar.net/schemas/dataset-bundle-manifest-v1.schema.json",
+  "title": "ThreatPulse Radar V6.1 Dataset-Bundle Manifest",
+  "description": "Immutable per-version manifest for a dataset-bound public-intelligence bundle. Written atomically after all versioned artifacts are validated. The manifest is the authoritative reference for the per-CVE OSV projection, the public comparison snapshot, the change items, and the source-health observations.",
+  "type": "object",
+  "required": ["schemaVersion", "publicIntelligenceVersion", "generatedAt", "publicStateHash", "datasetFetchedAt", "datasetContentHash", "referencedOsvProjectionVersion", "referencedOsvProjectionContentHash", "truncation"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "publicIntelligenceVersion": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}Z-[0-9a-f]{12}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "publicStateHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "datasetFetchedAt": { "type": "string", "format": "date-time" },
+    "datasetContentHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "referencedOsvProjectionVersion": {
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}Z-[0-9a-f]{12,16}-[0-9a-f]{12}$"
+    },
+    "referencedOsvProjectionContentHash": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "comparesFreshBase": { "type": "boolean" },
+    "previousPublicIntelligenceVersion": {
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}Z-[0-9a-f]{12}$"
+    },
+    "changeSummary": { "$ref": "#/$defs/changeSummary" },
+    "comparableAxes": { "type": "array", "items": { "type": "string" } },
+    "suppressedAxes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["axis", "reason"],
+        "properties": {
+          "axis": { "type": "string" },
+          "reason": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "partial": { "type": "boolean" },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "kind", "message"],
+        "properties": {
+          "source": { "type": "string", "enum": ["cisa-kev", "nvd", "first-epss", "ssvc", "github-advisory", "osv"] },
+          "kind": { "type": "string" },
+          "message": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "truncation": {
+      "type": "object",
+      "required": ["changeItems"],
+      "properties": {
+        "changeItems": {
+          "type": "object",
+          "required": ["shown", "total"],
+          "properties": {
+            "shown": { "type": "number", "minimum": 0 },
+            "total": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "changeSummary": {
+      "type": "object",
+      "required": [
+        "newlyTracked",
+        "noLongerTracked",
+        "factNewlyAvailable",
+        "factChanged",
+        "factNoLongerPresent",
+        "providerStatusChanged",
+        "epssMateriallyIncreased",
+        "epssMateriallyDecreased"
+      ],
+      "properties": {
+        "newlyTracked": { "type": "number", "minimum": 0 },
+        "noLongerTracked": { "type": "number", "minimum": 0 },
+        "factNewlyAvailable": { "type": "number", "minimum": 0 },
+        "factChanged": { "type": "number", "minimum": 0 },
+        "factNoLongerPresent": { "type": "number", "minimum": 0 },
+        "providerStatusChanged": { "type": "number", "minimum": 0 },
+        "epssMateriallyIncreased": { "type": "number", "minimum": 0 },
+        "epssMateriallyDecreased": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}
