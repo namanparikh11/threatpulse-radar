@@ -3,6 +3,96 @@
 Public version history for **ThreatPulse Radar**. Newest
 entry first. Entries are concise; for design notes and the
 audit findings behind each release, see
+
+## V6.9 — Privacy, cookie audit, and security hardening
+
+A documentation + hardening milestone. The audit found
+zero cookies, zero non-essential storage, zero
+third-party scripts / stylesheets / fonts / iframes and
+zero analytics / tracking / pixels / beacons in the V6.8
+build. The consent model is **A — no consent banner
+required**.
+
+Hardening:
+
+- `Content-Security-Policy` generated from the actual
+  build dependency graph. No `unsafe-eval`, no
+  `unsafe-inline`, no wildcard origins, no broad
+  `https:` fallbacks. `worker-src 'self' blob:` is
+  required so Vite's runtime worker bootstrap is not
+  blocked. Applied to every public response by
+  `hostinger/static.mjs#applySecurityHeaders` and by
+  `netlify.toml`.
+- `X-Frame-Options: DENY` (was `SAMEORIGIN`) plus the
+  equivalent `frame-ancestors 'none'` CSP directive.
+- `Referrer-Policy: strict-origin-when-cross-origin`
+  (was `same-origin`).
+- `Permissions-Policy` denying every browser capability
+  the dashboard does not actively use.
+- `Strict-Transport-Security: max-age=31536000` with
+  no `includeSubDomains` and no `preload`. The
+  operator has not yet verified every subdomain is
+  HTTPS-only, and HSTS preload is a one-way commitment.
+- `Cross-Origin-Resource-Policy: same-origin` for
+  every non-dataset public route.
+- The CORS policy on `refresh-dataset-background.mjs`
+  is tightened from `*` to `same-origin` because the
+  route is an internal same-origin trigger; the
+  `dataset.mjs` public-data endpoint retains the
+  documented wildcard CORS.
+- `hostinger/app.mjs` now pins every Node-side timeout
+  explicitly: `headersTimeout=10s`, `requestTimeout=
+  60s`, `keepAliveTimeout=5s`, `maxRequestsPer
+  Connection=100`. The values are chosen to accommodate
+  the largest legitimate request while bounding
+  slow-loris and similar abuse.
+- The `V6.3` hostinger acceptance suite is updated to
+  assert the V6.9 header values explicitly.
+
+Documentation:
+
+- `docs/v6-9-privacy-cookie-and-security-hardening.md`
+  is the full audit + decision record. It is the
+  single source of truth for the V6.9 privacy /
+  cookie / security posture.
+- `SECURITY.md` is the public security policy,
+  responsible-disclosure process, supported versions
+  and out-of-scope categories.
+- `public/.well-known/security.txt` is the RFC 9116
+  contact file. Operator placeholders marked
+  `<!-- OPERATOR: -->` must be replaced before the
+  site is public-facing.
+- `public/legal/index.html`, `public/legal/privacy.html`
+  and `public/legal/cookies.html` are the user-facing
+  disclosures. Operator placeholders are clearly
+  marked.
+
+Verification:
+
+- `scripts/verify-v69-privacy-and-runtime-hardening.mjs`
+  is a bounded 29-assertion suite that statically and
+  locally audits the cookie / storage / third-party
+  inventory, the security headers, the CORS policy,
+  the V6.3 hostinger test assertions, the CSV, the
+  gateway function entry, the route-handler error
+  sanitization and the Node timeout caps. The script
+  is read-only, source-and-dist only and does not
+  contact the network.
+- `scripts/verify-v68-release.mjs` is updated with
+  the V6.9 branch's allow-list (hostinger/,
+  netlify/functions/, public/legal/,
+  public/.well-known/, SECURITY.md, netlify.toml) so
+  the V6.9 working tree does not trip the
+  release-preparation gate.
+- The V6.3 hostinger suite is updated to assert the
+  V6.9 header values explicitly (X-Frame-Options:
+  DENY, Referrer-Policy: strict-origin-when-cross-
+  origin, conservative HSTS, CSP set, Permissions-
+  Policy set). 429/429 pass.
+
+No code paths are weakened, no dependencies are
+upgraded, no third-party consent-management service is
+introduced.
 [`README.md`](./README.md),
 [`PORTFOLIO_WRITEUP.md`](./PORTFOLIO_WRITEUP.md), and
 [`PUBLIC_RELEASE_CHECKLIST.md`](./PUBLIC_RELEASE_CHECKLIST.md).

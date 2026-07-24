@@ -5,7 +5,7 @@
 > probability, SSVC decision context, and reviewed package-remediation
 > guidance across your stack in one focused command-center view.
 
-![status](https://img.shields.io/badge/status-v6.8-22d3ee?style=flat-square)
+![status](https://img.shields.io/badge/status-v6.9-22d3ee?style=flat-square)
 ![stack](https://img.shields.io/badge/stack-React%20%2B%20Vite%20%2B%20TS-0d1424?style=flat-square)
 ![use](https://img.shields.io/badge/use-defensive%20only-f43f5e?style=flat-square)
 

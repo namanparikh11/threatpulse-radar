@@ -115,6 +115,15 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
     || branch === 'hostinger/v6-8-dataset-route-compatibility'
     || branch === 'hostinger/v6-8-public-snapshot-size-boundary'
     || branch === 'hostinger/v6-8-final-provider-neutral-label';
+  // V6.9 — The privacy, cookie-audit and security-hardening
+  // branch is allowed to modify hostinger/ (security
+  // headers + Node timeouts), netlify/functions/
+  // (CORS tightening on the refresh function) and the
+  // top-level netlify.toml (security-header alignment
+  // with the Hostinger baseline). All test changes are
+  // under scripts/ which is already on the base
+  // allowlist.
+  const isV69HardeningBranch = branch === 'security/v6-9-privacy-and-runtime-hardening';
   // Allowed directory prefixes — any file under
   // these paths is permitted with any status code.
   const allowedDirPrefixes = [
@@ -160,6 +169,30 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
     'README.md',
     'CHANGELOG.md',
   ]);
+  if (isV69HardeningBranch) {
+    // V6.9 — privacy, cookie-audit and runtime-hardening.
+    // Modifies hostinger/ (security headers + Node
+    // timeouts), netlify/functions/ (CORS tightening
+    // on refresh-dataset-background.mjs), and the
+    // top-level netlify.toml (security-header
+    // alignment with the Hostinger baseline). Adds
+    // SECURITY.md, the V6.9 documentation, the user-
+    // facing privacy / cookies / index disclosure
+    // pages under public/legal/, and the
+    // RFC 9116 security.txt under
+    // public/.well-known/. Every file on the branch
+    // is a V6.9 hardening file; the working tree may
+    // also carry a new scripts/verify-v69-...mjs
+    // verification suite and matching acceptance
+    // test updates under scripts/ which is already on
+    // the base allowlist.
+    allowedDirPrefixes.push('hostinger/');
+    allowedDirPrefixes.push('netlify/functions/');
+    allowedDirPrefixes.push('public/legal/');
+    allowedDirPrefixes.push('public/.well-known/');
+    allowedExactPaths.add('netlify.toml');
+    allowedExactPaths.add('SECURITY.md');
+  }
   const offending = lines.filter((line) => {
     // `git status --short` format: two status
     // columns then a space, then the path. When
