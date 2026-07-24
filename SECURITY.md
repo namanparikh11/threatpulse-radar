@@ -3,14 +3,17 @@
 This document is the public security policy for ThreatPulse
 Radar. It covers the supported versions, the responsible
 disclosure process, the out-of-scope categories and the
-operator's contact channels.
+operator's contact channels. The operator is
+**Naman Parikh**; the canonical production domain is
+`https://threatpulse.namanp.de`.
 
 ## Supported versions
 
 | Version | Status | Notes |
 | --- | --- | --- |
-| V6.8 (current) | Supported | The current production release. Security updates are issued on this line. |
-| V6.7 | Supported | The previous release line. Security updates are issued on this line for at least 6 months after V6.8. |
+| V6.9 (current) | Supported | The current production release. Security updates are issued on this line. |
+| V6.8 | Supported | The previous release line. Security updates are issued on this line for at least 6 months after V6.9. |
+| V6.7 | Supported | The release line before V6.8. Security updates are issued on this line for at least 6 months after V6.9. |
 | V6.6 and earlier | End-of-life | Not eligible for new security updates. Operators on these versions are encouraged to upgrade. |
 
 ## Reporting a vulnerability
@@ -20,7 +23,13 @@ ThreatPulse Radar, please report it privately to the
 operator. **Do not** open a public GitHub issue for a
 security-sensitive report.
 
-The operator's contact channels are documented in
+All contact (general, privacy and security /
+vulnerability-disclosure correspondence) uses a single
+electronic contact:
+
+- **Email:** [`contact@namanp.de`](mailto:contact@namanp.de)
+
+The same address is documented in
 `https://threatpulse.namanp.de/.well-known/security.txt`
 per RFC 9116.
 
@@ -41,6 +50,9 @@ The operator commits to:
   resolved.
 - Coordinated public disclosure with a credit to the
   reporter unless the reporter requests anonymity.
+
+No bug-bounty programme is offered; reports are
+acknowledged but no monetary reward is provided.
 
 ## Out-of-scope
 
@@ -99,13 +111,17 @@ The machine-readable verification is in
 
 ## Operator contact
 
-<!-- OPERATOR: replace the placeholder values below with the
-real contact details for the production deployment. The
-`security.txt` in `public/.well-known/security.txt` MUST
-contain the same contact. -->
+All contact (general, privacy and security /
+vulnerability-disclosure) uses a single address:
 
-- Contact: `security@<OPERATOR-DOMAIN>`
-- Encryption: PGP key fingerprint (optional):
-  `<OPERATOR-PGP-FINGERPRINT>`
-- Preferred language: English
+- Contact: `contact@namanp.de`
+- Preferred languages: English, German
 - Acknowledgement SLA: 5 business days
+
+The same contact is listed in
+`public/.well-known/security.txt` and is the only
+contact used across the operator-facing surfaces. No
+separate `security@` or `privacy@` alias is introduced.
+
+A PGP key fingerprint is not provided. The operator
+does not request encrypted reports.

@@ -172,26 +172,27 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
   if (isV69HardeningBranch) {
     // V6.9 — privacy, cookie-audit and runtime-hardening.
     // Modifies hostinger/ (security headers + Node
-    // timeouts), netlify/functions/ (CORS tightening
-    // on refresh-dataset-background.mjs), and the
-    // top-level netlify.toml (security-header
+    // timeouts + log retention), netlify/functions/
+    // (CORS tightening on refresh-dataset-background.mjs),
+    // and the top-level netlify.toml (security-header
     // alignment with the Hostinger baseline). Adds
     // SECURITY.md, the V6.9 documentation, the user-
-    // facing privacy / cookies / index disclosure
-    // pages under public/legal/, and the
-    // RFC 9116 security.txt under
-    // public/.well-known/. Every file on the branch
-    // is a V6.9 hardening file; the working tree may
-    // also carry a new scripts/verify-v69-...mjs
-    // verification suite and matching acceptance
-    // test updates under scripts/ which is already on
-    // the base allowlist.
+    // facing privacy / cookies / security disclosure
+    // pages under public/legal/, the RFC 9116
+    // security.txt under public/.well-known/, the
+    // log-retention module under hostinger/, the
+    // matching acceptance test under scripts/, and
+    // updates to deploy/v6-8-release-manifest.json
+    // (acceptanceSuiteCount bumped to 38). Every
+    // file on the branch is a V6.9 hardening file.
     allowedDirPrefixes.push('hostinger/');
     allowedDirPrefixes.push('netlify/functions/');
     allowedDirPrefixes.push('public/legal/');
     allowedDirPrefixes.push('public/.well-known/');
+    allowedDirPrefixes.push('jobs/');
     allowedExactPaths.add('netlify.toml');
     allowedExactPaths.add('SECURITY.md');
+    allowedExactPaths.add('deploy/v6-8-release-manifest.json');
   }
   const offending = lines.filter((line) => {
     // `git status --short` format: two status

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>ThreatPulse Radar — Security policy</title>
+    <style>
+      :root { color-scheme: light dark; --fg:#0f172a; --muted:#475569; --bg:#ffffff; --panel:#f8fafc; --border:#cbd5e1; --link:#1d4ed8; }
+      @media (prefers-color-scheme: dark) { :root { --fg:#e2e8f0; --muted:#94a3b8; --bg:#0b1220; --panel:#0f172a; --border:#1e293b; --link:#60a5fa; } }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, sans-serif; line-height: 1.55; }
+      main { max-width: 720px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+      h2 { font-size: 1.1rem; margin-top: 2rem; }
+      .lede { color: var(--muted); margin-top: 0; }
+      p, li { font-size: 0.95rem; }
+      a { color: var(--link); }
+      .meta { color: var(--muted); font-size: 0.85rem; margin-top: 2rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Security policy</h1>
+      <p class="lede">The ThreatPulse Radar security policy. Reports
+        of suspected vulnerabilities are welcome and
+        acknowledged within 5 business days.</p>
+
+      <h2>1. How to report</h2>
+      <p>Send a written report to
+        <strong><a href="mailto:contact@namanp.de">contact@namanp.de</a></strong>.
+        The same address covers general, privacy and
+        vulnerability-disclosure correspondence; no separate
+        alias is used.</p>
+
+      <h2>2. Information that helps a report</h2>
+      <p>A high-quality report includes:</p>
+      <ul>
+        <li>A clear description of the issue and its impact.</li>
+        <li>A reproducer (curl, browser steps, or a minimal
+          test case).</li>
+        <li>The affected version (commit SHA or release tag).</li>
+        <li>Whether the issue is already known to you.</li>
+        <li>Your contact details and a preferred disclosure
+          timeline.</li>
+      </ul>
+
+      <h2>3. Good-faith expectations</h2>
+      <p>Reports are welcome from anyone acting in good faith
+        on defensive research. The following expectations
+        apply to any testing:</p>
+      <ul>
+        <li><strong>No destructive testing.</strong> Do not
+          delete, modify or destroy production data, datasets
+          or backups.</li>
+        <li><strong>No privacy violations.</strong> Do not
+          attempt to access another visitor's data; the
+          application does not retain any visitor data on the
+          server in the first place.</li>
+        <li><strong>No service disruption.</strong> Do not
+          perform load testing or denial-of-service testing
+          against the production deployment. Use a local
+          copy of the application (see
+          <code>docs/v6-3-hostinger.md</code>) for
+          performance work.</li>
+        <li><strong>No social engineering.</strong> Do not
+          target operators, contributors or third-party
+          providers.</li>
+        <li><strong>Confidentiality.</strong> Do not publicly
+          disclose the issue before the operator has had a
+          reasonable opportunity to investigate and release
+          a fix.</li>
+      </ul>
+
+      <h2>4. Acknowledgement and response</h2>
+      <p>The operator commits to:</p>
+      <ul>
+        <li>An acknowledgement within <strong>5 business
+          days</strong> of receipt.</li>
+        <li>A status update every 14 days until the issue is
+          resolved or a fix is shipped.</li>
+        <li>Coordinated public disclosure with a credit to
+          the reporter unless the reporter requests
+          anonymity.</li>
+      </ul>
+
+      <h2>5. No bug bounty</h2>
+      <p>The V6.9 milestone does not include a bug-bounty
+        programme. Reports are acknowledged and addressed,
+        but no monetary reward is offered.</p>
+
+      <h2>6. Out of scope</h2>
+      <p>The following categories are out of scope:</p>
+      <ul>
+        <li>Issues that require the visitor to disable the
+          browser's same-origin policy (e.g. by pasting
+          arbitrary JavaScript into the devtools console).</li>
+        <li>Issues that require a malicious browser
+          extension to be installed.</li>
+        <li>Issues that require physical access to a
+          Hostinger data-centre machine.</li>
+        <li>Theoretical attacks that require a hostile
+          network operator to actively MITM a TLS
+          connection (the production CSP, HSTS and
+          SameSite cookies are the documented
+          mitigations).</li>
+      </ul>
+
+      <h2>7. Supported versions</h2>
+      <p>The V6.x line is the supported security line.
+        Earlier lines are end-of-life and are not eligible
+        for new security updates.</p>
+
+      <p class="meta">Last updated: <time datetime="2026-07-24">2026-07-24</time> · ThreatPulse Radar V6.9</p>
+    </main>
+  </body>
+</html>

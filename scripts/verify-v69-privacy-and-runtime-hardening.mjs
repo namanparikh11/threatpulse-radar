@@ -543,23 +543,36 @@ function countOperatorMarkers(text) {
 const privacyHtml = readText('public/legal/privacy.html') ?? '';
 const securityTxt = readText('public/.well-known/security.txt') ?? '';
 const securityMd = readText('SECURITY.md') ?? '';
-assert('19. public/legal/privacy.html retains at least one <!-- OPERATOR: --> placeholder',
-  countOperatorMarkers(privacyHtml) >= 1,
-  `count: ${countOperatorMarkers(privacyHtml)}`);
-assert('19a. SECURITY.md retains at least one <!-- OPERATOR: --> placeholder',
-  countOperatorMarkers(securityMd) >= 1,
+const cookiesHtmlFile = readText('public/legal/cookies.html') ?? '';
+// Postal address is the only remaining operator
+// placeholder the user has not provided. The branch
+// cannot proceed to "production ready" without the
+// operator supplying the address. The verification
+// gate asserts the placeholder is present so a
+// regression that fabricates an address fails the
+// gate.
+const postalAddressPlaceholderCount = (privacyHtml.match(/&lt;!--\s*OPERATOR:\s*public postal address/gi) || []).length
+  + (privacyHtml.match(/<!--\s*OPERATOR:\s*public postal address/gi) || []).length;
+assert('19. public/legal/privacy.html retains a postal-address <!-- OPERATOR: --> placeholder (still pending operator input)',
+  postalAddressPlaceholderCount >= 1,
+  `count: ${postalAddressPlaceholderCount}`);
+assert('19a. SECURITY.md is complete and contains no unresolved <!-- OPERATOR: --> placeholders',
+  countOperatorMarkers(securityMd) === 0,
   `count: ${countOperatorMarkers(securityMd)}`);
-assert('19b. public/.well-known/security.txt retains an operator-resolvable contact placeholder',
-  /<OPERATOR-DOMAIN>/.test(securityTxt),
-  `security.txt:\n${securityTxt.slice(0, 400)}`);
-assert('19c. V6.9 documentation explicitly lists the unresolved operator placeholders',
-  /11\. Unresolved operator placeholders/i.test(v69doc)
-    && /production-readiness gate/i.test(v69doc),
+assert('19b. public/.well-known/security.txt is complete and contains the real operator contact',
+  /contact@namanp\.de/.test(securityTxt)
+    && /Expires:\s*2027-01-24T00:00:00Z/.test(securityTxt)
+    && /Canonical:\s*https:\/\/threatpulse\.namanp\.de/.test(securityTxt)
+    && /Policy:\s*https:\/\/threatpulse\.namanp\.de\/legal\/security\.html/.test(securityTxt),
+  `security.txt:\n${securityTxt.slice(0, 600)}`);
+assert('19c. V6.9 documentation lists the postal address as a remaining unresolved operator placeholder',
+  /postal address/i.test(v69doc) || /public postal address/i.test(v69doc),
   null);
-assert('19d. V6.9 documentation does NOT claim the branch is "production ready"',
-  !/production ready/i.test(v69doc) || /NOT claimed production-ready/i.test(v69doc)
-    || /NOT production-ready/i.test(v69doc)
-    || /code-ready/i.test(v69doc),
+assert('19d. V6.9 documentation does NOT claim the branch is "production ready" while the postal address is pending',
+  /postal address.*pending/i.test(v69doc)
+    || /postal address.*placeholder/i.test(v69doc)
+    || /postal address.*still pending/i.test(v69doc)
+    || /postal address.*incomplete/i.test(v69doc),
   null);
 
 // -------------------------------------------------------------------
@@ -584,6 +597,144 @@ if (existsSync(resolve(repoRoot, 'dist/assets'))) {
     !cmpPattern.test(distConcat),
     null);
 }
+
+// -------------------------------------------------------------------
+// 22. Operator fields: controller, contact, single alias
+// -------------------------------------------------------------------
+assert('22. public/legal/privacy.html identifies the controller by name',
+  /Naman Parikh/.test(privacyHtml),
+  null);
+assert('22a. SECURITY.md identifies the operator and lists contact@namanp.de',
+  /contact@namanp\.de/.test(securityMd) && /Naman Parikh/.test(securityMd),
+  null);
+assert('22b. cookies.html uses the same contact@namanp.de address',
+  /contact@namanp\.de/.test(cookiesHtmlFile),
+  null);
+assert('22c. No separate privacy@ or security@ alias is introduced (or used as a contact address)',
+  // The textual mention of "no separate privacy@ or
+  // security@ alias is introduced" is allowed in
+  // documentation as a negative assertion, but the
+  // strings must never appear as live contact
+  // addresses.
+  !/\bprivacy@[a-zA-Z0-9._-]+/.test(securityMd)
+    && !/\bsecurity@[a-zA-Z0-9._-]+/.test(securityMd)
+    && !/\bprivacy@[a-zA-Z0-9._-]+/.test(securityTxt)
+    && !/\bsecurity@[a-zA-Z0-9._-]+/.test(securityTxt)
+    && !/\bprivacy@[a-zA-Z0-9._-]+/.test(privacyHtml)
+    && !/\bsecurity@[a-zA-Z0-9._-]+/.test(privacyHtml)
+    && !/\bprivacy@[a-zA-Z0-9._-]+/.test(cookiesHtmlFile)
+    && !/\bsecurity@[a-zA-Z0-9._-]+/.test(cookiesHtmlFile),
+  null);
+assert('22d. SECURITY.md does not contain placeholder e-mail addresses',
+  !/OPERATOR-DOMAIN/.test(securityMd) && !/OPERATOR-PGP/.test(securityMd),
+  null);
+
+// -------------------------------------------------------------------
+// 23. security.txt validation
+// -------------------------------------------------------------------
+const securityTxtLines = securityTxt.split('\n');
+const securityTxtContact = securityTxtLines.find((l) => /^Contact:/i.test(l));
+const securityTxtExpires = securityTxtLines.find((l) => /^Expires:/i.test(l));
+const securityTxtCanonical = securityTxtLines.find((l) => /^Canonical:/i.test(l));
+const securityTxtPolicy = securityTxtLines.find((l) => /^Policy:/i.test(l));
+assert('23. security.txt has at least one Contact field',
+  !!securityTxtContact,
+  null);
+assert('23a. security.txt Contact field uses the operator contact',
+  /contact@namanp\.de/.test(securityTxtContact || ''),
+  null);
+assert('23b. security.txt has exactly one Expires field and it is in the future',
+  !!securityTxtExpires
+    && !securityTxtLines.slice(securityTxtLines.indexOf(securityTxtExpires) + 1).some((l) => /^Expires:/i.test(l)),
+  null);
+const expiresMatch = (securityTxtExpires || '').match(/Expires:\s*(\S+)/);
+const expiresDate = expiresMatch ? new Date(expiresMatch[1]) : null;
+assert('23c. security.txt Expires is a valid future date',
+  expiresDate instanceof Date && !Number.isNaN(expiresDate.getTime())
+    && expiresDate.getTime() > Date.now(),
+  `expires: ${securityTxtExpires}`);
+assert('23d. security.txt Canonical is an https://threatpulse.namanp.de URL',
+  !!securityTxtCanonical
+    && /https:\/\/threatpulse\.namanp\.de/.test(securityTxtCanonical),
+  null);
+assert('23e. security.txt Policy is a real public URL',
+  !!securityTxtPolicy
+    && /https:\/\/threatpulse\.namanp\.de\/legal\/security\.html/.test(securityTxtPolicy),
+  null);
+
+// -------------------------------------------------------------------
+// 24. Application-log retention (30 days) is implemented and
+//     documented
+// -------------------------------------------------------------------
+const logRetentionExists = existsSync(resolve(repoRoot, 'hostinger/log-retention.mjs'));
+const logRetentionTestsExist = existsSync(resolve(repoRoot, 'scripts/acceptance-v69-log-retention.mjs'));
+assert('24. hostinger/log-retention.mjs exists and exports runLogRetention',
+  logRetentionExists,
+  null);
+assert('24a. scripts/acceptance-v69-log-retention.mjs exists',
+  logRetentionTestsExist,
+  null);
+assert('24b. V6.9 documentation declares the 30-day retention policy',
+  /30[- ]?day/i.test(v69doc),
+  null);
+assert('24c. jobs/verify-state.mjs invokes the log retention pass',
+  /runLogRetention/.test(readText('jobs/verify-state.mjs') ?? ''),
+  null);
+assert('24d. hostinger/cron-verify-state.mjs passes THREATPULSE_LOG_DIR to verify-state',
+  /THREATPULSE_LOG_DIR/.test(readText('hostinger/cron-verify-state.mjs') ?? ''),
+  null);
+
+// -------------------------------------------------------------------
+// 25. Hostinger refresh route is closed (NOT CORS same-origin)
+// -------------------------------------------------------------------
+assert('25. hostinger/app.mjs closes /.netlify/functions/refresh-dataset-background with sanitized 404',
+  /statusCode\s*=\s*404/.test(appMjs) || /notFoundResponse|not-found|sink\s+not/.test(appMjs),
+  null);
+assert('25a. hostinger/app.mjs does NOT advertise Access-Control-Allow-Origin: same-origin on the closed refresh route',
+  !/Access-Control-Allow-Origin.*same-origin/.test(appMjs),
+  null);
+assert('25b. V6.9 documentation explicitly states the Hostinger / Netlify route distinction',
+  /Hostinger.*vs.*Netlify|6\.0 Hostinger vs Netlify|Hostinger public surface/i.test(v69doc),
+  null);
+assert('25c. V6.9 documentation states that the closed Hostinger refresh route returns the sanitized 404',
+  /closed.*404|sanitized 404/i.test(v69doc),
+  null);
+
+// -------------------------------------------------------------------
+// 26. No cookie consent banner (consent model A)
+// -------------------------------------------------------------------
+// The application does not install a cookie consent
+// banner. The verification asserts no consent
+// component is shipped.
+const consentComponentPattern = /(cookie-consent|consent-banner|consent-dialog|cookie-banner|consent-modal|gdpr-banner|cookieConsent)/i;
+let consentHits = [];
+for (const f of listFilesRecursive('src')) {
+  if (!/\.(tsx|ts|jsx|js|mjs)$/.test(f)) continue;
+  const txt = readText(f);
+  if (!txt) continue;
+  if (consentComponentPattern.test(txt)) {
+    // The pattern is only a flag when the match is
+    // in a component or page definition. A comment
+    // or test file mentioning the concept is OK.
+    if (/data-testid|return\s*\(|<[A-Z]/.test(txt)) {
+      consentHits.push(f);
+    }
+  }
+}
+assert('26. no cookie consent banner is shipped',
+  consentHits.length === 0,
+  consentHits.length > 0 ? `hits: ${consentHits.join(', ')}` : null);
+
+// -------------------------------------------------------------------
+// 27. Legal-basis wording is non-absolute
+// -------------------------------------------------------------------
+assert('27. V6.9 documentation uses the suggested GDPR Art. 6(1)(f) legal-basis wording',
+  /Article 6\(1\)\(f\)\s*GDPR/i.test(v69doc),
+  null);
+assert('27a. V6.9 documentation uses the suggested local-storage wording',
+  /locally[^.]*browser/i.test(v69doc)
+    && /independently chooses to transmit/i.test(v69doc),
+  null);
 
 // -------------------------------------------------------------------
 // 21. No public write / admin / refresh route

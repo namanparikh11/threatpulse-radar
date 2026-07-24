@@ -23,15 +23,17 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 
 const { logLine, EXIT_CODES, resolveStorage } = await import('./_lib.mjs');
+const { runLogRetention } = await import('../hostinger/log-retention.mjs');
 
 function parseArgs(argv) {
-  const args = { json: false, dataRoot: null };
+  const args = { json: false, dataRoot: null, noLogRetention: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') args.json = true;
     else if (a.startsWith('--data-root=')) args.dataRoot = a.slice('--data-root='.length);
+    else if (a === '--no-log-retention') args.noLogRetention = true;
     else if (a === '--help' || a === '-h') {
-      console.log('Usage: node jobs/verify-state.mjs [--json] [--data-root=...]');
+      console.log('Usage: node jobs/verify-state.mjs [--json] [--data-root=...] [--no-log-retention]');
       process.exit(0);
     }
     else {
@@ -52,7 +54,46 @@ try {
   process.exit(EXIT_CODES.STORAGE_FAILURE);
 }
 
-const report = { ok: true, missing: [], present: [], store: { backend: storage.backend, dataRoot: storage.dataRoot || null } };
+const report = { ok: true, missing: [], present: [], store: { backend: storage.backend, dataRoot: storage.dataRoot || null }, logRetention: null };
+
+// V6.9 — bounded 30-day application-log retention
+// runs as a pre-flight step. The retention pass is
+// best-effort: a failure here is logged but does NOT
+// cause the verify-state job to report a failure
+// (the verify-state job's purpose is to confirm data
+// store integrity, not log retention). Use
+// `--no-log-retention` to skip the pass for ad-hoc
+// debugging.
+if (!args.noLogRetention) {
+  const logDir = process.env.THREATPULSE_LOG_DIR
+    || (process.env.HOME
+      ? `${process.env.HOME}/threatpulse-logs`
+      : './logs');
+  try {
+    const lr = await runLogRetention({ logDir, retentionDays: 30 });
+    report.logRetention = {
+      logDir: lr.logDir,
+      retentionDays: lr.retentionDays,
+      scanned: lr.scanned,
+      deleted: lr.deleted,
+      errors: lr.errors,
+      reason: lr.reason,
+      ok: lr.ok,
+    };
+    logLine('verify-state.log-retention', {
+      scanned: lr.scanned,
+      deleted: lr.deleted,
+      errors: lr.errors,
+      reason: lr.reason || 'ok',
+    });
+  } catch (err) {
+    // runLogRetention is documented to never throw;
+    // this catch is a defence-in-depth guard only.
+    logLine('verify-state.log-retention.error', {
+      message: err && err.message ? err.message : 'unknown',
+    });
+  }
+}
 
 async function probe(label, key) {
   try {

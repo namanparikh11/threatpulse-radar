@@ -24,27 +24,35 @@
     <main>
       <h1>Privacy notice</h1>
       <p class="lede">A pre-completed privacy notice for the ThreatPulse Radar
-        production deployment. Operator-controlled placeholders are
-        marked with a <span class="placeholder">&lt;!-- OPERATOR: ... --&gt;</span>
-        callout and MUST be replaced before the site is
-        public-facing.</p>
+        production deployment.</p>
 
       <h2>1. Controller</h2>
-      <div class="placeholder">&lt;!-- OPERATOR: full legal name and registered address of the data controller. --&gt;</div>
+      <p>Service provider / data controller:</p>
+      <p><strong>Naman Parikh</strong></p>
+      <!-- OPERATOR: public postal address of the data controller. The address supplied by the operator in this milestone was a placeholder; the operator MUST supply the real address before production deployment. -->
+      <div class="placeholder">&lt;!-- OPERATOR: public postal address --&gt;</div>
 
       <h2>2. Hosting</h2>
       <p>The dashboard, the public dataset and the static
         documentation pages are served from the Hostinger
-        production domain. Ordinary server access logs (request
-        path, status, response size, user-agent) are written to
-        the operator's log directory. The Hostinger managed
-        scheduler runs the V6.2 portable jobs (refresh-dataset,
-        refresh-baseline, publish, GC, verify, backup) and
-        periodically contacts the documented public upstream
-        sources (CISA KEV, NVD, FIRST EPSS, OSV, GitHub
-        Advisory) from the operator's server. None of those
-        third parties receive a visitor's IP address; only the
-        server's IP is exposed during the upstream refresh.</p>
+        production domain. ThreatPulse application-generated
+        logs (managed-scheduler, cron jobs, JSONL logs, failed-
+        job logs and verification logs) are written to the
+        operator-configured log directory. The Hostinger
+        managed scheduler runs the V6.2 portable jobs
+        (refresh-dataset, refresh-baseline, publish, GC,
+        verify, backup) and periodically contacts the
+        documented public upstream sources (CISA KEV, NVD,
+        FIRST EPSS, OSV, GitHub Advisory) from the operator's
+        server. None of those third parties receive a
+        visitor's IP address; only the server's IP is exposed
+        during the upstream refresh.</p>
+      <p><strong>ThreatPulse application-generated logs are
+        retained for up to 30 days.</strong> Hostinger
+        infrastructure / access logs are controlled by the
+        hosting provider and are subject to Hostinger's
+        applicable policies and configuration; ThreatPulse
+        cannot delete Hostinger-controlled logs.</p>
 
       <h2>3. Data the application processes</h2>
       <p>ThreatPulse Radar is a public-data + local-only
@@ -56,29 +64,35 @@
           records, OSV records) — loaded from the operator's
           server-side refresh pipeline and served to every
           visitor from the operator's data root. No PII.</li>
-        <li><strong>Local workspace, environment, remediation and
-          report data</strong> — entered by the visitor in their
-          own browser and stored in IndexedDB on the visitor's
-          own device. Never uploaded.</li>
+        <li><strong>Local workspace, environment, remediation
+          and report data</strong> — entered by the visitor in
+          their own browser and stored in IndexedDB on the
+          visitor's own device. Never uploaded.</li>
         <li><strong>Imported SBOMs and inventory files</strong> —
-          read by the visitor's browser, parsed in a Web Worker,
-          and stored in IndexedDB. Never uploaded.</li>
+          read by the visitor's browser, parsed in a Web
+          Worker, and stored in IndexedDB. Never uploaded.</li>
         <li><strong>Browser cache</strong> — a 1-hour TTL cache
           of the public dataset in <code>localStorage</code>,
           expired on manual refresh. No PII.</li>
         <li><strong>Server access logs</strong> — ordinary HTTP
           access logs (request path, response status, response
-          size, user-agent). Retained per the operator's log
-          retention policy.</li>
+          size, user-agent) written by the ThreatPulse
+          application and retained for up to 30 days.
+          Hostinger infrastructure logs are out of scope for
+          the application retention policy.</li>
       </ul>
 
       <h2>4. Cookies and tracking</h2>
-      <p>The application sets no cookies, reads no cookies and
-        does not use any third-party tracking, analytics, pixel
-        or beacon. The full audit is in
+      <p>No application-controlled cookies are set or read by
+        ThreatPulse code. The full audit is in
         <a href="./cookies.html">the cookie &amp; storage notice</a>
         and the audit script
-        <code>scripts/verify-v69-privacy-and-runtime-hardening.mjs</code>.</p>
+        <code>scripts/verify-v69-privacy-and-runtime-hardening.mjs</code>.
+        Because the application cannot observe hosting- or
+        platform-level cookie behaviour, the operator must
+        run the live verification checklist documented in the
+        V6.9 audit record before declaring the deployment
+        complete.</p>
 
       <h2>5. No account system</h2>
       <p>There is no sign-up, no sign-in, no profile and no
@@ -95,14 +109,17 @@
         <li>The operator's server-side refresh pipeline, which
           contacts CISA / NVD / FIRST EPSS / OSV / GitHub
           Advisory to populate the prebuilt dataset.</li>
-        <li>The operator's own log retention archive.</li>
       </ul>
       <p>Local visitor data (workspace, environment,
         remediation, reports) is not shared with any third
         party because it never leaves the visitor's device.</p>
 
       <h2>7. Retention</h2>
-      <div class="placeholder">&lt;!-- OPERATOR: server-log retention period (e.g. 30 days). The application itself does not retain any visitor-entered data on the server. --&gt;</div>
+      <p>ThreatPulse application and security logs are
+        processed to maintain the security, availability and
+        integrity of the service, detect abuse and diagnose
+        technical errors. ThreatPulse application-generated
+        logs are retained for <strong>up to 30 days</strong>.</p>
       <p>Visitor-entered data (workspace / environment /
         remediation / reports) is retained in the visitor's
         own browser until the visitor explicitly clears site
@@ -110,10 +127,25 @@
         in the dashboard. The dashboard never uploads this
         data to the server.</p>
 
-      <h2>8. Legal basis</h2>
-      <div class="placeholder">&lt;!-- OPERATOR: legal-basis placeholder for legal review. Common choices: legitimate interest (public-data dashboard), consent (any future feature that requires it). --&gt;</div>
+      <h2>8. Local storage</h2>
+      <p>Workspace, environment, remediation and report
+        information is stored locally in the user's browser
+        to provide functions requested by the user.
+        ThreatPulse does not receive this locally stored
+        information unless the user independently chooses to
+        transmit an exported file.</p>
 
-      <h2>9. User rights</h2>
+      <h2>9. Legal basis</h2>
+      <p>ThreatPulse application and security logs are
+        processed to maintain the security, availability and
+        integrity of the service, detect abuse and diagnose
+        technical errors. The intended legal basis is
+        Article 6(1)(f) GDPR (legitimate interests of the
+        controller), subject to final operator legal review.</p>
+      <p>The legal-basis language above is suitable for later
+        legal review by the operator; it is not legal advice.</p>
+
+      <h2>10. User rights</h2>
       <p>Because no visitor account exists and no visitor data
         is held on the server, the visitor's data-protection
         rights are exercised in the visitor's own browser
@@ -123,10 +155,17 @@
         browser's native "Clear site data" / "Clear cookies
         and site data" controls for a full reset.</p>
 
-      <h2>10. Contact</h2>
-      <div class="placeholder">&lt;!-- OPERATOR: data-protection contact e-mail and (if applicable) data-protection officer. The same contact should be listed in SECURITY.md and in security.txt. --&gt;</div>
+      <h2>11. Contact</h2>
+      <p>All contact (general, privacy and security /
+        vulnerability disclosure) uses a single electronic
+        contact:</p>
+      <p><strong><a href="mailto:contact@namanp.de">contact@namanp.de</a></strong></p>
+      <p>No separate privacy@ or security@ aliases are
+        introduced. The same contact is listed in
+        <a href="/.well-known/security.txt">security.txt</a>
+        and in <a href="/SECURITY.html">SECURITY.md</a>.</p>
 
-      <h2>11. Changes to this notice</h2>
+      <h2>12. Changes to this notice</h2>
       <p>Material changes to this notice will be listed in
         <a href="https://github.com/namanparikh11/threatpulse-radar/blob/main/CHANGELOG.md"
            rel="noopener noreferrer">CHANGELOG.md</a> with a

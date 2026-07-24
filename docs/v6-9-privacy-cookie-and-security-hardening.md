@@ -116,25 +116,84 @@ consent-management-platform integration.
 
 ## 3. Privacy transparency (PHASE 3)
 
-Two static documentation pages are produced and shipped
+Three static documentation pages are produced and shipped
 to the production deployment:
 
 - `public/legal/privacy.html` — full privacy notice with
-  operator, hosting, retention, recipient, legal-basis
-  placeholders.
+  the documented operator, hosting, retention, recipient
+  and legal-basis wording.
 - `public/legal/cookies.html` — the cookie / storage
   audit result, the consent model decision and the
   evidence basis for it.
+- `public/legal/security.html` — the responsible-
+  disclosure policy, supported versions, the report
+  format and the good-faith expectations.
 - `public/legal/index.html` — a small directory page
-  linking the two.
-- `public/legal/security.txt` — RFC 9116 responsible-
-  disclosure contact.
+  linking the three.
+- `public/.well-known/security.txt` — RFC 9116
+  responsible-disclosure contact.
 
-Operator-controlled placeholders (address, legal entity,
-data-protection officer, retention durations) are marked
-**`<!-- OPERATOR: -->`** and the documentation explicitly
-states that the production deployment MUST be completed
-by the operator before the site is public-facing.
+### 3.1 Legal-basis wording
+
+The privacy notice uses the following non-absolute
+wording, which is suitable for later legal review by
+the operator. **The wording is not legal advice.**
+
+- **Server-log legal basis.** "ThreatPulse application
+  and security logs are processed to maintain the
+  security, availability and integrity of the
+  service, detect abuse and diagnose technical errors.
+  The intended legal basis is Article 6(1)(f) GDPR
+  (legitimate interests of the controller), subject to
+  final operator legal review."
+- **Local-storage wording.** "Workspace, environment,
+  remediation and report information is stored locally
+  in the user's browser to provide functions requested
+  by the user. ThreatPulse does not receive this
+  locally stored information unless the user
+  independently chooses to transmit an exported file."
+
+### 3.2 Cookie / tracking wording
+
+The cookie notice uses the bounded claim:
+
+- "No application-controlled cookies are set or read
+  by ThreatPulse code."
+
+The audit cannot observe hosting- / platform- / CDN-
+/ browser-extension-level cookie behaviour. The
+operator MUST run the live verification checklist
+(section 10) before declaring the deployment
+complete. The application does NOT install a consent
+banner.
+
+### 3.3 Operator-supplied information and remaining gaps
+
+The following operator-supplied information is now
+in the build:
+
+- **Service provider / data controller:** Naman Parikh.
+- **General, privacy and security contact:**
+  `contact@namanp.de` (single address for all three).
+- **Application-log retention:** 30 days, enforced by
+  `hostinger/log-retention.mjs` and the
+  `scripts/acceptance-v69-log-retention.mjs` suite.
+- **security.txt:** `Expires: 2027-01-24T00:00:00Z`,
+  `Canonical: https://threatpulse.namanp.de/.well-
+  known/security.txt`,
+  `Policy: https://threatpulse.namanp.de/legal/
+  security.html`,
+  `Preferred-Languages: en, de`.
+
+The following operator input is **still pending**:
+
+- **Public postal address of the data controller.**
+  The privacy notice retains an `<!-- OPERATOR:
+  public postal address -->` placeholder. The branch
+  is NOT production-ready until the operator supplies
+  the real public postal address; the V6.9
+  verification suite (assertion 19) flags the
+  unresolved placeholder.
 
 ## 4. Content Security Policy (PHASE 4)
 
@@ -282,6 +341,95 @@ log directory only.
 | Oversized headers | any | `application/json; charset=utf-8` | `no-store` | `431 Request Header Fields Too Large` |
 | Malformed URL | any | `application/json; charset=utf-8` | `no-store` | `400 Bad Request` (sanitized) |
 | Method `!= GET/HEAD` | non-allowlist | `application/json; charset=utf-8` | `no-store` | `405 Method Not Allowed` with `Allow: GET, HEAD` |
+
+### 6.0 Hostinger vs Netlify route distinction (provider correctness)
+
+The two deployments have **different public-route
+surfaces** and MUST NOT be conflated. The matrix
+above is the Hostinger production surface. The
+Netlify rollback site is preserved as a historical
+deployment surface only.
+
+**Hostinger (canonical production):**
+
+- `GET /api/dataset` is a public read endpoint
+  served by `hostinger/app.mjs` → `server/routes/dataset.mjs`.
+- `GET /.netlify/functions/dataset` is a **local
+  public read compatibility alias** served by the
+  same `hostinger/app.mjs`. It is NOT a request to
+  Netlify; it is a thin path-aliasing layer that
+  lets the frozen V6.8 frontend hit a same-origin
+  URL even when the deploy target is Hostinger.
+- `GET /.netlify/functions/refresh-dataset-background`
+  is **closed** and returns the documented sanitized
+  `404` response. There is no public Hostinger route
+  that triggers a refresh; refreshes are driven by
+  the in-process managed scheduler
+  (`hostinger/managed-scheduler.mjs`) only.
+- Every other non-dataset `/.netlify/functions/*` path
+  is closed with the same sanitized `404`. The closed
+  Hostinger endpoint does NOT advertise
+  `Access-Control-Allow-Origin: same-origin` (a
+  closed route has no body and no CORS headers).
+- No refresh, write, admin, credential or filesystem
+  HTTP endpoint is exposed on Hostinger.
+
+**Netlify (rollback site, preserved historical
+contract only):**
+
+- The Netlify site continues to expose the five
+  historical public Netlify function entries
+  (`dataset.mjs`, `refresh-dataset-background.mjs`,
+  `refresh-dataset-scheduled.mjs`,
+  `refresh-baseline-scheduled.mjs`,
+  `refresh-baseline-background.mjs`).
+- The Netlify function contract (CORS-open for
+  `dataset.mjs`, `same-origin` for
+  `refresh-dataset-background.mjs` after the V6.9
+  CORS tightening) is preserved.
+- The Netlify refresh function is part of the
+  preserved Netlify function contract; its
+  CORS/security behaviour MUST NOT be presented as
+  a Hostinger endpoint.
+- Operators considering disabling the Netlify
+  rollback site should consult the V6.8
+  Hostinger-migration-closure document.
+
+A future deployment that disables the Netlify
+rollback site entirely does not change the
+Hostinger public surface.
+
+### 6.1 Application-log retention (30 days)
+
+ThreatPulse application-generated logs (managed-scheduler
+logs, cron job logs, JSONL logs, failed-job logs and
+verification logs) are retained for **up to 30 days**.
+The retention pass is implemented in
+`hostinger/log-retention.mjs` and is invoked by the
+existing `state-verify` daily maintenance schedule. The
+retention pass:
+
+- operates only inside the resolved
+  `THREATPULSE_LOG_DIR`;
+- never follows a symlink outside that directory;
+- never deletes state, snapshot, backup, source files
+  or user uploads (only the documented daily JSONL log
+  filename pattern is eligible);
+- uses file age from `lstatSync` (no `statSync` follow);
+- tolerates a missing log directory (`{ok:true, reason:
+  'log-dir-missing'}`);
+- tolerates concurrent writers (a failed unlink is
+  reported and retried on the next scheduled run);
+- reports deletion counts and reasons without logging
+  secrets or full filesystem paths;
+- fails safely on every error path (returns
+  `{ok:false, reason:…}` and never throws);
+- is enforced by the acceptance suite in
+  `scripts/acceptance-v69-log-retention.mjs`.
+
+Hostinger infrastructure / access logs are out of
+scope for the application retention policy. ThreatPulse
+cannot delete Hostinger-controlled logs.
 | Path-traversal attempts | any | `application/json; charset=utf-8` | `no-store` | `404` (sanitized) |
 
 ### CORS
