@@ -8,13 +8,23 @@ header matrix, the public route matrix, the import / export
 trust boundary, the responsible-disclosure process, the
 production verification checklist and the rollback conditions.
 
+## Status
+
+This branch is **NOT claimed production-ready**. The
+documentation in this branch ships with `<!-- OPERATOR: -->`
+placeholders for every field that requires real legal /
+contact / address / retention input. The branch is
+**code-ready** but the **operator legal/contact details
+block deployment** until each placeholder is replaced
+with a real value. See section 11 for the exact list.
+
 ## 1. Cookie and storage audit (PHASE 1)
 
 The audit was performed against the production-reachable
 code paths and the built `dist/` output. The
 machine-readable inventory is encoded in
 `scripts/verify-v69-privacy-and-runtime-hardening.mjs`; the
-29 assertions cover every category listed below.
+assertions cover every category listed below.
 
 ### Cookies
 
@@ -23,9 +33,17 @@ machine-readable inventory is encoded in
 | `document.cookie` (read) | **absent** in `src/**`, `hostinger/**`, `server/**`, `jobs/**` |
 | `Set-Cookie` (set) | **absent** in `src/**`, `hostinger/**`, `server/**`, `jobs/**` |
 | `cookieStore` (Cookie Store API) | **absent** |
-| `Set-Cookie` HTTP response header | **absent** in `hostinger/static.mjs` and the portable `server/` routes |
+| `Set-Cookie` HTTP response header (ThreatPulse code) | **absent** in `hostinger/static.mjs` and the portable `server/` routes |
 | `Cookie` HTTP request header | **not set** by the browser; not consumed server-side |
-| **Decision** | **No cookies are set, read, or required at any point in the V6.9 build.** |
+| **Audit claim** | **No application-controlled cookies are set or read by ThreatPulse code.** |
+
+The audit claim is bounded to *application-controlled*
+cookies. **The hosting platform (Hostinger) and any
+upstream CDN / edge layer are out of scope for the
+static source audit.** A deployment is NOT considered
+complete until the operator has run the live
+verification checklist in section 10 to confirm that
+the platform's edge does not add its own cookies.
 
 ### Browser storage
 
@@ -79,13 +97,13 @@ controls.
 
 **Decision: A. NO NON-ESSENTIAL COOKIES OR STORAGE.**
 
-The audit found **zero cookies** and **zero non-essential
-storage**. Every browser storage primitive in use is
-necessary for a documented product feature (the dataset
-TTL cache, the V6.4 workspace, the V6.6 environment, the
-V6.7 remediation, the V6.5 reports, the multi-tab
-BroadcastChannel sync). No consent banner is implemented
-and none is required.
+The audit found no application-controlled cookies and no
+non-essential storage. Every browser storage primitive
+in use is necessary for a documented product feature
+(the dataset TTL cache, the V6.4 workspace, the V6.6
+environment, the V6.7 remediation, the V6.5 reports,
+the multi-tab BroadcastChannel sync). No consent banner
+is implemented and none is required.
 
 The disclosure pages (`/legal/privacy.html`,
 `/legal/cookies.html`) explain the storage, the
@@ -132,10 +150,12 @@ object-src 'none';
 frame-ancestors 'none';
 form-action 'self';
 script-src 'self';
-style-src 'self';
+style-src 'self' 'unsafe-inline';
+style-src-elem 'self';
+style-src-attr 'unsafe-inline';
 img-src 'self' data:;
 font-src 'self' data:;
-connect-src 'self';
+connect-src 'self' https://www.cisa.gov https://services.nvd.nist.gov https://api.first.org;
 worker-src 'self' blob:;
 manifest-src 'self';
 frame-src 'none'
@@ -151,10 +171,31 @@ Notes:
   `correlate.worker.mjs`, `fingerprint.worker.mjs`) are
   loaded from the same origin via `new Worker(new
   URL(...), { type: 'module' })`.
+- `connect-src` enumerates the **exact** browser-direct
+  origins reachable from the production build. The
+  three non-self origins are the documented live-data
+  fallback providers (CISA KEV, NVD, FIRST EPSS),
+  reached ONLY when the primary same-origin
+  `/.netlify/functions/dataset` route is unavailable
+  (see `src/services/vulnerabilityService.ts#tryBrowserDirectFetch`).
+  No `https:` wildcard, no `*`, no subdomain wildcards.
+  Each origin is documented in section 7 below.
 - `worker-src 'self' blob:` is required so Vite's runtime
   worker bootstrap (which uses a temporary `blob:` URL
   internally) is not blocked. Removing `blob:` would
   break the build.
+- `style-src` is the narrowest cross-browser-compatible
+  inline-style policy. Level 3 (`style-src-elem`,
+  `style-src-attr`) are honoured by Chrome ≥ 75, Firefox
+  ≥ 78, Safari ≥ 15.4. The Level 1 `style-src` fallback
+  carries the same effective permission for older
+  browsers. The application code itself never injects
+  untrusted content as inline style; the only inline
+  style usage is React's `style={{...}}` prop (used in
+  two progress-bar components) and the small handful
+  of inline measurements that React and Recharts
+  generate at runtime. Verified by the static audit in
+  `scripts/verify-v69-privacy-and-runtime-hardening.mjs`.
 - `img-src 'self' data:` is required because the
   inline `radar.svg` icon and a small set of inline
   data-URI placeholders are rendered. The
@@ -168,7 +209,8 @@ Notes:
   dashboard has no iframe / embed surface.
 - The CSP is enforced (not `Content-Security-Policy-
   Report-Only`) because every application function
-  passes without violations.
+  passes without violations (verified by the smoke
+  test in `scripts/smoke-v68-local.mjs`).
 
 ## 5. HTTP and Node hardening (PHASE 5)
 
@@ -418,7 +460,7 @@ source-and-dist only, and does not contact the network.
 Before declaring the V6.9 milestone live on the
 production domain, the operator MUST confirm:
 
-- [ ] `node scripts/verify-v69-privacy-and-runtime-hardening.mjs` passes (29/29).
+- [ ] `node scripts/verify-v69-privacy-and-runtime-hardening.mjs` passes.
 - [ ] `node scripts/verify-v68-hostinger-migration-closure.mjs` passes (11/11).
 - [ ] `node scripts/verify-v68-release.mjs` passes (25/25).
 - [ ] `node scripts/acceptance-v63-hostinger.mjs` passes (429/429 after the V6.9 header updates).
@@ -426,15 +468,183 @@ production domain, the operator MUST confirm:
 - [ ] `node scripts/acceptance-proxy.mjs` passes (121/121).
 - [ ] `node scripts/smoke-v68-local.mjs` passes (11/11).
 - [ ] `npm run build` succeeds and the main bundle size is within ±1 % of the V6.8 baseline.
-- [ ] The production deployment returns every header in
-      section 5 over `curl -I https://<production-domain>/health`.
+- [ ] Every operator placeholder listed in section 11 is
+      replaced with a real value.
 - [ ] The privacy / cookies disclosures are reachable
       at `https://<production-domain>/legal/privacy.html`
       and `https://<production-domain>/legal/cookies.html`.
 - [ ] `https://<production-domain>/.well-known/security.txt`
       resolves and contains the operator-completed contact.
 
-## 11. Rollback conditions
+### 10.1 Live response-header verification
+
+The static audit asserts the V6.9 header baseline. The
+following commands confirm the **deployed** headers match
+the baseline. The operator MUST run each of these
+against the production domain and visually confirm the
+output before declaring the milestone live. **No
+production change is made by this milestone; the
+commands are pre-deployment checks for the operator's
+own use.**
+
+```bash
+# Inspect every header on the liveness probe.
+curl -sSI https://<production-domain>/health
+
+# Inspect the canonical dataset endpoint.
+curl -sSI https://<production-domain>/api/dataset
+
+# Inspect a hashed Vite asset.
+curl -sSI https://<production-domain>/assets/index-CooerWiI.js
+
+# Inspect the local compatibility alias.
+curl -sSI https://<production-domain>/.netlify/functions/dataset
+```
+
+For each command, the operator MUST visually confirm
+that:
+
+1. **No `Set-Cookie` header is present in any
+   response.** If the platform adds its own cookie
+   (e.g. a Hostinger analytics cookie, a CDN layer
+   cookie, a Cloudflare `__cf_bm` cookie, etc.), this
+   must be documented as a platform behaviour and the
+   privacy notice updated to disclose it.
+2. The `Content-Security-Policy` value matches the
+   baseline in section 4. The three
+   `connect-src` origins MUST appear in the response
+   (no substitutions, no `https:` fallback).
+3. The `Strict-Transport-Security` value is exactly
+   `max-age=31536000` (no `includeSubDomains`, no
+   `preload`).
+4. The `Permissions-Policy` value is the V6.9 baseline
+   (20 capabilities denied).
+5. The `X-Frame-Options` value is `DENY`.
+6. The `Referrer-Policy` value is
+   `strict-origin-when-cross-origin`.
+7. The hashed `/assets/*` response carries
+   `Cache-Control: public, max-age=31536000, immutable`.
+8. The `index.html` response carries
+   `Cache-Control: no-store`.
+9. The dataset endpoint carries
+   `Access-Control-Allow-Origin: *` (the documented
+   public-data contract).
+10. The `refresh-dataset-background` endpoint
+    (Netlify) carries
+    `Access-Control-Allow-Origin: same-origin` (V6.9
+    tightening).
+
+### 10.2 Live cookie inspection in a clean browser profile
+
+The static source audit cannot observe behaviour added
+by a browser extension, a CDN, a reverse proxy, or the
+hosting platform itself. The operator MUST also inspect
+the live behaviour in a real browser:
+
+1. **Open Chrome (or Firefox) in a clean profile.** A
+   "clean profile" means a fresh user data directory
+   with no extensions installed. To open Chrome in
+   guest mode: `chrome --guest` (Chromium-based) or
+   `firefox -P` to a fresh profile.
+2. **Navigate to the production domain.** Do NOT
+   install any extension. Do NOT import a profile.
+3. **Open DevTools → Application → Cookies.** Confirm
+   the `Cookies` panel lists no cookies for the
+   production domain.
+4. **Open DevTools → Application → Storage.** Confirm
+   the `Storage` panel lists exactly one `localStorage`
+   entry (`threatpulse-dataset-cache:v1`, or similar
+   — the V4 TTL cache) and exactly four `IndexedDB`
+   entries (`tpr-workspace`, `tpr-environment`,
+   `tpr-remediation`, `tpr-reports`). These are the
+   documented V6.4–V6.7 local-only stores; no other
+   entries should be present.
+5. **Open DevTools → Network → All requests.** Reload
+   the page. The recorded requests should be limited
+   to the production origin, the Vite-bundled assets,
+   the local `/api/dataset` (or
+   `/.netlify/functions/dataset`) and the
+   same-origin workers. No third-party request should
+   appear in the absence of a manual refresh.
+6. **Click the "Refresh live data" button** (if the
+   prebuilt dataset is being used). If the proxy is
+   reachable, the live fallback does NOT fire and no
+   third-party request appears. If the proxy is
+   unreachable, the live fallback fires and three
+   browser-direct requests appear:
+   - `https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json`
+   - `https://services.nvd.nist.gov/rest/json/cves/2.0?cveIds=...`
+   - `https://api.first.org/data/v1/epss?cve=...`
+7. **Open DevTools → Console.** Reload the page.
+   Confirm no CSP violation is reported. The only
+   console messages should be the application's normal
+   information logs; no red `Refused to apply inline
+   style because it violates the following Content
+   Security Policy directive` errors should appear.
+8. **Open DevTools → Application → Cookies → Show
+   partitioned cookies.** Confirm no third-party
+   partitioned cookie is associated with the
+   production domain.
+9. **Repeat with one extension enabled** (e.g. a
+   password manager, a content blocker) to confirm
+   the extension does not add cookies the application
+   does not set. If the extension adds its own
+   cookies, that is an extension behaviour, not an
+   application behaviour; document it.
+10. **Distinguish ThreatPulse / Hostinger /
+    extension activity.** If a cookie appears,
+    cross-reference the cookie's `domain` attribute:
+    cookies with the production domain as `domain`
+    are application-controlled; cookies with a
+    sub-domain of `hostinger.com` or
+    `hostinger.net` are platform-controlled; cookies
+    with any other `domain` are extension- or
+    browser-controlled.
+
+## 11. Unresolved operator placeholders (production-readiness gate)
+
+The V6.9 branch ships with the following
+`<!-- OPERATOR: -->` placeholders. The branch is
+**code-ready** but **NOT production-ready** until each
+placeholder is replaced with a real value by the
+operator. The V6.9 verification script
+(`scripts/verify-v69-privacy-and-runtime-hardening.mjs`)
+asserts the existence of the placeholders so the gate
+fails if a placeholder is removed without being
+replaced with a real value.
+
+| # | Placeholder | File | Required before deployment? |
+| --- | --- | --- | --- |
+| 1 | Controller name and registered address | `public/legal/privacy.html` § 1 | Yes |
+| 2 | Data-protection contact e-mail | `public/legal/privacy.html` § 10 | Yes |
+| 3 | Server-log retention duration | `public/legal/privacy.html` § 7 | Yes |
+| 4 | Legal-basis placeholder for legal review | `public/legal/privacy.html` § 8 | Yes (for legal compliance) |
+| 5 | Security contact e-mail | `SECURITY.md`, `public/.well-known/security.txt` | Yes |
+| 6 | `Expires` date in `security.txt` | `public/.well-known/security.txt` | Yes (RFC 9116 requires a non-past `Expires`) |
+| 7 | PGP key fingerprint (optional) | `SECURITY.md` | No (PGP is optional) |
+| 8 | `Acknowledgement:` URL in `security.txt` | `public/.well-known/security.txt` | Recommended |
+
+The verification script asserts that at least one
+`<!-- OPERATOR: -->` placeholder exists in each
+shipped legal / security file, so a regression that
+publishes a placeholder-less file with fabricated
+content fails the gate. The intent is to prevent
+publication of fabricated personal data, addresses,
+tax numbers, legal-entity names or contact e-mails.
+
+**Final decision for this branch:** the legal / security
+pages are kept in the build (operator option B) so the
+operator can navigate to them and complete the
+placeholders before deployment. The verification suite
+explicitly flags the unresolved placeholders, so a CI
+run after the operator has completed every placeholder
+will pass cleanly and the final decision can be
+upgraded from **B. V6.9 CODE READY — OPERATOR
+LEGAL/CONTACT DETAILS STILL BLOCK DEPLOYMENT** to
+**A. V6.9 READY FOR PR — ALL RUNTIME AND OPERATOR
+REQUIREMENTS RESOLVED**.
+
+## 12. Rollback conditions
 
 The V6.9 milestone is a documentation + hardening
 release. A rollback to the previous V6.8 commit is
