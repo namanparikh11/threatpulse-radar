@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>ThreatPulse Radar — Cookie &amp; storage notice</title>
+    <style>
+      :root { color-scheme: light dark; --fg:#0f172a; --muted:#475569; --bg:#ffffff; --panel:#f8fafc; --border:#cbd5e1; --link:#1d4ed8; --ok:#15803d; }
+      @media (prefers-color-scheme: dark) { :root { --fg:#e2e8f0; --muted:#94a3b8; --bg:#0b1220; --panel:#0f172a; --border:#1e293b; --link:#60a5fa; --ok:#4ade80; } }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, sans-serif; line-height: 1.55; }
+      main { max-width: 720px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+      h2 { font-size: 1.1rem; margin-top: 2rem; }
+      .lede { color: var(--muted); margin-top: 0; }
+      p, li { font-size: 0.95rem; }
+      table { width: 100%; border-collapse: collapse; margin: 0.6rem 0 1rem; }
+      th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; font-size: 0.85rem; text-align: left; vertical-align: top; }
+      th { background: var(--panel); }
+      .ok { color: var(--ok); font-weight: 600; }
+      a { color: var(--link); }
+      .meta { color: var(--muted); font-size: 0.85rem; margin-top: 2rem; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Cookie &amp; storage notice</h1>
+      <p class="lede">The result of the V6.9 cookie and
+        storage audit, the consent-model decision, and the
+        evidence basis for it.</p>
+
+      <h2>1. Cookies</h2>
+      <p class="ok">No cookies are set, read or required at
+        any point in the V6.9 build.</p>
+      <p>The audit covered:</p>
+      <ul>
+        <li><code>document.cookie</code> (read) — absent
+          in every <code>src/**</code>,
+          <code>hostinger/**</code>, <code>server/**</code> and
+          <code>jobs/**</code> source file.</li>
+        <li><code>Set-Cookie</code> (response header) —
+          absent in every <code>hostinger/</code> and
+          <code>server/</code> route handler.</li>
+        <li><code>cookieStore</code> (Cookie Store API) —
+          absent.</li>
+        <li><code>Cookie</code> request header — never
+          consumed server-side; the browser never sends
+          one because the application never sets one.</li>
+      </ul>
+
+      <h2>2. Browser storage inventory</h2>
+      <table>
+        <thead>
+          <tr><th>Storage</th><th>Used by</th><th>Purpose</th><th>Necessary?</th><th>Lifetime</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>localStorage</code></td>
+            <td><code>src/services/datasetCache.ts</code></td>
+            <td>1-hour TTL cache of the public vulnerability dataset</td>
+            <td>Yes (V4 cost control)</td>
+            <td>1 hour; cleared on <code>forceRefresh</code></td>
+          </tr>
+          <tr>
+            <td><code>localStorage</code></td>
+            <td><code>src/reports/history.mjs</code></td>
+            <td>Boolean flag for the user's report-history preference</td>
+            <td>Yes (V6.5 toggle)</td>
+            <td>persistent; cleared by the user</td>
+          </tr>
+          <tr>
+            <td><code>IndexedDB</code> (workspace)</td>
+            <td><code>src/workspace/IndexedDBWorkspaceAdapter.mjs</code></td>
+            <td>Per-CVE triage, notes, tags, archive</td>
+            <td>Yes (V6.4)</td>
+            <td>persistent; cleared by the user</td>
+          </tr>
+          <tr>
+            <td><code>IndexedDB</code> (environment)</td>
+            <td><code>src/environment/IndexedDBEnvironmentAdapter.mjs</code></td>
+            <td>Local assets, SBOMs, correlations, reviews</td>
+            <td>Yes (V6.6)</td>
+            <td>persistent; cleared by the user</td>
+          </tr>
+          <tr>
+            <td><code>IndexedDB</code> (remediation)</td>
+            <td><code>src/remediation/IndexedDBRemediationAdapter.mjs</code></td>
+            <td>Plans, tasks, evidence, ledger</td>
+            <td>Yes (V6.7)</td>
+            <td>persistent; cleared by the user</td>
+          </tr>
+          <tr>
+            <td><code>IndexedDB</code> (report history)</td>
+            <td><code>src/reports/history.mjs</code></td>
+            <td>Summary-only record of generated reports</td>
+            <td>Yes (V6.5)</td>
+            <td>persistent; cleared by the user</td>
+          </tr>
+          <tr>
+            <td><code>BroadcastChannel</code></td>
+            <td><code>src/state/{Workspace,Environment,Remediation}Context.tsx</code></td>
+            <td>Local multi-tab sync (no network)</td>
+            <td>Yes (V6.4–V6.7)</td>
+            <td>ephemeral</td>
+          </tr>
+          <tr>
+            <td><code>sessionStorage</code></td>
+            <td>—</td>
+            <td>absent</td>
+            <td>n/a</td>
+            <td>n/a</td>
+          </tr>
+          <tr>
+            <td><code>Cache Storage</code></td>
+            <td>—</td>
+            <td>absent</td>
+            <td>n/a</td>
+            <td>n/a</td>
+          </tr>
+          <tr>
+            <td><code>Service Worker</code></td>
+            <td>—</td>
+            <td>absent</td>
+            <td>n/a</td>
+            <td>n/a</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>3. Third-party browser dependencies</h2>
+      <p class="ok">No third-party scripts, stylesheets,
+        fonts, iframes, embeds, analytics, tracking,
+        telemetry, pixels, beacons or fingerprinting
+        libraries are loaded by the V6.9 build.</p>
+      <p>The only third-party browser-direct <code>fetch()</code>
+        targets that can fire from the production bundle
+        are the documented live-data fallback origins:</p>
+      <ul>
+        <li><code>https://www.cisa.gov</code> — CISA Known
+          Exploited Vulnerabilities catalog</li>
+        <li><code>https://services.nvd.nist.gov</code> —
+          NVD CVE 2.0 API</li>
+        <li><code>https://api.first.org</code> — FIRST
+          EPSS API</li>
+        <li><code>https://osv.dev</code> — OSV.dev
+          vulnerability database</li>
+      </ul>
+      <p>These four fallbacks fire <strong>only</strong>
+        when the primary <code>/api/dataset</code> route is
+        unreachable, and they receive no visitor
+        authentication, no identifying cookies and no
+        fingerprint beyond the standard <code>User-Agent</code>
+        and <code>Accept</code> headers. They are an
+        availability fallback for the same public-upstream
+        pipeline that the operator's server-side refresh
+        scheduler already runs every 30 minutes.</p>
+
+      <h2>4. Consent model decision</h2>
+      <p class="ok">No consent banner is implemented and
+        none is required. The audit found zero cookies and
+        zero non-essential storage; every browser storage
+        primitive in use is necessary for a documented
+        product feature.</p>
+      <p>The application does not call any consent
+        management platform, does not load any third-party
+        consent script and does not track the visitor for
+        the purpose of recording a refusal. The
+        <code>dataSource</code>, <code>mode</code> and
+        <code>publicStateFingerprint</code> fields on the
+        dataset envelope are the application-internal
+        provenance signals used by the dashboard's
+        "Data route" status pill; they are not
+        consent signals and are not user-visible privacy
+        controls.</p>
+
+      <h2>5. How to clear the data</h2>
+      <p>Every local surface has a documented "Clear"
+        action gated by a typed confirmation. The same
+        surfaces also support "Export" to a verified
+        SHA-256-checksummed JSON backup before clearing.
+        A full reset is available through the browser's
+        native "Clear site data" / "Clear cookies and
+        site data" controls.</p>
+
+      <h2>6. Evidence</h2>
+      <p>The 29-assertion verification suite
+        <code>scripts/verify-v69-privacy-and-runtime-hardening.mjs</code>
+        is the machine-readable evidence for every claim
+        above. The full audit + decision record is in
+        <a href="./privacy.html">the privacy notice</a>
+        and in
+        <code>docs/v6-9-privacy-cookie-and-security-hardening.md</code>.</p>
+
+      <p class="meta">Last updated: <time datetime="2026-07-24">2026-07-24</time> · ThreatPulse Radar V6.9</p>
+    </main>
+  </body>
+</html>

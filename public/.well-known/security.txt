@@ -1,0 +1,22 @@
+# RFC 9116 — security.txt for the ThreatPulse Radar
+# production deployment.
+#
+# OPERATOR: replace every `<OPERATOR-...>` placeholder
+# below with the real contact for the production
+# deployment BEFORE the site is public-facing. The same
+# contact MUST appear in SECURITY.md at the repo root.
+#
+# The `Expires` field is a hard requirement: a missing
+# or past `Expires` value is treated as invalid by the
+# RFC 9116 reference parser. Set `Expires` to a date
+# approximately one year in the future and re-issue
+# this file before that date.
+
+Contact: mailto:security@<OPERATOR-DOMAIN>
+Contact: https://<OPERATOR-DOMAIN>/contact
+Expires: 2027-12-31T23:59:59Z
+Preferred-Languages: en
+Canonical: https://threatpulse.namanp.de/.well-known/security.txt
+# Acknowledgement SLA: 5 business days.
+# Acknowledgement: https://<OPERATOR-DOMAIN>/security/ack
+# Policy: https://threatpulse.namanp.de/SECURITY.html

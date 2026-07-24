@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>ThreatPulse Radar — Privacy notice</title>
+    <style>
+      :root { color-scheme: light dark; --fg:#0f172a; --muted:#475569; --bg:#ffffff; --panel:#f8fafc; --border:#cbd5e1; --link:#1d4ed8; --warn:#b45309; }
+      @media (prefers-color-scheme: dark) { :root { --fg:#e2e8f0; --muted:#94a3b8; --bg:#0b1220; --panel:#0f172a; --border:#1e293b; --link:#60a5fa; --warn:#fbbf24; } }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, Segoe UI, sans-serif; line-height: 1.55; }
+      main { max-width: 720px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+      h2 { font-size: 1.1rem; margin-top: 2rem; }
+      .lede { color: var(--muted); margin-top: 0; }
+      p, li { font-size: 0.95rem; }
+      .placeholder { background: var(--panel); border: 1px dashed var(--border); border-left: 4px solid var(--warn); padding: 0.6rem 0.9rem; margin: 0.4rem 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+      a { color: var(--link); }
+      .meta { color: var(--muted); font-size: 0.85rem; margin-top: 2rem; }
+      ul { padding-left: 1.2rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Privacy notice</h1>
+      <p class="lede">A pre-completed privacy notice for the ThreatPulse Radar
+        production deployment. Operator-controlled placeholders are
+        marked with a <span class="placeholder">&lt;!-- OPERATOR: ... --&gt;</span>
+        callout and MUST be replaced before the site is
+        public-facing.</p>
+
+      <h2>1. Controller</h2>
+      <div class="placeholder">&lt;!-- OPERATOR: full legal name and registered address of the data controller. --&gt;</div>
+
+      <h2>2. Hosting</h2>
+      <p>The dashboard, the public dataset and the static
+        documentation pages are served from the Hostinger
+        production domain. Ordinary server access logs (request
+        path, status, response size, user-agent) are written to
+        the operator's log directory. The Hostinger managed
+        scheduler runs the V6.2 portable jobs (refresh-dataset,
+        refresh-baseline, publish, GC, verify, backup) and
+        periodically contacts the documented public upstream
+        sources (CISA KEV, NVD, FIRST EPSS, OSV, GitHub
+        Advisory) from the operator's server. None of those
+        third parties receive a visitor's IP address; only the
+        server's IP is exposed during the upstream refresh.</p>
+
+      <h2>3. Data the application processes</h2>
+      <p>ThreatPulse Radar is a public-data + local-only
+        dashboard. The application processes the following
+        categories of data:</p>
+      <ul>
+        <li><strong>Public vulnerability data</strong> (CVE
+          records, EPSS scores, KEV entries, GitHub Advisory
+          records, OSV records) — loaded from the operator's
+          server-side refresh pipeline and served to every
+          visitor from the operator's data root. No PII.</li>
+        <li><strong>Local workspace, environment, remediation and
+          report data</strong> — entered by the visitor in their
+          own browser and stored in IndexedDB on the visitor's
+          own device. Never uploaded.</li>
+        <li><strong>Imported SBOMs and inventory files</strong> —
+          read by the visitor's browser, parsed in a Web Worker,
+          and stored in IndexedDB. Never uploaded.</li>
+        <li><strong>Browser cache</strong> — a 1-hour TTL cache
+          of the public dataset in <code>localStorage</code>,
+          expired on manual refresh. No PII.</li>
+        <li><strong>Server access logs</strong> — ordinary HTTP
+          access logs (request path, response status, response
+          size, user-agent). Retained per the operator's log
+          retention policy.</li>
+      </ul>
+
+      <h2>4. Cookies and tracking</h2>
+      <p>The application sets no cookies, reads no cookies and
+        does not use any third-party tracking, analytics, pixel
+        or beacon. The full audit is in
+        <a href="./cookies.html">the cookie &amp; storage notice</a>
+        and the audit script
+        <code>scripts/verify-v69-privacy-and-runtime-hardening.mjs</code>.</p>
+
+      <h2>5. No account system</h2>
+      <p>There is no sign-up, no sign-in, no profile and no
+        cross-device sync. Every piece of data the visitor
+        enters is stored locally on the visitor's own device.</p>
+
+      <h2>6. Recipient categories</h2>
+      <p>The public dataset is CORS-open. The recipient
+        categories are:</p>
+      <ul>
+        <li>Any HTTP client (browser, CI pipeline, security
+          dashboard) that fetches <code>/api/dataset</code> or
+          <code>/.netlify/functions/dataset</code>.</li>
+        <li>The operator's server-side refresh pipeline, which
+          contacts CISA / NVD / FIRST EPSS / OSV / GitHub
+          Advisory to populate the prebuilt dataset.</li>
+        <li>The operator's own log retention archive.</li>
+      </ul>
+      <p>Local visitor data (workspace, environment,
+        remediation, reports) is not shared with any third
+        party because it never leaves the visitor's device.</p>
+
+      <h2>7. Retention</h2>
+      <div class="placeholder">&lt;!-- OPERATOR: server-log retention period (e.g. 30 days). The application itself does not retain any visitor-entered data on the server. --&gt;</div>
+      <p>Visitor-entered data (workspace / environment /
+        remediation / reports) is retained in the visitor's
+        own browser until the visitor explicitly clears site
+        data or invokes one of the documented "Clear" actions
+        in the dashboard. The dashboard never uploads this
+        data to the server.</p>
+
+      <h2>8. Legal basis</h2>
+      <div class="placeholder">&lt;!-- OPERATOR: legal-basis placeholder for legal review. Common choices: legitimate interest (public-data dashboard), consent (any future feature that requires it). --&gt;</div>
+
+      <h2>9. User rights</h2>
+      <p>Because no visitor account exists and no visitor data
+        is held on the server, the visitor's data-protection
+        rights are exercised in the visitor's own browser
+        through the documented "Export" and "Clear" actions on
+        each local surface (workspace, environment,
+        remediation, reports). The dashboard also surfaces the
+        browser's native "Clear site data" / "Clear cookies
+        and site data" controls for a full reset.</p>
+
+      <h2>10. Contact</h2>
+      <div class="placeholder">&lt;!-- OPERATOR: data-protection contact e-mail and (if applicable) data-protection officer. The same contact should be listed in SECURITY.md and in security.txt. --&gt;</div>
+
+      <h2>11. Changes to this notice</h2>
+      <p>Material changes to this notice will be listed in
+        <a href="https://github.com/namanparikh11/threatpulse-radar/blob/main/CHANGELOG.md"
+           rel="noopener noreferrer">CHANGELOG.md</a> with a
+        one-line summary. The "Last updated" line at the
+        bottom of this page reflects the most-recent change.</p>
+
+      <p class="meta">Last updated: <time datetime="2026-07-24">2026-07-24</time> · ThreatPulse Radar V6.9</p>
+    </main>
+  </body>
+</html>
