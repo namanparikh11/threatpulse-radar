@@ -297,9 +297,21 @@ console.log('[5] Server startup, security headers, method allowlist, SPA fallbac
     const health = await fetch('http://127.0.0.1:18787/health');
     assert('GET /health returns 200', health.status === 200);
     assert('GET /health sets X-Content-Type-Options', health.headers.get('x-content-type-options') === 'nosniff');
-    assert('GET /health sets X-Frame-Options', health.headers.get('x-frame-options') === 'SAMEORIGIN');
-    assert('GET /health sets Referrer-Policy', health.headers.get('referrer-policy') === 'same-origin');
+    // V6.9 — X-Frame-Options is now DENY (was SAMEORIGIN).
+    assert('GET /health sets X-Frame-Options: DENY', health.headers.get('x-frame-options') === 'DENY');
+    // V6.9 — Referrer-Policy is now strict-origin-when-cross-origin (was same-origin).
+    assert('GET /health sets Referrer-Policy: strict-origin-when-cross-origin', health.headers.get('referrer-policy') === 'strict-origin-when-cross-origin');
     assert('GET /health sets Strict-Transport-Security in production', !!health.headers.get('strict-transport-security'));
+    // V6.9 — Conservative HSTS. The header MUST NOT include
+    // `includeSubDomains` (operator has not yet verified every
+    // subdomain is HTTPS) and MUST NOT request the `preload` list.
+    const hsts = health.headers.get('strict-transport-security') || '';
+    assert('GET /health HSTS has no includeSubDomains', !/includeSubDomains/i.test(hsts));
+    assert('GET /health HSTS has no preload', !/preload/i.test(hsts));
+    // V6.9 — Content-Security-Policy + Permissions-Policy
+    // are applied to every public response.
+    assert('GET /health sets a Content-Security-Policy', !!health.headers.get('content-security-policy'));
+    assert('GET /health sets a Permissions-Policy', !!health.headers.get('permissions-policy'));
     assert('GET /health sets Cache-Control: no-store', /no-store/.test(health.headers.get('cache-control') || ''));
     // /ready
     const ready = await fetch('http://127.0.0.1:18787/ready');

@@ -79,20 +79,105 @@ function mimeFor(filePath) {
   return MIME_TYPES[ext] || 'application/octet-stream';
 }
 
+// V6.9 — security-header baseline. Generated from the actual
+// production build dependencies: the bundle is same-origin
+// (no third-party scripts / stylesheets / fonts / iframes),
+// uses module workers loaded from blob: URLs, and serves only
+// an in-memory JSON dataset. No `unsafe-eval` is required.
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  // Workers are dynamically constructed via
+  // `new Worker(new URL('./parseInventory.worker.mjs',
+  // import.meta.url))` and therefore count as
+  // same-origin. Blob: is permitted so Vite's
+  // runtime worker bootstrap is not blocked.
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "frame-src 'none'",
+].join('; ');
+
+// V6.9 — Permissions-Policy baseline. The dashboard does
+// not use geolocation, camera, microphone, payment, USB,
+// serial, MIDI, screen-capture, or any of the historically
+// fingerprintable sensors. The header denies each of them
+// explicitly so a future regression that adds a new
+// capability is visible in a CSP / Permissions-Policy
+// audit rather than silently granted.
+const PERMISSIONS_POLICY = [
+  'accelerometer=()',
+  'autoplay=()',
+  'camera=()',
+  'cross-origin-isolated=()',
+  'display-capture=()',
+  'encrypted-media=()',
+  'fullscreen=(self)',
+  'geolocation=()',
+  'gyroscope=()',
+  'keyboard-map=()',
+  'magnetometer=()',
+  'microphone=()',
+  'midi=()',
+  'payment=()',
+  'picture-in-picture=()',
+  'publickey-credentials-get=()',
+  'screen-wake-lock=()',
+  'sync-xhr=()',
+  'usb=()',
+  'xr-spatial-tracking=()',
+].join(', ');
+
 function applySecurityHeaders(headers, { isProduction = true, allowFrame = false } = {}) {
   // X-Content-Type-Options: nosniff prevents MIME-
   // type sniffing by browsers.
   if (!headers.has('X-Content-Type-Options')) headers.set('X-Content-Type-Options', 'nosniff');
-  // X-Frame-Options: sameorigin (the dashboard is
-  // an SPA; clickjacking is mitigated by denying
-  // framing from foreign origins).
-  if (!allowFrame && !headers.has('X-Frame-Options')) headers.set('X-Frame-Options', 'SAMEORIGIN');
-  // Referrer-Policy: same-origin so the SPA does
-  // not leak request paths to external resources.
-  if (!headers.has('Referrer-Policy')) headers.set('Referrer-Policy', 'same-origin');
+  // V6.9 — X-Frame-Options: DENY (was SAMEORIGIN).
+  // The dashboard is a self-contained SPA; we do not
+  // permit framing from any origin (self or third
+  // party) and the equivalent `frame-ancestors 'none'`
+  // directive in the CSP covers modern browsers.
+  if (!allowFrame && !headers.has('X-Frame-Options')) headers.set('X-Frame-Options', 'DENY');
+  // V6.9 — Referrer-Policy: strict-origin-when-cross-origin
+  // (was same-origin). Same-origin is stricter but breaks
+  // expected browser behaviour for the dataset's
+  // hostinger.namanp.de → threatpulse.namanp.de upgrade
+  // path. The cross-origin variant sends only the
+  // origin (no path / query) to third parties, which
+  // is the documented minimum-disclosure policy.
+  if (!headers.has('Referrer-Policy')) headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  // V6.9 — Content-Security-Policy. Generated from the
+  // actual build dependency graph (same-origin only;
+  // no `unsafe-eval`; workers via `blob:`).
+  if (!headers.has('Content-Security-Policy')) headers.set('Content-Security-Policy', CSP_DIRECTIVES);
+  // V6.9 — Permissions-Policy. Deny every capability the
+  // application does not actively use.
+  if (!headers.has('Permissions-Policy')) headers.set('Permissions-Policy', PERMISSIONS_POLICY);
   if (isProduction) {
-    if (!headers.has('Strict-Transport-Security')) headers.set('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+    // V6.9 — Conservative HSTS. `max-age=31536000` (1 year)
+    // is the documented V6.9 baseline. We deliberately
+    // do NOT include `includeSubDomains` (operator
+    // has not yet verified every subdomain is HTTPS)
+    // and we do NOT request the `preload` list
+    // (preload is a one-way commitment).
+    if (!headers.has('Strict-Transport-Security')) headers.set('Strict-Transport-Security', 'max-age=31536000');
   }
+  // V6.9 — Cross-Origin-Resource-Policy. The /api/dataset
+  // and /.netlify/functions/dataset routes are
+  // documented as publicly readable from any origin
+  // (CORS-open). Static assets and the HTML are NOT
+  // loaded by any third-party embed, so `same-origin`
+  // is safe and is the recommended default. The
+  // portable dataset route opts into `cross-origin`
+  // in its route handler.
+  if (!headers.has('Cross-Origin-Resource-Policy')) headers.set('Cross-Origin-Resource-Policy', 'same-origin');
   return headers;
 }
 

@@ -60,6 +60,20 @@ import { createManagedScheduler } from './managed-scheduler.mjs';
 // a single oversized header is rejected with 431.
 const MAX_TOTAL_HEADER_BYTES = 16 * 1024;
 
+// V6.9 — Bounded Node server timeouts. The defaults
+// (5s headersTimeout, no global request timeout, no
+// keepAliveTimeout cap) are too permissive for a
+// public HTTP surface. We pin every value explicitly
+// so a regression that changes Node defaults cannot
+// silently relax the surface. Values are chosen to
+// accommodate the largest legitimate request in the
+// bundle (the SHA-256 fingerprint worker bootstrap)
+// while bounding slow-loris and similar abuse.
+const HEADERS_TIMEOUT_MS = 10_000;     // 10 s for headers
+const REQUEST_TIMEOUT_MS = 60_000;     // 60 s for the full request
+const KEEPALIVE_TIMEOUT_MS = 5_000;    // 5 s for keep-alive idle
+const MAX_KEEPALIVE_REQUESTS = 100;    // cap per-connection request count
+
 import { resolveConfig as resolvePortableConfig } from '../server/config.mjs';
 import { handleHealth } from '../server/routes/health.mjs';
 import { handleReady as handlePortableReady } from '../server/routes/ready.mjs';
@@ -172,7 +186,9 @@ const portable = resolvePortableConfig({
 // 3. Construct the HTTP server. The handler is a
 // single async function that dispatches to the V6.2
 // routes. New connections are stopped during shutdown
-// via server.close().
+// via server.close(). V6.9 — every Node-side timeout
+// is pinned explicitly so a Node default change
+// cannot silently relax the public surface.
 let shuttingDown = false;
 const server = createServer(async (req, res) => {
   if (shuttingDown) {
@@ -378,6 +394,18 @@ function writeResponse(res, response) {
 
 // 4. Listen. On EADDRINUSE or other bind errors,
 // surface a sanitized message and exit 1.
+// V6.9 — Pin every Node server timeout explicitly.
+// Node's defaults (5s headersTimeout, no global
+// request timeout, no keepAliveTimeout cap) are too
+// permissive for a public HTTP surface. The values
+// are chosen to accommodate the largest legitimate
+// request in the bundle (the SHA-256 fingerprint
+// worker bootstrap) while bounding slow-loris
+// and similar abuse.
+server.headersTimeout = HEADERS_TIMEOUT_MS;
+server.requestTimeout = REQUEST_TIMEOUT_MS;
+server.keepAliveTimeout = KEEPALIVE_TIMEOUT_MS;
+server.maxRequestsPerConnection = MAX_KEEPALIVE_REQUESTS;
 server.on('error', (err) => {
   logger.error({ msg: 'listen.error', error: sanitizeError(err) });
   console.error(JSON.stringify({ error: 'listen-failed', code: err.code || null, message: err.message }));

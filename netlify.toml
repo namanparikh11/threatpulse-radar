@@ -129,12 +129,13 @@
   schedule = "0 * * * *"
 
 # Standard security headers for static `dist/` assets.
+# V6.9 — aligned with the Hostinger runtime header baseline.
 [[headers]]
   for = "/*"
   [headers.values]
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    Permissions-Policy = "geolocation=(), microphone=(), camera=()"
+    Permissions-Policy = "accelerometer=(), autoplay=(), camera=(), cross-origin-isolated=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), xr-spatial-tracking=()"
     X-Frame-Options = "DENY"
 
 # Long-cache the fingerprinted Vite assets; keep `index.html`

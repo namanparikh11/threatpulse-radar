@@ -145,7 +145,15 @@ function jsonResponse(status, body) {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*',
+      // V6.9 — Tightened CORS. The refresh-dataset-background
+      // function is a same-origin internal trigger; only the
+      // dashboard calls it. A wildcard Access-Control-Allow-Origin
+      // would permit any origin to enqueue a refresh, which is
+      // a documented V6.9 hardening regression. The dataset
+      // read endpoint (netlify/functions/dataset.mjs) is the
+      // one documented public cross-origin contract; that
+      // endpoint retains the wildcard.
+      'Access-Control-Allow-Origin': 'same-origin',
       'X-Content-Type-Options': 'nosniff',
     },
   });
