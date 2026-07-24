@@ -763,34 +763,59 @@ replaced with a real value.
 
 | # | Placeholder | File | Required before deployment? |
 | --- | --- | --- | --- |
-| 1 | Controller name and registered address | `public/legal/privacy.html` § 1 | Yes |
-| 2 | Data-protection contact e-mail | `public/legal/privacy.html` § 10 | Yes |
-| 3 | Server-log retention duration | `public/legal/privacy.html` § 7 | Yes |
-| 4 | Legal-basis placeholder for legal review | `public/legal/privacy.html` § 8 | Yes (for legal compliance) |
-| 5 | Security contact e-mail | `SECURITY.md`, `public/.well-known/security.txt` | Yes |
-| 6 | `Expires` date in `security.txt` | `public/.well-known/security.txt` | Yes (RFC 9116 requires a non-past `Expires`) |
-| 7 | PGP key fingerprint (optional) | `SECURITY.md` | No (PGP is optional) |
-| 8 | `Acknowledgement:` URL in `security.txt` | `public/.well-known/security.txt` | Recommended |
+| 1 | Public postal address of the data controller | `public/legal/privacy.html` § 1, `public/legal/impressum.html` | Yes |
 
-The verification script asserts that at least one
-`<!-- OPERATOR: -->` placeholder exists in each
-shipped legal / security file, so a regression that
-publishes a placeholder-less file with fabricated
-content fails the gate. The intent is to prevent
-publication of fabricated personal data, addresses,
-tax numbers, legal-entity names or contact e-mails.
+The V6.9 release-gate history is:
 
-**Final decision for this branch:** the legal / security
-pages are kept in the build (operator option B) so the
-operator can navigate to them and complete the
-placeholders before deployment. The verification suite
-explicitly flags the unresolved placeholders, so a CI
-run after the operator has completed every placeholder
-will pass cleanly and the final decision can be
-upgraded from **B. V6.9 CODE READY — OPERATOR
-LEGAL/CONTACT DETAILS STILL BLOCK DEPLOYMENT** to
-**A. V6.9 READY FOR PR — ALL RUNTIME AND OPERATOR
-REQUIREMENTS RESOLVED**.
+- V6.9 closure (`ec46778`): every `<!-- OPERATOR: -->`
+  placeholder listed in the original audit was a
+  production-readiness blocker; decision was
+  **B. V6.9 CODE READY**.
+- V6.9 cookie / CSP correction (`e6d1a87`): same
+  decision, refined wording.
+- V6.9 legal-placeholder gate (`97f5d79`): same
+  decision; explicit section 11 added.
+- V6.9 operator fields (`9e0682c`): operator supplied
+  controller name, single contact address, log
+  retention, security.txt values; postal address still
+  pending; decision still
+  **B. V6.9 CODE READY**.
+- V6.9 log retention + route checks (`a47f440`): same
+  decision; 30-day retention enforced; Hostinger
+  refresh route closure documented.
+- V6.9 Impressum + final gate (this milestone): the
+  Impressum page is created and linked; the postal
+  address placeholder remains in
+  `public/legal/privacy.html` § 1 and
+  `public/legal/impressum.html`; decision is still
+  **B. BLOCKED — POSTAL ADDRESS PLACEHOLDER REMAINS**.
+
+The final report for this milestone states only that
+a non-placeholder postal address is NOT present. The
+full address is not printed anywhere (in test names,
+logs, or the final report) because no real address
+has been supplied.
+
+The operator upgrades the decision to
+**A. V6.9 READY FOR DRAFT PR — OPERATOR FIELDS
+COMPLETED** by:
+
+1. Opening `public/legal/privacy.html` and
+   `public/legal/impressum.html` locally.
+2. Replacing the `<!-- OPERATOR: public postal address -->`
+   placeholder with the real public postal address on
+   the local machine (not through this assistant).
+3. Running `node scripts/verify-v69-privacy-and-runtime-hardening.mjs`
+   to confirm the placeholder is resolved and the
+   other 77 assertions still pass.
+4. Running `node scripts/verify-v68-release.mjs` to
+   confirm the release manifest still matches.
+5. Re-running the V6.3 / V6.8 / proxy / dataset-bound /
+   smoke suites to confirm nothing else regresses.
+
+The live cookie / header verification in section 10
+is a **post-deployment** step and is NOT performed in
+this milestone.
 
 ## 12. Rollback conditions
 

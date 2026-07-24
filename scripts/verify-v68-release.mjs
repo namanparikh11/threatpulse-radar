@@ -177,10 +177,10 @@ test('verify-v68-release: clean working tree (release-preparation files allowed)
     // and the top-level netlify.toml (security-header
     // alignment with the Hostinger baseline). Adds
     // SECURITY.md, the V6.9 documentation, the user-
-    // facing privacy / cookies / security disclosure
-    // pages under public/legal/, the RFC 9116
-    // security.txt under public/.well-known/, the
-    // log-retention module under hostinger/, the
+    // facing privacy / cookies / security / Impressum
+    // disclosure pages under public/legal/, the
+    // RFC 9116 security.txt under public/.well-known/,
+    // the log-retention module under hostinger/, the
     // matching acceptance test under scripts/, and
     // updates to deploy/v6-8-release-manifest.json
     // (acceptanceSuiteCount bumped to 38). Every

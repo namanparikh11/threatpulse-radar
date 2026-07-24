@@ -544,6 +544,8 @@ const privacyHtml = readText('public/legal/privacy.html') ?? '';
 const securityTxt = readText('public/.well-known/security.txt') ?? '';
 const securityMd = readText('SECURITY.md') ?? '';
 const cookiesHtmlFile = readText('public/legal/cookies.html') ?? '';
+const impressumHtml = readText('public/legal/impressum.html') ?? '';
+const legalIndexHtml = readText('public/legal/index.html') ?? '';
 // Postal address is the only remaining operator
 // placeholder the user has not provided. The branch
 // cannot proceed to "production ready" without the
@@ -551,8 +553,12 @@ const cookiesHtmlFile = readText('public/legal/cookies.html') ?? '';
 // gate asserts the placeholder is present so a
 // regression that fabricates an address fails the
 // gate.
-const postalAddressPlaceholderCount = (privacyHtml.match(/&lt;!--\s*OPERATOR:\s*public postal address/gi) || []).length
+const postalAddressPlaceholderCount =
+  (privacyHtml.match(/&lt;!--\s*OPERATOR:\s*public postal address/gi) || []).length
   + (privacyHtml.match(/<!--\s*OPERATOR:\s*public postal address/gi) || []).length;
+const postalAddressImpressumCount =
+  (impressumHtml.match(/&lt;!--\s*OPERATOR:\s*public postal address/gi) || []).length
+  + (impressumHtml.match(/<!--\s*OPERATOR:\s*public postal address/gi) || []).length;
 assert('19. public/legal/privacy.html retains a postal-address <!-- OPERATOR: --> placeholder (still pending operator input)',
   postalAddressPlaceholderCount >= 1,
   `count: ${postalAddressPlaceholderCount}`);
@@ -574,6 +580,21 @@ assert('19d. V6.9 documentation does NOT claim the branch is "production ready" 
     || /postal address.*still pending/i.test(v69doc)
     || /postal address.*incomplete/i.test(v69doc),
   null);
+assert('19e. public/legal/impressum.html exists and identifies the operator by name',
+  impressumHtml !== ''
+    && /Naman Parikh/.test(impressumHtml)
+    && /contact@namanp\.de/.test(impressumHtml)
+    && /operated by/.test(impressumHtml),
+  null);
+assert('19f. public/legal/impressum.html is linked from public/legal/index.html',
+  /href=["']\.\/impressum\.html["']/.test(legalIndexHtml),
+  null);
+assert('19g. public/legal/impressum.html is linked from public/legal/privacy.html',
+  /href=["']\.\/impressum\.html["']/.test(privacyHtml),
+  null);
+assert('19h. public/legal/impressum.html retains a postal-address <!-- OPERATOR: --> placeholder (still pending operator input)',
+  postalAddressImpressumCount >= 1,
+  `count: ${postalAddressImpressumCount}`);
 
 // -------------------------------------------------------------------
 // 20. No analytics / trackers / third-party scripts / CMP
