@@ -31,23 +31,42 @@
         evidence basis for it.</p>
 
       <h2>1. Cookies</h2>
-      <p class="ok">No cookies are set, read or required at
-        any point in the V6.9 build.</p>
+      <p class="ok">No application-controlled cookies are
+        set or read by ThreatPulse code.</p>
+      <p>The audit covered ThreatPulse code only
+        (<code>src/**</code>, <code>hostinger/**</code>,
+        <code>server/**</code>, <code>jobs/**</code>,
+        <code>netlify/functions/**</code>,
+        <code>netlify/gateway/**</code>, the portable
+        <code>server/</code> routes and the Vite build).
+        The hosting platform (Hostinger), any upstream
+        CDN / edge layer, browser extensions and the
+        browser itself are out of scope for this
+        static source audit.</p>
       <p>The audit covered:</p>
       <ul>
         <li><code>document.cookie</code> (read) — absent
-          in every <code>src/**</code>,
-          <code>hostinger/**</code>, <code>server/**</code> and
-          <code>jobs/**</code> source file.</li>
-        <li><code>Set-Cookie</code> (response header) —
-          absent in every <code>hostinger/</code> and
-          <code>server/</code> route handler.</li>
+          in every ThreatPulse source file.</li>
+        <li><code>Set-Cookie</code> HTTP response header
+          in ThreatPulse code — absent in every
+          <code>hostinger/</code> and <code>server/</code>
+          route handler.</li>
         <li><code>cookieStore</code> (Cookie Store API) —
           absent.</li>
         <li><code>Cookie</code> request header — never
           consumed server-side; the browser never sends
           one because the application never sets one.</li>
       </ul>
+      <p>Because the application cannot observe
+        hosting- or platform-level cookie behaviour
+        from a static source audit, the operator MUST
+        run the live verification checklist (see
+        <a href="https://github.com/namanparikh11/threatpulse-radar/blob/security/v6-9-privacy-and-runtime-hardening/docs/v6-9-privacy-cookie-and-security-hardening.md"
+           rel="noopener noreferrer">the full audit record</a>)
+        before declaring the deployment complete. The
+        checklist includes a <code>curl -I</code> sweep
+        for <code>Set-Cookie</code> on every public path
+        and a clean-profile browser inspection.</p>
 
       <h2>2. Browser storage inventory</h2>
       <table>
@@ -158,8 +177,9 @@
 
       <h2>4. Consent model decision</h2>
       <p class="ok">No consent banner is implemented and
-        none is required. The audit found zero cookies and
-        zero non-essential storage; every browser storage
+        none is required. The audit found no
+        application-controlled cookies and no
+        non-essential storage; every browser storage
         primitive in use is necessary for a documented
         product feature.</p>
       <p>The application does not call any consent

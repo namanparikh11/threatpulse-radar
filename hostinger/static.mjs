@@ -84,6 +84,26 @@ function mimeFor(filePath) {
 // (no third-party scripts / stylesheets / fonts / iframes),
 // uses module workers loaded from blob: URLs, and serves only
 // an in-memory JSON dataset. No `unsafe-eval` is required.
+//
+// `connect-src` enumerates the exact browser-direct origins
+// reachable from the production build. The three non-self
+// origins are the documented live-data fallback providers
+// (CISA KEV, NVD, FIRST EPSS), reached ONLY when the
+// primary `/.netlify/functions/dataset` route is unavailable
+// (see `src/services/vulnerabilityService.ts#tryBrowserDirectFetch`).
+// No `https:` wildcard, no `*`, no wildcard subdomain.
+//
+// `style-src-elem` / `style-src-attr` are the narrowest
+// functioning inline-style policy supported by the actual
+// application: external stylesheets must come from `'self'`
+// (the Vite-bundled CSS), and the only inline style usage
+// is the `style={{...}}` React prop in two progress-bar
+// components and the small handful of inline measurements
+// that React and Recharts generate at runtime. The
+// `style-src 'self' 'unsafe-inline'` fallback is kept for
+// legacy browsers (Chrome < 75, Firefox < 78, Safari < 15.4)
+// that do not implement the Level 3 directives; on those
+// browsers, the broader `style-src` applies.
 const CSP_DIRECTIVES = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -91,10 +111,24 @@ const CSP_DIRECTIVES = [
   "frame-ancestors 'none'",
   "form-action 'self'",
   "script-src 'self'",
-  "style-src 'self'",
+  // Inline style policy. The narrowest cross-browser
+  // combination: `style-src` is the Level 1 fallback for
+  // browsers that do not implement the Level 3
+  // directives, and the two Level 3 directives carve
+  // out the narrowest possible permission for modern
+  // browsers. The application code itself never injects
+  // untrusted content as inline style; the only inline
+  // style usage is React's `style={{...}}` prop and
+  // Recharts' measurement helpers.
+  "style-src 'self' 'unsafe-inline'",
+  "style-src-elem 'self'",
+  "style-src-attr 'unsafe-inline'",
   "img-src 'self' data:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  // Live-data fallback providers (only reached when the
+  // primary same-origin route is unavailable). No
+  // wildcard, no `https:`, no subdomain wildcards.
+  "connect-src 'self' https://www.cisa.gov https://services.nvd.nist.gov https://api.first.org",
   // Workers are dynamically constructed via
   // `new Worker(new URL('./parseInventory.worker.mjs',
   // import.meta.url))` and therefore count as

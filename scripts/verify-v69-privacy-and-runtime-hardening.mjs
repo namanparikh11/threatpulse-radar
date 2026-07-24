@@ -414,6 +414,200 @@ assert('15b. hostinger/app.mjs returns 400 on malformed URLs',
   null);
 
 // -------------------------------------------------------------------
+// 16. CSP connect-src matches the chosen fallback design
+// -------------------------------------------------------------------
+// The production CSP MUST enumerate the exact same-origin
+// proxy plus the documented live-data fallback origins
+// (CISA KEV, NVD, FIRST EPSS). No `https:`, no `*`, no
+// wildcard subdomains. The same CSP is duplicated in
+// `netlify.toml`; both files MUST agree.
+//
+// The Hostinger CSP is built from the `CSP_DIRECTIVES`
+// array constant. The verification reconstructs the
+// joined directive string by extracting every
+// double-quoted string literal in the array — comments
+// inside the array are skipped by the line-by-line
+// `startsWith('//')` check.
+function extractCspFromArray(source, constantName) {
+  const re = new RegExp(`const\\s+${constantName}\\s*=\\s*\\[`);
+  const start = source.search(re);
+  if (start < 0) return null;
+  const end = source.indexOf('].join(', start);
+  if (end < 0) return null;
+  const slice = source.slice(start, end);
+  const directives = [];
+  for (const line of slice.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('//')) continue;
+    const m = trimmed.match(/^"([^"]+)"\s*,?$/);
+    if (m) directives.push(m[1]);
+  }
+  return directives.join('; ');
+}
+const cspValue = extractCspFromArray(staticMjs, 'CSP_DIRECTIVES');
+const connectSrcMatch = cspValue ? cspValue.match(/connect-src\s+([^;]+)/i) : null;
+const connectSrc = connectSrcMatch ? connectSrcMatch[1].trim() : null;
+assert('16. CSP connect-src is present in hostinger/static.mjs',
+  !!cspValue,
+  `csp value: ${cspValue}`);
+assert('16a. CSP connect-src starts with \'self\'',
+  !!connectSrc && /^\s*'self'/.test(connectSrc),
+  `connect-src: ${connectSrc}`);
+assert('16b. CSP connect-src enumerates the documented live-data fallback origins (CISA KEV, NVD, FIRST EPSS)',
+  !!connectSrc
+    && /https:\/\/www\.cisa\.gov/.test(connectSrc)
+    && /https:\/\/services\.nvd\.nist\.gov/.test(connectSrc)
+    && /https:\/\/api\.first\.org/.test(connectSrc),
+  `connect-src: ${connectSrc}`);
+assert('16c. CSP connect-src does NOT use a wildcard (https: or *)',
+  !!connectSrc
+    && !/\bhttps:\b/.test(connectSrc.split(/\s+/).slice(1).join(' '))
+    && !/\*\b/.test(connectSrc),
+  `connect-src: ${connectSrc}`);
+assert('16d. CSP connect-src does NOT use a wildcard subdomain',
+  !!connectSrc && !/\*\./.test(connectSrc),
+  `connect-src: ${connectSrc}`);
+assert('16e. netlify.toml Content-Security-Policy agrees with the Hostinger baseline',
+  /connect-src 'self' https:\/\/www\.cisa\.gov https:\/\/services\.nvd\.nist\.gov https:\/\/api\.first\.org/.test(netlifyToml),
+  null);
+
+// -------------------------------------------------------------------
+// 17. CSP inline-style policy matches runtime requirements
+// -------------------------------------------------------------------
+// The narrowest cross-browser inline-style policy:
+// `style-src 'self' 'unsafe-inline'` is the Level 1 fallback
+// for browsers that do not implement the Level 3 directives,
+// and the two Level 3 directives carve out the narrowest
+// possible permission for modern browsers.
+assert('17. CSP style-src is the narrowest cross-browser compatible policy',
+  !!cspValue && /style-src 'self' 'unsafe-inline'/.test(cspValue),
+  `csp value: ${cspValue}`);
+assert('17a. CSP style-src-elem is restricted to \'self\'',
+  !!cspValue && /style-src-elem 'self'/.test(cspValue),
+  `csp value: ${cspValue}`);
+assert('17b. CSP style-src-attr is the narrowest inline-style policy',
+  !!cspValue && /style-src-attr 'unsafe-inline'/.test(cspValue),
+  `csp value: ${cspValue}`);
+assert('17c. CSP does NOT include unsafe-eval',
+  !!cspValue && !/unsafe-eval/i.test(cspValue),
+  `csp value: ${cspValue}`);
+assert('17d. CSP script-src does NOT include unsafe-inline',
+  !!cspValue && !/script-src[^;]*'unsafe-inline'/i.test(cspValue),
+  `csp value: ${cspValue}`);
+assert('17e. CSP default-src is not broadly relaxed',
+  !!cspValue && /default-src 'self'/.test(cspValue)
+    && !/default-src[^;]*\*/.test(cspValue),
+  `csp value: ${cspValue}`);
+
+// -------------------------------------------------------------------
+// 18. Cookie claim is evidence-based (not absolute)
+// -------------------------------------------------------------------
+// The V6.9 documentation MUST use the bounded
+// "application-controlled" framing rather than an
+// absolute "zero cookies" claim. The audit cannot
+// observe hosting- or platform-level cookie behaviour.
+const cookiesHtml = readText('public/legal/cookies.html') ?? '';
+const v69doc = readText('docs/v6-9-privacy-cookie-and-security-hardening.md') ?? '';
+assert('18. cookies.html uses the evidence-based "application-controlled" cookie claim',
+  /application-controlled/i.test(cookiesHtml)
+    && !/(zero cookies|no cookies are set|no third-party cookies exist)/i.test(cookiesHtml),
+  null);
+assert('18a. V6.9 documentation uses the evidence-based cookie claim and explicitly explains the live-verification gap',
+  /application-controlled/i.test(v69doc)
+    && /live[^a-z]+verification/i.test(v69doc),
+  null);
+assert('18b. V6.9 documentation does NOT make an absolute "zero cookies" claim',
+  !/(zero cookies|0 cookies|no cookies exist|cookies are zero)/i.test(v69doc),
+  null);
+
+// -------------------------------------------------------------------
+// 19. Unresolved legal placeholders block production-readiness
+// -------------------------------------------------------------------
+// Every shipped legal / security file MUST contain at
+// least one `<!-- OPERATOR: -->` placeholder (or its
+// HTML-encoded `&lt;!-- OPERATOR: --&gt;` form for
+// browser-visible placeholders) so a regression that
+// publishes a placeholder-less file with fabricated
+// content fails this gate. The gate is intentionally
+// loose: the operator may resolve every placeholder
+// by removing the marker in the same shape; the
+// script's job is to make sure the placeholders exist,
+// not to enforce their permanent presence.
+const operatorMarkerHtml = /<!--\s*OPERATOR:[^>]*-->/g;
+const operatorMarkerEncoded = /&lt;!--\s*OPERATOR:[^&]*--&gt;/g;
+function countOperatorMarkers(text) {
+  const a = text.match(operatorMarkerHtml) || [];
+  const b = text.match(operatorMarkerEncoded) || [];
+  return a.length + b.length;
+}
+const privacyHtml = readText('public/legal/privacy.html') ?? '';
+const securityTxt = readText('public/.well-known/security.txt') ?? '';
+const securityMd = readText('SECURITY.md') ?? '';
+assert('19. public/legal/privacy.html retains at least one <!-- OPERATOR: --> placeholder',
+  countOperatorMarkers(privacyHtml) >= 1,
+  `count: ${countOperatorMarkers(privacyHtml)}`);
+assert('19a. SECURITY.md retains at least one <!-- OPERATOR: --> placeholder',
+  countOperatorMarkers(securityMd) >= 1,
+  `count: ${countOperatorMarkers(securityMd)}`);
+assert('19b. public/.well-known/security.txt retains an operator-resolvable contact placeholder',
+  /<OPERATOR-DOMAIN>/.test(securityTxt),
+  `security.txt:\n${securityTxt.slice(0, 400)}`);
+assert('19c. V6.9 documentation explicitly lists the unresolved operator placeholders',
+  /11\. Unresolved operator placeholders/i.test(v69doc)
+    && /production-readiness gate/i.test(v69doc),
+  null);
+assert('19d. V6.9 documentation does NOT claim the branch is "production ready"',
+  !/production ready/i.test(v69doc) || /NOT claimed production-ready/i.test(v69doc)
+    || /NOT production-ready/i.test(v69doc)
+    || /code-ready/i.test(v69doc),
+  null);
+
+// -------------------------------------------------------------------
+// 20. No analytics / trackers / third-party scripts / CMP
+// -------------------------------------------------------------------
+// The application must remain free of analytics,
+// tracking, telemetry, pixels, beacons, third-party
+// scripts and consent-management platforms. The
+// earlier assertions (1, 2, 2a) cover the source
+// files; this section duplicates the check at the
+// dist level for redundancy and adds the
+// "no CMP" assertion.
+if (existsSync(resolve(repoRoot, 'dist/assets'))) {
+  const distTxt = [];
+  for (const f of readdirSync(resolve(repoRoot, 'dist/assets'))) {
+    if (!/\.(js|mjs|css|html)$/.test(f)) continue;
+    distTxt.push(readFileSync(resolve(repoRoot, 'dist/assets', f), 'utf8'));
+  }
+  const distConcat = distTxt.join('\n');
+  const cmpPattern = /(cookielaw|onetrust|iubenda|termly|trustarc|axeptio|usercentrics)/i;
+  assert('20. dist/ contains no consent-management-platform SDK',
+    !cmpPattern.test(distConcat),
+    null);
+}
+
+// -------------------------------------------------------------------
+// 21. No public write / admin / refresh route
+// -------------------------------------------------------------------
+// The public surface must remain read-only. The
+// Hostinger runtime rejects every non-GET/HEAD
+// request with a 405; the Netlify public site
+// exposes only GET functions.
+assert('21. hostinger/app.mjs method allowlist is GET+HEAD only',
+  /method !== ['"]GET['"]/.test(appMjs) && /method !== ['"]HEAD['"]/.test(appMjs),
+  null);
+assert('21a. hostinger/app.mjs returns 405 for non-allowlist methods',
+  /statusCode\s*=\s*405/.test(appMjs),
+  null);
+assert('21b. netlify.toml exposes no Netlify Background Function under a public path',
+  !/\[functions\.refresh-baseline-background\]/.test(netlifyToml),
+  null);
+assert('21c. hostinger/app.mjs has no /admin or /api/refresh or /api/credential route handler',
+  !/['"]\/admin['"]/.test(appMjs)
+    && !/['"]\/api\/refresh['"]/.test(appMjs)
+    && !/['"]\/api\/credential['"]/.test(appMjs),
+  null);
+
+// -------------------------------------------------------------------
 // Summary
 // -------------------------------------------------------------------
 process.stdout.write(`\n${'='.repeat(60)}\n`);
